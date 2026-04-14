@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+: "${ROOT_DIR:?failed to resolve ROOT_DIR}"
 cd "$ROOT_DIR"
 
 NFTABLES_VERSION="${NFTABLES_VERSION:-$(awk -F= '/^ARG NFTABLES_VERSION=/{print $2; exit}' Dockerfile)}"
@@ -17,14 +18,22 @@ fi
 echo "Building ${RELEASE_TAG} and ${LATEST_TAG} ..."
 docker build --target artifacts -t "${RELEASE_TAG}" -t "${LATEST_TAG}" .
 
-tmp_bin="$(mktemp)"
-container_id="$(docker create --entrypoint /opt/nftables/bin/nft "${RELEASE_TAG}" --version)"
+work_tmp_dir="$(mktemp -d "${ROOT_DIR}/.tmp.nft-static.XXXXXX")"
+tmp_bin="${work_tmp_dir}/nft"
+container_id=""
+
 cleanup() {
-  docker rm -f "${container_id}" >/dev/null 2>&1 || true
-  rm -f "${tmp_bin}"
+  if [[ -n "${container_id:-}" ]]; then
+    docker rm -f -- "${container_id}" >/dev/null 2>&1 || true
+  fi
+  case "$work_tmp_dir" in
+    "$ROOT_DIR"/.tmp.nft-static.*) rm -rf -- "${work_tmp_dir:?}" ;;
+    *) echo "Refusing cleanup: $work_tmp_dir" >&2 ;;
+  esac
 }
 trap cleanup EXIT
 
+container_id="$(docker create --entrypoint /opt/nftables/bin/nft "${RELEASE_TAG}" --version)"
 docker cp "${container_id}:/opt/nftables/bin/nft" "${tmp_bin}"
 
 if ! file "${tmp_bin}" | grep -qi "statically linked"; then
