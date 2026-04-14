@@ -52,7 +52,9 @@ vaka/                              # monorepo (LGPL-2.1)
 │   │   └── validate.go
 │   └── nft/                       # policy → nft ruleset string generator
 │       ├── generate.go
-│       └── resolve.go             # DNS + service name resolution
+│       ├── resolve.go             # DNS + service name resolution
+│       └── templates/
+│           └── egress.nft.tmpl   # Go text/template; embedded via embed.FS
 ├── docker/
 │   └── init/
 │       └── Dockerfile             # base image: nft-static + vaka-init
@@ -97,6 +99,7 @@ services:
         drop:
           - proto: icmp
             type: echo-request      # named or numeric (8)
+        block_metadata: true        # optional; see Section 4.3; false if omitted
     runtime:
       dropAllCapsAfterInit: true    # drop ALL caps after nft applied; overrides dropCaps
       dropCaps:                     # specific caps to drop (used when dropAllCapsAfterInit: false)
@@ -179,6 +182,40 @@ A flat list of strings. Each entry is auto-detected by the parser:
 
 Name resolution at init time means resolved IPs are baked into the static nft ruleset. Dynamic IP changes after startup are not reflected. This is intentional — it makes the ruleset auditable and deterministic.
 
+#### `block_metadata`
+
+A top-level boolean under `network.egress`. When `true`, `vaka-init` prepends explicit `drop` rules for all known cloud instance metadata service endpoints before any user rules. These rules are part of the implicit invariants section of the generated ruleset and take precedence over user-defined `accept` rules.
+
+Covered ranges (as of v1alpha1):
+
+| Cloud | IPv4 | IPv6 |
+|---|---|---|
+| AWS, GCP, Azure, DigitalOcean, Hetzner | `169.254.169.254/32` | `fd00:ec2::254/128` (AWS) |
+| Alibaba Cloud | `100.100.100.200/32` | — |
+| Azure IMDS (additional) | `169.254.169.254/32` | — |
+| Link-local metadata range (general) | `169.254.0.0/16` | — |
+
+```yaml
+egress:
+  block_metadata: true    # drop all known metadata endpoints; false if omitted
+  defaultAction: reject
+  accept:
+    - dns: {}
+```
+
+When `block_metadata: false` (the default), no metadata rules are generated. Operators running in cloud environments where the metadata service exposes IAM credentials or tokens **should** set `block_metadata: true`.
+
+The metadata block rules are inserted into the ruleset immediately after the implicit invariants (`established,related` and `lo`) and before any user-defined `drop`/`reject`/`accept` rules:
+
+```
+ct state established,related accept   # implicit invariant
+iif "lo" accept                        # implicit invariant
+ip  daddr 169.254.0.0/16 drop         # block_metadata: true
+ip  daddr 100.100.100.200/32 drop     # block_metadata: true
+ip6 daddr fd00:ec2::254/128 drop      # block_metadata: true
+# ... user rules follow
+```
+
 #### Port ranges
 
 ```yaml
@@ -203,7 +240,7 @@ When `proto: icmp` or `proto: icmpv6` is specified, only that family is targeted
 |---|---|---|---|
 | `apiVersion` | string | `vaka.dev/v1alpha1` | yes |
 | `kind` | string | `ServicePolicy` | yes |
-| `services.<name>.network.egress.defaultAction` | string | `accept`, `reject`, `drop` | yes |
+| `services.<name>.network.egress.defaultAction` | string | `accept`, `reject`, `drop`; default `reject` if omitted | no |
 | `services.<name>.network.egress.accept` | list | Rule entries | no |
 | `services.<name>.network.egress.reject` | list | Rule entries | no |
 | `services.<name>.network.egress.drop` | list | Rule entries | no |
@@ -212,6 +249,7 @@ When `proto: icmp` or `proto: icmpv6` is specified, only that family is targeted
 | `rule.ports` | list | int or `"N-M"` string | no (omit = any) |
 | `rule.type` | string or int | ICMP type name or 0–255 | no |
 | `rule.dns` | map | `{}` or `servers: [...]` | special shorthand |
+| `services.<name>.network.egress.block_metadata` | bool | `true`/`false`; default `false` | no |
 | `runtime.dropAllCapsAfterInit` | bool | `true`/`false` | no (default false) |
 | `runtime.dropCaps` | list of string | Linux capability names | no |
 | `runtime.runAs.uid` | int | ≥ 0 | no |
@@ -246,10 +284,17 @@ Arguments after `--` are the harness entrypoint and its arguments. `vaka-init` r
    b. service names in to: → DNS lookup (A + AAAA records)
    All resolution happens before any nft operation.
 
-3. Generate nft ruleset in memory (see Section 5.3).
+3. Generate nft ruleset string in memory via Go template (see Sections 5.3 and 5.4).
 
 4. Apply ruleset:
    nft -f /dev/stdin  (ruleset piped to stdin — no temp file written)
+
+   nft -f applies the entire ruleset atomically at the kernel level: nftables reads
+   the full input, builds the new configuration in memory, and commits it in a single
+   transaction. There is no intermediate "half-loaded" firewall state. If the ruleset
+   is malformed or the kernel rejects it for any reason, the previous state (empty or
+   existing tables) is preserved and vaka-init exits with an error (fail-closed).
+   Reference: https://wiki.nftables.org/wiki-nftables/index.php/Atomic_rule_replacement
 
 5. Drop capabilities:
    if dropAllCapsAfterInit: true:
@@ -335,9 +380,67 @@ This means explicit `drop` and `reject` rules take precedence over `accept` rule
 docker exec <container> nft list table inet vaka
 ```
 
-### 5.4 Error handling
+### 5.4 Ruleset generation via Go templates
 
-`vaka-init` follows a fail-closed principle: any error in steps 1–6 causes immediate exit with a non-zero status and a descriptive message to stderr. It never proceeds to `execve` with a partial or uncertain security posture.
+The nft ruleset string is produced by `pkg/nft` using Go's `text/template` package. This keeps rule formatting readable and auditable without string concatenation logic scattered across the codebase.
+
+`pkg/nft/templates/egress.nft.tmpl`:
+
+```
+table inet vaka {
+  chain egress {
+    type filter hook output priority 0;
+    policy accept;
+
+    # implicit invariants
+    ct state established,related accept
+    iif "lo" accept
+{{- if .BlockMetadata }}
+
+    # metadata endpoint block (block_metadata: true)
+{{- range .MetadataRanges }}
+    {{ . }} drop
+{{- end }}
+{{- end }}
+{{- if .DropRules }}
+
+    # explicit drop rules
+{{- range .DropRules }}
+    {{ . }}
+{{- end }}
+{{- end }}
+{{- if .RejectRules }}
+
+    # explicit reject rules
+{{- range .RejectRules }}
+    {{ . }}
+{{- end }}
+{{- end }}
+{{- if .AcceptRules }}
+
+    # explicit accept rules
+{{- range .AcceptRules }}
+    {{ . }}
+{{- end }}
+{{- end }}
+
+    # default action
+    {{ .DefaultVerdict }}
+  }
+}
+```
+
+The `pkg/nft` generator:
+1. Receives a resolved `policy.EgressPolicy` struct (all DNS names already expanded to IPs).
+2. Expands each rule entry into one or more nft rule strings (one per IP family as needed).
+3. Executes the template with a `RulesetData` struct containing the pre-rendered rule strings and metadata.
+4. Returns the final ruleset string to `vaka-init`, which pipes it to `nft -f /dev/stdin`.
+
+This approach means the template stays stable and auditable; complexity lives in the Go rule-expansion logic, not in the template itself. The template file can be embedded via `embed.FS` so no separate file is needed at runtime.
+
+### 5.5 Error handling
+
+`vaka-init` follows a fail-closed principle: any error in steps 1–7 causes immediate exit with a non-zero status and a descriptive message to stderr. It never proceeds to `execve` with a partial or uncertain security posture.
 
 ---
 
@@ -424,7 +527,8 @@ Validation runs before any docker interaction. A single validation failure print
 | `apiVersion` | Must be exactly `vaka.dev/v1alpha1` |
 | `kind` | Must be exactly `ServicePolicy` |
 | Service name | Valid DNS label; must exist in `docker-compose.yaml` |
-| `defaultAction` | One of: `accept`, `reject`, `drop` |
+| `defaultAction` | One of: `accept`, `reject`, `drop`. Defaults to `reject` if omitted. `vaka` CLI emits a prominent warning when `accept` is used: "WARNING: service <name> uses defaultAction: accept — all unmatched egress traffic is allowed." |
+| `network_mode` (compose) | Services listed in `vaka.yaml` must not use `network_mode: host` in `docker-compose.yaml`. `vaka up` and `vaka validate` both hard-error if this condition is detected: "Error: service <name> uses network_mode: host. vaka cannot isolate a container sharing the host network namespace. Remove network_mode: host or exclude this service from vaka.yaml." |
 | `proto` | One of: `tcp`, `udp`, `icmp`, `icmpv6` |
 | `to:` entries | Each string: valid IPv4, valid IPv6, valid CIDR, or syntactically valid hostname (`[a-z0-9]([a-z0-9\-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9\-]*[a-z0-9])?)*`) |
 | `ports:` entries | Integer 1–65535, or string `"N-M"` where `N < M` and both in range |
@@ -542,3 +646,8 @@ Preventing an agent from reading its own process memory (env vars, heap) is an u
 | `NET_ADMIN` always dropped post-nft | Capability that permits firewall modification must not survive into the harness |
 | Strict YAML parsing (unknown fields = error) | Typos in config keys would silently have no effect; hard errors prevent misconfiguration |
 | Fail-closed on any init error | A partial security posture is worse than no startup; harness does not run if init fails |
+| nft ruleset via Go `text/template` | Keeps formatting readable and auditable; rule expansion logic stays in Go, not in template; template embedded via `embed.FS` so no runtime file dependency |
+| `defaultAction` defaults to `reject` | Secure by default; operators must explicitly choose `accept` and are warned when they do |
+| `block_metadata: false` by default | Opt-in avoids surprising behaviour on non-cloud deployments; operators in cloud environments should enable it explicitly |
+| Hard error on `network_mode: host` | Sharing the host network namespace defeats container egress isolation entirely and risks applying nft rules to the host; this must never be allowed silently |
+| nft application is atomic | `nft -f` commits the full ruleset in a single kernel transaction — no intermediate half-loaded state is possible |
