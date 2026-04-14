@@ -584,24 +584,30 @@ DNS resolution of `to:` hostnames and `dns: {}` nameserver lookup are **not** pe
 
 ### 6.4 `vaka show <service>`
 
-Generates and prints the nft ruleset that would be applied for the named service. DNS names and service names in `to:` are not resolved — they appear as comments:
+Runs steps 1–2 (parse and validate `vaka.yaml`), then generates the nft ruleset for the named service via `pkg/nft` and prints it to stdout. No docker interaction. DNS names and service names in `to:` are not resolved — they are left as inline comments so the output is still readable and auditable:
 
 ```nft
-# NOTE: "llm-gateway" will be resolved at container init time
+# unresolved: llm-gateway
 ip daddr { /* llm-gateway */ } tcp dport { 443 } accept
 ```
 
-Useful for auditing before deployment.
+Useful for auditing the exact ruleset that will be applied inside the container before launch.
 
 ### 6.5 `vaka validate`
 
+Runs steps 1–2 (parse and validate `vaka.yaml`) only. No docker interaction. Prints a per-service summary on success:
+
 ```
 $ vaka validate
-✓ codex        — 2 accept rules, 1 drop rule,  defaultAction: reject
+✓ codex        — 3 accept rules, 1 drop rule,  defaultAction: reject
 ✓ llm-gateway  — 1 accept rule,  0 drop rules, defaultAction: reject
 ```
 
-Exits 0 on success, non-zero with diagnostics on failure.
+Exits non-zero on any validation failure with a precise error message pointing to the offending field:
+
+```
+Error: services.codex.network.egress.accept[1].proto: unknown value "udpp" (expected tcp, udp, icmp, icmpv6)
+```
 
 ---
 
