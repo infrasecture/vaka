@@ -210,7 +210,7 @@ The metadata block rules are inserted into the ruleset immediately after the imp
 
 ```
 ct state established,related accept   # implicit invariant
-iif "lo" accept                        # implicit invariant
+oif "lo" accept                       # implicit invariant (output chain → oif)
 ip  daddr 169.254.0.0/16 drop         # block_metadata: true
 ip  daddr 100.100.100.200/32 drop     # block_metadata: true
 ip6 daddr fd00:ec2::254/128 drop      # block_metadata: true
@@ -358,7 +358,7 @@ table inet vaka {
     ct state established,related accept
 
     # 2. Allow loopback. Matched by interface name, not IP address.
-    iif "lo" accept
+    oif "lo" accept
     # ────────────────────────────────────────────────────────────────────────
 
     # ── EXPLICIT drop RULES (from drop: list, top to bottom) ────────────────
@@ -420,7 +420,7 @@ table inet vaka {
 
     # implicit invariants
     ct state established,related accept
-    iif "lo" accept
+    oif "lo" accept
 {{- if .BlockMetadata }}
 
     # metadata endpoint block (block_metadata: true)
@@ -503,9 +503,14 @@ All flags not recognised by `vaka up` are forwarded verbatim to `docker compose 
 
 5. For each service, determine the harness entrypoint + command:
    a. If service has explicit entrypoint: or command: in docker-compose.yaml → use those.
-   b. Otherwise → docker image inspect <image> → read .Config.Entrypoint and .Config.Cmd.
-   c. If neither yields a result → vaka up errors:
-      "Error: service codex has no entrypoint. Add entrypoint: to docker-compose.yaml."
+   b. Otherwise → call Docker daemon API via Go SDK (github.com/docker/docker/client):
+      client.ImageInspect(ctx, image) → read .Config.Entrypoint and .Config.Cmd.
+      This uses the Docker socket directly; no subprocess is spawned.
+   c. If the image is not available locally (not pulled, not built), ImageInspect
+      returns a not-found error → vaka up errors:
+      "Error: service <name>: image <image> is not available locally and no
+       entrypoint/command is declared in docker-compose.yaml. Either pull the
+       image first or add entrypoint: to the service definition."
 
 5a. For each service, compute the capability delta:
    - Parse the service's existing cap_add/cap_drop declarations from docker-compose.yaml
