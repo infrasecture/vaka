@@ -259,18 +259,9 @@ When `proto: icmp` or `proto: icmpv6` is specified, only that family is targeted
 
 ## 5. `vaka-init` — Container Init Binary
 
-### 5.1 Usage
+### 5.1 How vaka-init is invoked
 
-```dockerfile
-# In the harness image:
-COPY --from=ghcr.io/vaka/init:latest /opt/vaka/bin/vaka-init /usr/local/sbin/vaka-init
-COPY --from=ghcr.io/vaka/init:latest /opt/nftables/bin/nft   /usr/local/sbin/nft
-
-ENTRYPOINT ["vaka-init", "--"]
-CMD ["claude", "--dangerously-skip-permissions"]
-```
-
-Arguments after `--` are the harness entrypoint and its arguments. `vaka-init` replaces itself with the harness via `execve` — PID 1 becomes the harness process.
+`vaka-init` must be present in the harness image (see Section 7) but is **not** set as the image `ENTRYPOINT`. The `vaka` CLI injects it transparently at `vaka up` time by rewriting `entrypoint:` and `command:` in the compose override, passing the original harness entrypoint and command as arguments to `vaka-init` after `--`. Isolation only takes effect when the container is started via `vaka up` — running directly with `docker compose up` bypasses vaka entirely.
 
 ### 5.2 Startup sequence
 
@@ -614,7 +605,9 @@ Exits 0 on success, non-zero with diagnostics on failure.
 
 ---
 
-## 7. `docker/init` Base Image
+## 7. `emsi/vaka-init` Base Image
+
+The `docker/init/` directory builds and publishes `emsi/vaka-init` to Docker Hub. It is a `scratch`-based image containing exactly two binaries: the statically-linked `nft` from `emsi/nft-static` and the statically-linked `vaka-init` built from this repo.
 
 `docker/init/Dockerfile`:
 
@@ -632,18 +625,20 @@ COPY --from=nft     /opt/nftables/bin/nft   /opt/vaka/bin/nft
 COPY --from=builder /out/vaka-init          /opt/vaka/bin/vaka-init
 ```
 
-Harness images use it as:
+### Including vaka-init in a harness image
+
+Any harness image that will be used with `vaka up` must include the `vaka-init` and `nft` binaries. Copy them in from `emsi/vaka-init` using a multi-stage build:
 
 ```dockerfile
-FROM ghcr.io/vaka/init:latest AS vaka
+FROM emsi/vaka-init:latest AS vaka
+
 FROM ubuntu:24.04
+# ... harness setup ...
 COPY --from=vaka /opt/vaka/bin/vaka-init /usr/local/sbin/vaka-init
 COPY --from=vaka /opt/vaka/bin/nft       /usr/local/sbin/nft
-ENTRYPOINT ["vaka-init", "--"]
-CMD ["your-harness-entrypoint"]
 ```
 
-The container image carries only two binaries from vaka: `vaka-init` and `nft`. No other vaka code runs inside the container.
+The `ENTRYPOINT` in the image remains the harness's own entry point. The `vaka` CLI injects `vaka-init` transparently at `vaka up` time by rewriting `entrypoint:` and `command:` in the compose override. No changes to the harness image `ENTRYPOINT` are required or expected. The container carries only two vaka binaries; no other vaka code runs inside the container.
 
 ---
 
