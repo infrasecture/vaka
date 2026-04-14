@@ -50,11 +50,13 @@ vaka/                              # monorepo (LGPL-2.1)
 │   │   ├── types.go
 │   │   ├── parse.go
 │   │   └── validate.go
-│   └── nft/                       # policy → nft ruleset string generator
-│       ├── generate.go
-│       ├── resolve.go             # DNS + service name resolution
-│       └── templates/
-│           └── egress.nft.tmpl   # Go text/template; embedded via embed.FS
+│   ├── nft/                       # policy → nft ruleset string generator
+│   │   ├── generate.go
+│   │   ├── resolve.go             # DNS + service name resolution
+│   │   └── templates/
+│   │       └── egress.nft.tmpl   # Go text/template for nft DSL; embedded via embed.FS
+│   └── compose/                   # compose override generator
+│       └── override.go            # builds override struct, marshals to YAML via yaml.Marshal()
 ├── docker/
 │   └── init/
 │       └── Dockerfile             # base image: nft-static + vaka-init
@@ -101,10 +103,8 @@ services:
             type: echo-request      # named or numeric (8)
         block_metadata: true        # optional; see Section 4.3; false if omitted
     runtime:
-      dropAllCapsAfterInit: true    # drop ALL caps after nft applied; overrides dropCaps
-      dropCaps:                     # specific caps to drop (used when dropAllCapsAfterInit: false)
-        - NET_ADMIN
-        - SYS_PTRACE
+      dropCaps:                     # optional user override; see Section 4.3 and Section 8
+        - NET_ADMIN                 # normally auto-computed by vaka CLI (delta caps)
       runAs:
         uid: 1000
         gid: 1000
@@ -118,7 +118,6 @@ services:
             to: [0.0.0.0/0]
             ports: [443]
     runtime:
-      dropAllCapsAfterInit: true
       runAs:
         uid: 1000
         gid: 1000
@@ -143,13 +142,15 @@ services:
             to: [llm-gateway]
             ports: [443]
     runtime:
-      dropAllCapsAfterInit: true
+      dropCaps: [NET_ADMIN]         # injected by vaka CLI: the delta caps it added
       runAs:
         uid: 1000
         gid: 1000
 ```
 
 Delivered to the container at `/run/secrets/vaka.yaml` via the Docker secrets mechanism.
+
+The `dropCaps` list in the injected document is **auto-computed by the vaka CLI** as the delta between the capabilities it added to the compose override and the capabilities already declared in the original `docker-compose.yaml`. The harness operator does not write `dropCaps` — vaka owns it. If `dropCaps` is explicitly set in `vaka.yaml` by the operator, that value takes precedence over the auto-computed delta (see Section 8).
 
 ### 4.3 Special syntax
 
@@ -250,8 +251,7 @@ When `proto: icmp` or `proto: icmpv6` is specified, only that family is targeted
 | `rule.type` | string or int | ICMP type name or 0–255 | no |
 | `rule.dns` | map | `{}` or `servers: [...]` | special shorthand |
 | `services.<name>.network.egress.block_metadata` | bool | `true`/`false`; default `false` | no |
-| `runtime.dropAllCapsAfterInit` | bool | `true`/`false` | no (default false) |
-| `runtime.dropCaps` | list of string | Linux capability names | no |
+| `runtime.dropCaps` | list of string | Linux capability names (short form); normally auto-computed by vaka CLI; explicit value in `vaka.yaml` overrides auto-computation | no |
 | `runtime.runAs.uid` | int | ≥ 0 | no |
 | `runtime.runAs.gid` | int | ≥ 0 | no |
 
@@ -296,20 +296,46 @@ Arguments after `--` are the harness entrypoint and its arguments. `vaka-init` r
    existing tables) is preserved and vaka-init exits with an error (fail-closed).
    Reference: https://wiki.nftables.org/wiki-nftables/index.php/Atomic_rule_replacement
 
-5. Drop capabilities:
-   if dropAllCapsAfterInit: true:
-     Iterate CAP_0..CAP_LAST_CAP calling prctl(PR_CAPBSET_DROP, cap) for each,
-     removing all capabilities from the bounding set.
-   else:
-     Call prctl(PR_CAPBSET_DROP, cap) for each capability listed in dropCaps.
-   NET_ADMIN is always dropped after step 4, regardless of config — it is the capability
-   that allowed nft to run and must not be retained by the harness.
+5. Drop capabilities listed in dropCaps from ALL five capability sets, in this order:
+   a. Inheritable (I): cap_set_proc() with each dropCap cleared from I.
+      No special capability required to lower your own inheritable set.
+   b. Ambient (A): prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0).
+      No special capability required.
+   c. Bounding (B): prctl(PR_CAPBSET_DROP, cap) for each cap in dropCaps.
+      Requires CAP_SETPCAP in the effective set. CAP_SETPCAP is present in the
+      default Docker effective set (see Section 8) and is not itself in dropCaps
+      unless the user explicitly adds it — so this call succeeds.
+      Once a capability is removed from B, no future execve in this process tree
+      can regain it, regardless of file capabilities on executed binaries.
+   d. Effective (E) and Permitted (P): cap_set_proc() with each dropCap cleared
+      from both E and P. The capability is now immediately inactive.
 
-6. Apply runAs (if specified):
-   setgid(gid) then setuid(uid) — gid must be set first.
+   After step 5, the dropped capabilities are absent from all sets. The remaining
+   default Docker capabilities (SETUID, SETGID, SETPCAP, etc.) are still present
+   in E and P — they are needed for the next step.
+
+6. Apply runAs (if specified) — MUST happen after cap drop, while SETUID/SETGID
+   are still in the effective set:
+   setresgid(gid, gid, gid)  — sets real, effective, AND saved-set GID.
+                                CAP_SETGID is present in E (default Docker cap).
+   setresuid(uid, uid, uid)  — sets real, effective, AND saved-set UID.
+                                CAP_SETUID is present in E (default Docker cap).
+   Using setresuid/setresgid (not setuid/setgid) ensures the saved-set-ID is also
+   changed. GID must be changed before UID.
+
+   When all three UIDs transition from 0 to nonzero, the Linux kernel automatically
+   clears the effective (E) and permitted (P) capability sets (capabilities(7),
+   "UID fixup"). This is unconditional when SECBIT_KEEP_CAPS and
+   SECBIT_NO_SETUID_FIXUP are both unset (the Docker default). No manual
+   cap_set_proc() call is needed to clear the remaining caps — the kernel does it.
+
+   After setresuid returns: E={}, P={}, I={dropCaps cleared}, A={},
+   B={default Docker bounding minus dropCaps}.
 
 7. execve(argv[1:])
    Replaces vaka-init with the harness. vaka-init ceases to exist.
+   The harness inherits empty E and P sets. The bounding set does not contain
+   the dropped caps, so execve cannot restore them.
 ```
 
 ### 5.3 Generated nft ruleset
@@ -481,7 +507,21 @@ All flags not recognised by `vaka up` are forwarded verbatim to `docker compose 
    c. If neither yields a result → vaka up errors:
       "Error: service codex has no entrypoint. Add entrypoint: to docker-compose.yaml."
 
-6. Build override YAML in memory:
+5a. For each service, compute the capability delta:
+   - Parse the service's existing cap_add/cap_drop declarations from docker-compose.yaml
+     to determine what capabilities the service already has.
+   - vaka always needs CAP_NET_ADMIN (for nft). If NET_ADMIN is not already in cap_add,
+     add it to the override and record it in the delta.
+   - If dropCaps is explicitly set in vaka.yaml for this service, use that value and skip
+     auto-computation. Document this: "runtime.dropCaps in vaka.yaml overrides the
+     auto-computed delta. Use this only if you need to drop additional capabilities
+     beyond what vaka adds, or if your compose setup differs from Docker defaults."
+   - Write the final dropCaps list back into the per-service policy before serialising
+     in step 4.
+
+6. Build override YAML in memory via `pkg/compose` — constructs a typed Go struct
+   representing the override and marshals it to YAML with `yaml.Marshal()`.
+   No template is used; the struct is the source of truth for the override shape:
 
    secrets:
      vaka_codex_conf:
@@ -493,15 +533,23 @@ All flags not recognised by `vaka up` are forwarded verbatim to `docker compose 
      codex:
        entrypoint: ["vaka-init", "--"]
        command: ["claude", "--dangerously-skip-permissions"]
+       cap_add:
+         - NET_ADMIN               # delta caps added by vaka for this service
        secrets:
          - source: vaka_codex_conf
            target: vaka.yaml
      llm-gateway:
        entrypoint: ["vaka-init", "--"]
        command: ["/usr/local/bin/litellm", "--config", "/etc/litellm.yaml"]
+       cap_add:
+         - NET_ADMIN
        secrets:
          - source: vaka_llm_gateway_conf
            target: vaka.yaml
+
+   The override does NOT emit cap_drop: ALL. It only adds what vaka needs.
+   The original docker-compose.yaml's cap_drop/cap_add declarations are preserved
+   unchanged — Compose merges the two files.
 
 7. Exec docker compose:
    exec.Command("docker", "compose",
@@ -594,22 +642,54 @@ The container image carries only two binaries from vaka: `vaka-init` and `nft`. 
 
 ---
 
-## 8. Required Container Capabilities
+## 8. Capability Model
 
-`vaka-init` requires `CAP_NET_ADMIN` to configure nftables. This capability must be granted at container startup and is **always** dropped after the ruleset is applied, regardless of the `dropCaps` / `dropAllCapsAfterInit` config. This is enforced by `vaka-init` code, not config.
+### 8.1 Default Docker container capabilities
 
-In `docker-compose.yaml`:
+A default Docker container (no `cap_drop`/`cap_add` in compose) starts with the following capabilities in both the effective (E) and bounding (B) sets:
 
-```yaml
-services:
-  codex:
-    cap_add:
-      - NET_ADMIN
-    cap_drop:
-      - ALL
+```
+cap_chown, cap_dac_override, cap_fowner, cap_fsetid, cap_kill,
+cap_setgid, cap_setuid, cap_setpcap, cap_net_bind_service,
+cap_net_raw, cap_sys_chroot, cap_mknod, cap_audit_write, cap_setfcap
 ```
 
-The `cap_add: [NET_ADMIN]` is required. `vaka-init` drops it as part of its startup sequence before `execve`. The harness process never has `NET_ADMIN`.
+Ambient (A) and inheritable (I) sets are empty. `cap_net_admin` is **not** in the default set.
+
+Key capabilities relevant to vaka-init:
+- `CAP_SETPCAP` — already present; required for `prctl(PR_CAPBSET_DROP, ...)`
+- `CAP_SETUID` — already present; required for `setresuid()` when switching from uid 0
+- `CAP_SETGID` — already present; required for `setresgid()` when switching from gid 0
+- `CAP_NET_ADMIN` — **absent** by default; required for nft; added by vaka CLI
+
+### 8.2 What vaka CLI adds
+
+The vaka CLI only adds the capabilities that vaka-init actually needs but are not already present. In the common case (no `cap_drop: ALL` in the original compose):
+
+- **`NET_ADMIN`** is the only cap added to the override's `cap_add` list.
+
+`SETPCAP`, `SETUID`, and `SETGID` are already in the default Docker cap set and do not need to be added.
+
+### 8.3 Delta-based dropCaps
+
+The vaka CLI computes the **capability delta**: the set of capabilities it added to the override that were not already declared in the original `docker-compose.yaml`. This delta is written as `dropCaps` into the per-container policy injected via Docker secret.
+
+In the common case: `dropCaps: [NET_ADMIN]`.
+
+vaka-init then drops exactly those capabilities from all five sets (I → A → B → E/P) before executing the harness. The result: `NET_ADMIN` is gone from every set and cannot be regained by any binary the harness executes.
+
+The remaining default Docker capabilities (`SETPCAP`, `SETUID`, `SETGID`, etc.) are cleared from E and P automatically by the Linux kernel's **UID fixup** when `setresuid(uid, uid, uid)` transitions all UIDs from 0 to nonzero (see §5.2 step 6). No manual clearing of those caps is needed.
+
+**User override:** If `runtime.dropCaps` is explicitly set in `vaka.yaml`, that value takes precedence over the auto-computed delta. Use this only when the compose setup differs from Docker defaults or when additional caps need to be dropped. This is documented behaviour — the auto-computed value is always logged at `vaka up` time so the operator can see what would have been used.
+
+### 8.4 Edge case: `cap_drop: ALL` in the original compose
+
+If the operator's `docker-compose.yaml` specifies `cap_drop: ALL` (with or without subsequent `cap_add` entries), then `SETPCAP`, `SETUID`, and `SETGID` may be absent from the effective set. In that scenario:
+
+- `prctl(PR_CAPBSET_DROP, NET_ADMIN)` fails at step 5c (EPERM — no `SETPCAP` in E)
+- `setresuid`/`setresgid` fail at step 6 (EPERM — no `SETUID`/`SETGID` in E)
+
+**This case is not handled in v1alpha1.** vaka-init will detect the failure, emit a clear error message, and exit (fail-closed). The operator must either remove `cap_drop: ALL` from the compose file or explicitly add the required caps back via `cap_add`. Automatic detection and injection of these caps by vaka CLI is planned for a future version.
 
 ---
 
@@ -643,10 +723,13 @@ Preventing an agent from reading its own process memory (env vars, heap) is an u
 | Implicit invariants non-suppressible | `established,related` and `lo` are required for any useful container. Making them mandatory prevents footguns. Override mechanism may be added in v2. |
 | `inet` table for nft rules | Single table covers IPv4 + IPv6; prevents IPv6 bypass of IPv4-only rules |
 | DNS/name resolution at init time | Ruleset is static and auditable post-init; no dependency on dynamic resolution at runtime |
-| `NET_ADMIN` always dropped post-nft | Capability that permits firewall modification must not survive into the harness |
+| vaka CLI adds only `NET_ADMIN` (common case) | Default Docker caps already include `SETPCAP`, `SETUID`, `SETGID`; adding only what is actually missing keeps the cap footprint minimal and auditable |
+| Delta-based `dropCaps` auto-computed by vaka CLI | vaka is responsible for what it adds; computing the delta means vaka-init cleans up exactly its own additions without touching caps the operator intentionally set |
+| `NET_ADMIN` dropped from all five sets post-nft | Removing from B prevents any execve in the harness tree from regaining it; removing from E/P makes it immediately inactive; kernel UID fixup clears remaining caps on UID transition |
 | Strict YAML parsing (unknown fields = error) | Typos in config keys would silently have no effect; hard errors prevent misconfiguration |
 | Fail-closed on any init error | A partial security posture is worse than no startup; harness does not run if init fails |
-| nft ruleset via Go `text/template` | Keeps formatting readable and auditable; rule expansion logic stays in Go, not in template; template embedded via `embed.FS` so no runtime file dependency |
+| nft ruleset via Go `text/template` | nft syntax is a custom DSL with no Go marshaler; template keeps formatting readable and auditable; rule expansion logic stays in Go; embedded via `embed.FS` |
+| compose override via `yaml.Marshal()` | The override has a well-defined Go struct shape; marshaling from structs is safer than a YAML template (no indentation fragility, no drift between template and types) |
 | `defaultAction` defaults to `reject` | Secure by default; operators must explicitly choose `accept` and are warned when they do |
 | `block_metadata: false` by default | Opt-in avoids surprising behaviour on non-cloud deployments; operators in cloud environments should enable it explicitly |
 | Hard error on `network_mode: host` | Sharing the host network namespace defeats container egress isolation entirely and risks applying nft rules to the host; this must never be allowed silently |
