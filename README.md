@@ -1,121 +1,89 @@
-# vaka
+# vaka  `v0.1.0`
 
-Kernel-enforced egress firewall for Docker containers, applied at startup with no host-side artifacts.
+vaka is a secure container layer that controls which network endpoints your containers are allowed to reach. Write a short policy file describing what outbound connections each service needs, run `vaka up` instead of `docker compose up`, and a kernel-level firewall is applied inside each container before its application process starts. Everything not on the allowlist is blocked.
 
-`vaka` wraps `docker compose` and transparently injects an nftables egress policy into every container it starts — without modifying your `docker-compose.yaml`, without writing temp files to disk, and without changing the container image.
+It works without modifying your `docker-compose.yaml`, without writing any files to disk on the host, and without changing your container images.
 
 ---
 
 ## Why vaka?
 
-### The problem
+Containers share the host's network stack by default. A running container can reach any IP address the host can reach: your internal services, cloud metadata endpoints, package registries, and the open internet. Container runtimes provide coarse controls (network namespaces, published ports) but nothing that lets you say "this specific service may only call these specific endpoints, and nothing else."
 
-Containers share the host's network stack by default. A running container can reach any IP address the host can reach — your internal services, cloud metadata endpoints, package registries, and the open internet. Most container runtimes provide coarse controls (network namespaces, published ports), but nothing that lets you say: *this specific service may only call these specific endpoints, and nothing else*.
-
-`vaka` solves this with nftables: a kernel firewall applied inside the container's own network namespace, configured per-service, enforced before the application binary starts.
+vaka fills that gap with nftables: a kernel firewall applied inside each container's own network namespace, configured per service, and enforced before the application binary runs. The firewall is loaded by the kernel itself. The application process cannot disable or modify it.
 
 ### Use cases
 
-**AI agentic harnesses** — the primary motivation. Agentic AI systems run tools, write code, call APIs, and browse the web. Containing their network access to only the services they legitimately need limits blast radius when a model misbehaves, is prompted to exfiltrate data, or calls unexpected endpoints.
+**AI agentic harnesses** are the primary motivation. Agentic AI systems run tools, write code, call external APIs, and browse the web. Limiting their network access to the services they legitimately need reduces the blast radius when a model misbehaves, is prompted to exfiltrate data, or starts calling unexpected endpoints.
 
-**Untrusted vendor software** — Third-party monitoring agents, analytics platforms, security tools, and SaaS connectors often have opaque network behaviour. Run them in a container with `vaka` to verify that "phone home" traffic goes exactly where the vendor claims.
+**Untrusted vendor software** is a common need in enterprise environments. Third-party monitoring agents, analytics platforms, security tools, and SaaS connectors often have opaque network behaviour. Running them under vaka lets you verify that "phone home" traffic goes only where the vendor claims.
 
-**Build and CI environments** — A build agent that can reach your production secrets manager or internal APIs is a supply-chain risk. Restrict build containers to package registries and artifact stores only.
+**Build and CI environments** are a supply-chain risk when they can reach your production secrets managers or internal APIs. Restricting build containers to package registries and artifact stores only closes an entire class of attack.
 
-**Dev/staging isolation** — Prevent development containers from accidentally reaching production endpoints. A misconfigured environment variable should not be able to hit a live database.
+**Dev and staging isolation** prevents development containers from accidentally reaching production endpoints. A misconfigured environment variable should not be able to hit a live database.
 
-**Regulatory compliance** — PCI-DSS, HIPAA, and SOC 2 require network segmentation. `vaka` provides auditable, declarative egress rules that map directly to compliance controls.
+**Regulatory compliance** requirements such as PCI-DSS, HIPAA, and SOC 2 mandate network segmentation. vaka provides auditable, declarative egress rules that map directly to those controls.
 
-**Data processing pipelines** — Containers that ingest or transform sensitive data should be able to egress only to your data warehouse and logging endpoint. `vaka` makes that a one-line policy.
+**Data processing pipelines** that ingest or transform sensitive data should be able to egress only to your data warehouse and logging endpoint. vaka enforces that boundary with a one-page policy file.
 
-**Suspicious binary analysis** — Need to run an untrusted binary to see what it does? Run it with `vaka` pointing to a deny-all or allow-only-specific-IPs policy. The binary cannot establish any connection outside the allowlist.
+**Suspicious binary analysis** becomes safer when you run an untrusted binary under a deny-all or allow-specific-IPs policy. The binary cannot reach any destination outside the allowlist, no matter what it tries.
 
-**Third-party plugins and extensions** — Marketplace or partner code running in your infrastructure gets its own egress policy, no matter what libraries it bundles.
+**Third-party plugins and extensions** running in your infrastructure get their own egress policy regardless of what libraries they bundle internally.
 
 ---
 
 ## How it works
 
-### Overview
-
-```
-HOST                                    CONTAINER BOUNDARY
-────────────────────────────────────    ──────────────────────────────────────────
-                                        ┌──────────────────────────────────────┐
-vaka.yaml          ┐                    │                                      │
-docker-compose.yaml┘ ──► vaka up       │  vaka-init (PID 1)                   │
-                              │         │  ┌──────────────────────────────┐    │
-                              │ generates│  │ 1. parse /run/secrets/vaka.yaml│  │
-                              │ override │  │ 2. resolve hostnames → IPs   │  │
-                              │ in memory│  │ 3. nft -f /dev/stdin         │  │
-                              │         │  │ 4. drop Linux capabilities   │  │
-                              ▼         │  │ 5. setuid / setgid           │  │
-                    docker compose      │  │ 6. execve(application)       │  │
-                    -f docker-compose.yaml  └──────────────┬───────────────┘  │
-                    -f -  ◄── (stdin)   │                  │                   │
-                              │         │  Application (under egress firewall)  │
-                              │ no temp │                                      │
-                              │ files   └──────────────────────────────────────┘
-                              │
-                              └── policy delivered as Docker secret
-                                  (base64 env var → tmpfs mount, never on disk)
-```
-
-### The injection flow
+### The container boundary
 
 ```mermaid
-sequenceDiagram
-    participant Dev as Developer
-    participant CLI as vaka (host)
-    participant DC as docker compose
-    participant Init as vaka-init
-    participant App as Application
+flowchart LR
+    subgraph host["Host"]
+        vf["vaka.yaml\n(policy)"]
+        cf["docker-compose.yaml"]
+        cli["vaka up"]
+    end
 
-    Dev->>CLI: vaka up
-    CLI->>CLI: Read + validate vaka.yaml
-    CLI->>CLI: Merge all compose files via compose-go
-    CLI->>CLI: Build compose override YAML in memory<br/>(rewrites entrypoints, adds secrets, adds NET_ADMIN)
-    CLI->>CLI: Encode per-service policy as VAKA_*_CONF env var
-    CLI->>DC: docker compose -f docker-compose.yaml -f - up<br/>(override piped via stdin — no files written)
-    DC->>Init: Start container<br/>ENTRYPOINT: vaka-init -- original-cmd<br/>Secret: /run/secrets/vaka.yaml (from env var)
-    Init->>Init: Parse policy from secret
-    Init->>Init: Resolve any hostnames to IPs
-    Init->>Init: nft -f /dev/stdin  (atomic kernel firewall)
-    Init->>Init: Drop capabilities (NET_ADMIN + declared dropCaps)
-    Init->>Init: setresgid / setresuid  (if runAs is set)
-    Init->>App: execve(original entrypoint)
-    Note over App: Runs under enforced egress policy.<br/>Firewall is in the kernel — the application<br/>cannot disable it.
+    subgraph net["Container network namespace"]
+        direction TB
+        init["vaka-init\n──────────────\n1. read policy\n2. resolve DNS\n3. apply nftables\n4. drop caps\n5. execve"]
+        app["Application"]
+        fw(["nftables\negress filter"])
+    end
+
+    vf --> cli
+    cf --> cli
+    cli -- "compose override\n+ policy secret\n(piped via stdin,\nno files written)" --> init
+    init -- execve --> app
+    app -- outbound --> fw
+    fw -- allowed --> ok(["permitted\nendpoints"])
+    fw -- blocked --> bad(["everything\nelse"])
 ```
 
-### No host-side artifacts
+### No files written to disk
 
-vaka never writes the policy to disk on the host. The flow is:
+vaka never writes the policy to disk on the host. The per-service policy is base64-encoded and passed to `docker compose` as an environment variable. Docker turns that into a secret mounted on a kernel `tmpfs` inside the container at `/run/secrets/vaka.yaml`, invisible to the host filesystem.
 
-1. vaka serialises the per-service policy slice to YAML, base64-encodes it, and sets it as an environment variable (`VAKA_<SERVICE>_CONF`).
-2. The compose override declares a Docker secret sourced from that environment variable.
-3. Docker mounts the decoded content at `/run/secrets/vaka.yaml` inside the container — a kernel `tmpfs` mount, invisible to the host filesystem.
-4. vaka-init reads the secret, applies the firewall, and then the secret's value is no longer needed.
-
-The compose override YAML itself is piped to `docker compose` via stdin (the `-f -` flag). Nothing is written to `/tmp`, the working directory, or anywhere else.
+The compose override that rewrites entrypoints and adds the secret is piped to `docker compose` via stdin using the `-f -` flag. Nothing is written to `/tmp`, the working directory, or anywhere else.
 
 ### Inside the container: vaka-init
 
-`vaka-init` is a static binary that runs as PID 1 (or as the container entrypoint) before the application. It executes seven steps in order:
+`vaka-init` runs as the container entrypoint before the application. It executes these steps in order and exits with an error if any of them fails:
 
-| Step | Action | Fail behaviour |
-|------|--------|----------------|
-| 1 | Parse `/run/secrets/vaka.yaml` (strict — unknown fields are errors) | `fatal`, container exits |
-| 2 | Resolve `dns: {}` rules and hostnames in `to:` lists to IP addresses | `fatal` |
-| 3 | Apply nftables ruleset atomically via `nft -f /dev/stdin` | `fatal` |
-| 4 | Drop capabilities listed in `dropCaps` | `fatal` |
-| 5 | `setresgid` / `setresuid` if `runAs` is set | `fatal` |
-| 6 | `execve` the original entrypoint | `fatal` |
+| Step | Action |
+|------|--------|
+| 1 | Parse `/run/secrets/vaka.yaml` (unknown fields are errors) |
+| 2 | Resolve `dns: {}` rules and hostnames in `to:` lists to IP addresses |
+| 3 | Apply nftables ruleset atomically via `nft -f /dev/stdin` |
+| 4 | Drop capabilities listed in `dropCaps` |
+| 5 | `setresgid` / `setresuid` if `runAs` is configured |
+| 6 | `execve` the original application entrypoint |
 
-`vaka-init` is fail-closed: any error at any step stops the container before the application ever starts. The application cannot run without a firewall.
+vaka-init is fail-closed. The application cannot start until the firewall is loaded. If the policy is malformed, the container exits before the application runs.
 
-### The nftables ruleset
+### What the nftables ruleset looks like
 
-vaka generates an `inet` family table (covers both IPv4 and IPv6) with an `output` hook chain. A minimal ruleset looks like this:
+vaka generates an `inet` family table covering both IPv4 and IPv6, with an `output` hook chain. A typical ruleset:
 
 ```nft
 table inet vaka {
@@ -127,11 +95,11 @@ table inet vaka {
     ct state established,related accept
     oif "lo" accept
 
-    # metadata endpoint block (when block_metadata: true)
+    # metadata endpoint block (block_metadata: true)
     ip  daddr { 169.254.169.254 } drop
     ip6 daddr { fd00::ec2:254   } drop
 
-    # explicit accept rules (from vaka.yaml)
+    # explicit accept rules
     ip daddr { 93.184.216.34 } tcp dport { 443 } accept
 
     # default action
@@ -140,64 +108,71 @@ table inet vaka {
 }
 ```
 
-Established connections are always accepted (no mid-session drops). Loopback is always allowed. Rules are applied in order: drop → reject → accept → default.
+Established connections are always accepted so in-flight requests are not dropped mid-session. Loopback is always allowed. Rules are evaluated in order: drop, then reject, then accept, then the default action.
 
 ---
 
 ## Getting started
 
-### Prerequisites
+### Install the vaka CLI
 
-- Docker with Compose v2 (`docker compose version`)
-- `nft` (nftables) must be available inside the container at `/usr/local/sbin/nft`
-- The container must have `CAP_NET_ADMIN` at startup (vaka adds it automatically via the compose override)
+Download the `v0.1.0` release binary for your platform and place it on your `PATH`:
 
-### Install vaka-init in your image
+```bash
+# Linux amd64
+curl -fsSL https://github.com/emsi/vaka/releases/download/v0.1.0/vaka-linux-amd64 -o vaka
+chmod +x vaka
+sudo mv vaka /usr/local/bin/vaka
+```
 
-**Option A — copy from the pre-built image (recommended)**
+Or build from source: see [Building from source](#building-from-source).
+
+### Add vaka-init to your container image
+
+`vaka-init` and `nft` are distributed together as a single Docker image (`emsi/vaka-init`). Both binaries are fully static and run on any Linux base including Alpine, Ubuntu, Debian, Fedora, and scratch.
+
+**Option A: copy into your image at build time (recommended)**
 
 ```dockerfile
-FROM emsi/vaka-init:latest AS vaka
+FROM emsi/vaka-init:0.1.0 AS vaka
 
 FROM ubuntu:24.04
-# ... your image setup ...
+# ... rest of your image ...
 COPY --from=vaka /opt/vaka/bin/vaka-init /usr/local/sbin/vaka-init
 COPY --from=vaka /opt/vaka/bin/nft       /usr/local/sbin/nft
 ```
 
-Both binaries are fully static. They run on any Linux base (Alpine, Ubuntu, Debian, Fedora, scratch).
+**Option B: bind-mount from the host at runtime**
 
-**Option B — mount from the host at runtime**
+Use this when you cannot modify the image, such as with vendor-supplied or third-party containers.
 
-If you cannot modify the image, bind-mount the binaries:
+First, extract the binaries from the image to your current directory:
+
+```bash
+id=$(docker create emsi/vaka-init:0.1.0)
+docker cp "$id:/opt/vaka/bin/vaka-init" ./
+docker cp "$id:/opt/vaka/bin/nft"       ./
+docker rm "$id"
+```
+
+Then bind-mount them in your `docker-compose.yaml`:
 
 ```yaml
-# docker-compose.yaml
 services:
   myapp:
     image: vendor/myapp:latest
     volumes:
-      - /usr/local/sbin/vaka-init:/usr/local/sbin/vaka-init:ro
-      - /usr/local/sbin/nft:/usr/local/sbin/nft:ro
+      - ./vaka-init:/usr/local/sbin/vaka-init:ro
+      - ./nft:/usr/local/sbin/nft:ro
 ```
 
-Install the binaries on the host first:
-```bash
-docker run --rm emsi/vaka-init:latest  # inspect paths
-# then copy out of the image:
-id=$(docker create emsi/vaka-init:latest)
-docker cp "$id:/opt/vaka/bin/vaka-init" /usr/local/sbin/vaka-init
-docker cp "$id:/opt/vaka/bin/nft"       /usr/local/sbin/nft
-docker rm "$id"
-```
+---
 
-### Install the vaka CLI (host)
-
-Build from source (see [Building from source](#building-from-source)) or download a release binary and place it on your `PATH`.
+## Usage
 
 ### Write a vaka.yaml
 
-Create `vaka.yaml` alongside `docker-compose.yaml`:
+Create `vaka.yaml` in the same directory as `docker-compose.yaml`. Each key under `services` must match a service name in your compose file.
 
 ```yaml
 apiVersion: vaka.dev/v1alpha1
@@ -209,7 +184,7 @@ services:
         defaultAction: reject
         block_metadata: true
         accept:
-          - dns: {}                          # DNS on resolv.conf servers
+          - dns: {}                        # allow DNS to resolv.conf servers
           - proto: tcp
             to: [api.openai.com]
             ports: [443]
@@ -224,15 +199,24 @@ services:
 
 ### Run
 
+Use `vaka up` wherever you would use `docker compose up`. All compose flags are passed through:
+
 ```bash
-vaka up           # instead of docker compose up
-vaka up --build   # pass any docker compose flags through
-vaka run llm-gateway bash   # injection path for run too
-vaka logs -f      # passthrough — identical to docker compose logs -f
-vaka down         # passthrough
+vaka up               # start with policy enforcement
+vaka up --build -d    # build images first, then start detached
+vaka run llm-gateway bash    # policy is enforced for run too
 ```
 
-`vaka` is a drop-in replacement for `docker compose`. Global flags (`-f`, `-p`, `--profile`) work identically:
+Commands that do not need policy injection are forwarded to `docker compose` verbatim:
+
+```bash
+vaka logs -f llm-gateway
+vaka exec llm-gateway bash
+vaka down --volumes
+vaka ps
+```
+
+vaka is a drop-in replacement for `docker compose`. Compose global flags work identically:
 
 ```bash
 vaka -f prod.yaml up --build -d
@@ -241,24 +225,26 @@ vaka --vaka-file policies/prod.yaml -f prod.yaml up
 
 ### Validate before deploying
 
+Check that `vaka.yaml` is valid before running containers:
+
 ```bash
-vaka validate                               # checks vaka.yaml only
-vaka validate --compose docker-compose.yaml # also cross-checks service names and network_mode
+vaka validate                                # policy only
+vaka validate --compose docker-compose.yaml  # cross-check service names and network_mode
 ```
 
-### Preview the nft ruleset for a service
+### Preview the firewall rules for a service
 
 ```bash
 vaka show llm-gateway
 ```
 
-Prints the nft ruleset that would be applied inside the container (without DNS resolution — hostnames shown as comments).
+Prints the nft ruleset that would be loaded inside the container. Hostnames are shown as comments rather than being resolved, so this works without network access.
 
 ---
 
 ## Configuration reference
 
-### vaka.yaml structure
+### Full schema
 
 ```yaml
 apiVersion: vaka.dev/v1alpha1
@@ -268,12 +254,12 @@ services:
     network:
       egress:
         defaultAction: reject    # accept | reject | drop  (default: reject)
-        block_metadata: false    # block cloud metadata endpoint (169.254.169.254 / fd00::ec2:254)
+        block_metadata: false    # drops traffic to 169.254.169.254 and fd00::ec2:254
         accept: [<rule>, ...]
         reject: [<rule>, ...]
         drop:   [<rule>, ...]
     runtime:
-      dropCaps: [NET_RAW, SYS_ADMIN]   # additional capabilities to drop
+      dropCaps: [NET_RAW, SYS_ADMIN]
       runAs:
         uid: 1000
         gid: 1000
@@ -283,74 +269,77 @@ services:
 
 ### Rule types
 
-**DNS shorthand** — allows UDP/TCP port 53 to the servers in `/etc/resolv.conf`:
+**DNS shorthand** permits UDP and TCP port 53 to the servers listed in `/etc/resolv.conf`:
 
 ```yaml
 - dns: {}
 ```
 
-Override the DNS servers (useful in scratch containers without `/etc/resolv.conf`):
+To specify DNS servers explicitly, useful in minimal images that have no `/etc/resolv.conf`:
 
 ```yaml
 - dns:
     servers: [1.1.1.1, 8.8.8.8]
 ```
 
-**Address + port rule** — allows/rejects/drops traffic to specific hosts and ports:
+**Address and port rule** permits or blocks traffic to specific hosts and ports:
 
 ```yaml
 - proto: tcp
   to:
-    - api.example.com          # hostname (resolved at container start)
-    - 10.0.0.0/8               # CIDR
-    - 192.168.1.1              # literal IP
+    - api.example.com     # hostname resolved at container start
+    - 10.0.0.0/8          # CIDR
+    - 192.168.1.1         # literal IP
   ports:
     - 443
-    - "8080-8090"              # port range
+    - "8080-8090"         # port range
 ```
 
 `proto` is required when `ports` are specified. Valid protocols: `tcp`, `udp`, `icmp`, `icmpv6`.
 
-**Protocol-only rule** — matches all traffic of a given protocol regardless of destination:
+**Protocol-only rule** matches all traffic of a given protocol regardless of destination:
+
+```yaml
+- proto: udp
+```
+
+**ICMP type filter** matches a specific ICMP message type:
 
 ```yaml
 - proto: icmp
+  type: echo-request    # or a numeric code: type: 8
 ```
 
-**ICMP type filter**:
+Named ICMP types: `echo-request`, `echo-reply`, `destination-unreachable`, `time-exceeded`, `redirect`, `parameter-problem`, `timestamp-request`, `timestamp-reply`.
 
-```yaml
-- proto: icmp
-  type: echo-request    # or an integer: type: 8
-```
-
-Named ICMP types: `echo-request`, `echo-reply`, `destination-unreachable`, `time-exceeded`, `redirect`, `parameter-problem`, `timestamp-request`, `timestamp-reply`, and ICMPv6 types: `nd-neighbor-solicit`, `nd-neighbor-advert`, `nd-router-solicit`, `nd-router-advert`, `mld-listener-query`, `mld-listener-report`.
+Named ICMPv6 types: `nd-neighbor-solicit`, `nd-neighbor-advert`, `nd-router-solicit`, `nd-router-advert`, `mld-listener-query`, `mld-listener-report`.
 
 ### defaultAction
 
 | Value | Behaviour |
 |-------|-----------|
-| `reject` | Unmatched packets get a TCP RST or ICMP port-unreachable. The application sees a connection refused immediately. **(default)** |
-| `drop` | Unmatched packets are silently discarded. The application times out. |
-| `accept` | Unmatched packets are allowed. Use with `drop`/`reject` lists to block specific destinations. **Emits a warning.** |
+| `reject` | Unmatched packets receive a TCP RST or ICMP port-unreachable. The application sees a connection refused immediately. **(default)** |
+| `drop` | Unmatched packets are silently discarded. The application waits until it times out. |
+| `accept` | Unmatched packets are allowed through. Use the `drop` or `reject` lists to block specific destinations. Emits a warning. |
 
 ### block_metadata
 
-When `true`, drops all traffic to the cloud instance metadata endpoints:
-- IPv4: `169.254.169.254` (AWS, GCP, Azure, DigitalOcean, …)
+When set to `true`, drops all traffic to cloud instance metadata endpoints before any other rules are evaluated:
+
+- IPv4: `169.254.169.254` (AWS, GCP, Azure, DigitalOcean and others)
 - IPv6: `fd00::ec2:254`
 
-Recommended for any container that should not have access to cloud credentials via IMDS.
+Recommended for any container that should not have access to cloud credentials through IMDS.
 
 ### runtime.dropCaps
 
-Capabilities to drop after the firewall is applied. Short-form names (`NET_RAW`) and prefixed names (`CAP_NET_RAW`) are both accepted.
+Linux capabilities to drop after the firewall is applied. Both short-form names (`NET_RAW`) and prefixed names (`CAP_NET_RAW`) are accepted.
 
-vaka automatically adds `NET_ADMIN` to `cap_add` in the compose override so nft can install the firewall, then (if `NET_ADMIN` is in `dropCaps`) drops it before execve-ing the application. To keep `NET_ADMIN` in the application: omit it from `dropCaps`.
+vaka temporarily grants `NET_ADMIN` so that `vaka-init` can load the nftables rules. Once the firewall is in place, vaka-init drops `NET_ADMIN` along with any other capabilities you list here, before the application process starts. To keep `NET_ADMIN` available to the application, simply omit it from `dropCaps`.
 
 ### runtime.runAs
 
-Switches UID and GID before execve. `setresgid` is called before `setresuid` (required by POSIX). The kernel automatically clears Effective and Permitted capabilities on the `0 → nonzero` UID transition.
+Switches UID and GID before execve-ing the application. `setresgid` is called before `setresuid` as required by POSIX. The kernel clears Effective and Permitted capabilities automatically on the transition from UID 0 to a non-zero UID.
 
 ---
 
@@ -358,7 +347,7 @@ Switches UID and GID before execve. `setresgid` is called before `setresuid` (re
 
 ### `vaka up`
 
-Validates `vaka.yaml`, generates a compose override in memory, and runs `docker compose up` with the override piped via stdin. All `docker compose up` flags are passed through.
+Validates `vaka.yaml`, generates a compose override in memory, and starts the stack with the override piped via stdin. All `docker compose up` flags are passed through.
 
 ```
 vaka [--vaka-file vaka.yaml] up [compose-flags...]
@@ -374,7 +363,7 @@ vaka [--vaka-file vaka.yaml] run [compose-flags...] <service> [command...]
 
 ### `vaka validate`
 
-Parses and validates `vaka.yaml`. Optionally cross-checks service names against `docker-compose.yaml` and enforces that no service uses `network_mode: host`.
+Parses and validates `vaka.yaml`. Pass `--compose` to also cross-check service names against `docker-compose.yaml` and enforce that no service uses `network_mode: host`.
 
 ```
 vaka validate [-f vaka.yaml] [--compose docker-compose.yaml]
@@ -382,7 +371,7 @@ vaka validate [-f vaka.yaml] [--compose docker-compose.yaml]
 
 ### `vaka show <service>`
 
-Prints the nft ruleset that would be loaded inside the named service's container. Hostnames in `to:` lists appear as comments (`# hostname`) rather than being resolved.
+Prints the nft ruleset that would be loaded inside the named service's container. Hostnames in `to:` lists appear as comments rather than resolved IPs, so no network access is needed.
 
 ```
 vaka show [-f vaka.yaml] <service>
@@ -390,12 +379,12 @@ vaka show [-f vaka.yaml] <service>
 
 ### Passthrough commands
 
-Any subcommand not listed above (`logs`, `down`, `exec`, `build`, `pull`, `push`, `ps`, `restart`, `stop`, `start`, `attach`, …) is forwarded verbatim to `docker compose`:
+Any subcommand not listed above is forwarded verbatim to `docker compose`:
 
 ```bash
-vaka logs -f llm-gateway       # → docker compose logs -f llm-gateway
-vaka exec llm-gateway bash     # → docker compose exec llm-gateway bash
-vaka down --volumes            # → docker compose down --volumes
+vaka logs -f llm-gateway       # docker compose logs -f llm-gateway
+vaka exec llm-gateway bash     # docker compose exec llm-gateway bash
+vaka down --volumes            # docker compose down --volumes
 ```
 
 ### Global flags
@@ -404,7 +393,21 @@ vaka down --volumes            # → docker compose down --volumes
 |------|---------|-------------|
 | `--vaka-file` | `vaka.yaml` | Path to the vaka policy file |
 
-All Docker Compose global flags (`-f`, `-p`, `--profile`, `--env-file`, `--project-directory`, `--context`, …) are passed through unchanged.
+All Docker Compose global flags (`-f`, `-p`, `--profile`, `--env-file`, `--project-directory`, `--context` and others) are passed through unchanged.
+
+---
+
+## Security model
+
+vaka loads egress firewall rules into the kernel nftables subsystem before the application binary starts. The application cannot bypass or modify those rules without `CAP_NET_ADMIN`. vaka-init drops `NET_ADMIN` before execve, so the running application does not hold that capability.
+
+Ingress traffic is not modified. Containers remain reachable on their published ports.
+
+Traffic between containers in the same compose project is not covered by vaka. Containers on the same bridge network can reach each other regardless of egress policy. Use Docker network segmentation or service-specific firewall rules if you need container-to-container isolation.
+
+Containers using `network_mode: host` share the host network namespace and cannot be isolated per-container. vaka rejects these at validation time.
+
+vaka is designed to contain well-behaved but potentially over-reaching software: AI agents calling unexpected APIs, vendor tools phoning home, build environments with broad access. It is not designed to contain actively hostile root-level processes that might exploit kernel vulnerabilities to bypass nftables. For that threat model, enforce isolation at the hypervisor or host network layer instead.
 
 ---
 
@@ -412,9 +415,9 @@ All Docker Compose global flags (`-f`, `-p`, `--profile`, `--env-file`, `--proje
 
 ### Requirements
 
-- Go 1.25+
-- Docker (for building the `emsi/vaka-init` image)
-- Linux (for `cmd/vaka-init` — the init binary has a `//go:build linux` constraint)
+- Go 1.25 or later
+- Linux (the `vaka-init` binary has a `//go:build linux` constraint)
+- Docker with Compose v2 (to build the container image)
 
 ### Build the vaka CLI
 
@@ -430,37 +433,16 @@ CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o vaka-init ./cmd/
 sudo mv vaka-init /usr/local/sbin/vaka-init
 ```
 
-### Build the emsi/vaka-init Docker image
+### Build the emsi/vaka-init container image
 
 ```bash
-docker build -f docker/init/Dockerfile -t emsi/vaka-init:dev .
+docker build -f docker/init/Dockerfile -t emsi/vaka-init:0.1.0 .
 ```
 
-The multi-stage build:
-1. Pulls `emsi/nft-static:1.1.6` for the static `nft` binary (see [emsi/nft-static](nft/README.md))
-2. Builds `vaka-init` with `CGO_ENABLED=0` in `golang:1.25-alpine`
-3. Produces a `scratch` final image containing exactly two binaries
+The multi-stage build pulls the static `nft` binary from `emsi/nft-static:1.1.6` (see [nft/README.md](nft/README.md)), compiles `vaka-init` with `CGO_ENABLED=0` inside `golang:1.25-alpine`, and produces a `scratch` final image containing exactly those two binaries.
 
-### Run tests
+### Run the test suite
 
 ```bash
 go test ./...
 ```
-
----
-
-## Security model
-
-**What vaka enforces:**
-
-- Egress firewall rules are loaded into the kernel nftables subsystem before the application binary starts. The application cannot bypass or modify them without `CAP_NET_ADMIN`.
-- vaka drops `CAP_NET_ADMIN` (and any other declared caps) before execve-ing the application, so the application cannot modify its own firewall rules.
-- Ingress is not touched — containers remain reachable on their published ports.
-
-**What vaka does not enforce:**
-
-- Ingress traffic (use Docker's network isolation for that).
-- Traffic from other containers in the same compose project (they share a bridge network by default — use Docker network segmentation or service-specific firewall rules for container-to-container isolation).
-- `network_mode: host` containers — vaka rejects these at validation time because the host network namespace cannot be safely isolated per-container.
-
-**Threat model note:** vaka is designed to contain well-behaved but potentially over-reaching software (AI agents calling unexpected APIs, vendor tools phoning home). It is not designed to contain actively hostile root-level processes that might exploit kernel vulnerabilities to bypass nftables. For that threat model, use a separate network namespace at the hypervisor or host network layer.
