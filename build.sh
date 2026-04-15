@@ -80,6 +80,7 @@ NFPM_IMAGE="${NFPM_IMAGE:-ghcr.io/goreleaser/nfpm:latest}"
 NFT_RELEASE_TAG="${NFT_IMAGE}:${NFTABLES_VERSION}"
 NFT_ARCH_TAG="${NFT_IMAGE}:${NFTABLES_VERSION}-${NATIVE_ARCH}"
 RELEASE_TAG="${INIT_IMAGE}:${VERSION}"
+ARCH_RELEASE_TAG="${INIT_IMAGE}:${VERSION}-${NATIVE_ARCH}"
 LATEST_TAG="${INIT_IMAGE}:latest"
 
 mkdir -p dist
@@ -230,6 +231,7 @@ docker build \
     --build-arg "VERSION=${VERSION}" \
     --build-arg "NFTABLES_VERSION=${NFTABLES_VERSION}" \
     --tag "${RELEASE_TAG}" \
+    --tag "${ARCH_RELEASE_TAG}" \
     --tag "${LATEST_TAG}" \
     "${ctx}"
 
@@ -331,6 +333,7 @@ echo "  ${NFT_RELEASE_TAG}"
 echo "  ${NFT_ARCH_TAG}"
 echo "  ${NFT_IMAGE}:latest"
 echo "  ${RELEASE_TAG}"
+echo "  ${ARCH_RELEASE_TAG}"
 echo "  ${LATEST_TAG}"
 echo ""
 echo "To release:"
@@ -339,4 +342,5 @@ echo "  git push origin v${PKG_VERSION}"
 echo "  docker push ${NFT_RELEASE_TAG}"
 echo "  docker push ${NFT_ARCH_TAG}"
 echo "  docker push ${RELEASE_TAG}"
+echo "  docker push ${ARCH_RELEASE_TAG}"
 echo "  docker push ${LATEST_TAG}"
