@@ -86,6 +86,13 @@ fi
 VERSION="$(git describe --tags --always --dirty 2>/dev/null || echo "dev")"
 PKG_VERSION="${VERSION#v}"
 
+if [[ "${DO_PUSH}" == "true" || "${DO_MANIFEST_ONLY}" == "true" ]] && \
+   [[ "${VERSION}" == *"-dirty" ]]; then
+    printf 'ERROR: Cannot push with a dirty working tree (version: %s).\n' "${VERSION}" >&2
+    printf 'Commit or stash your changes first.\n' >&2
+    exit 1
+fi
+
 # ── Native architecture ───────────────────────────────────────────────────────
 NATIVE_ARCH="$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')"
 
