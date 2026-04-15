@@ -139,7 +139,7 @@ func (i *ICMPSpec) UnmarshalYAML(value *yaml.Node) error {
 }
 
 // NftString returns the nft-ready type token.
-func (i *ICMPSpec) NftString() string {
+func (i ICMPSpec) NftString() string {
 	if i.IsNum {
 		return strconv.Itoa(i.Num)
 	}
