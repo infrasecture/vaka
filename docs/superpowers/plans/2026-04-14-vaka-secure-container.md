@@ -2527,7 +2527,7 @@ func newValidateCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVarP(&vakaFile, "file", "f", "vaka.yaml", "Path to vaka.yaml")
-	cmd.Flags().StringArrayVar(&composeFiles, "compose", []string{"docker-compose.yaml"}, "Path(s) to compose file(s); repeat for multiple")
+	cmd.Flags().StringArrayVar(&composeFiles, "compose", nil, "Path(s) to compose file(s); repeat for multiple (omit to skip compose checks)")
 	return cmd
 }
 
@@ -2548,6 +2548,9 @@ func loadAndValidate(vakaFile string, composeFiles []string) (*policy.ServicePol
 	}
 
 	// Load compose project for network_mode checks (authoritative merge via compose-go).
+	// composeFiles is empty when the caller omits --compose: skip compose checks silently.
+	// composeFiles is non-empty when the caller explicitly provides files: any loading
+	// error is a real problem (malformed YAML, missing include, etc.) and is surfaced.
 	networkModes := map[string]string{}
 	if len(composeFiles) > 0 {
 		opts, err := composecli.NewProjectOptions(composeFiles,
@@ -2555,12 +2558,15 @@ func loadAndValidate(vakaFile string, composeFiles []string) (*policy.ServicePol
 			composecli.WithOsEnv,
 			composecli.WithDotEnv,
 		)
-		if err == nil {
-			if project, err := opts.LoadProject(context.Background()); err == nil {
-				for name, svc := range project.Services {
-					networkModes[name] = svc.NetworkMode
-				}
-			}
+		if err != nil {
+			return nil, nil, fmt.Errorf("compose project options: %w", err)
+		}
+		project, err := opts.LoadProject(context.Background())
+		if err != nil {
+			return nil, nil, fmt.Errorf("load compose project: %w", err)
+		}
+		for name, svc := range project.Services {
+			networkModes[name] = svc.NetworkMode
 		}
 	}
 
@@ -2636,7 +2642,7 @@ func newShowCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVarP(&vakaFile, "file", "f", "vaka.yaml", "Path to vaka.yaml")
-	cmd.Flags().StringArrayVar(&composeFiles, "compose", []string{"docker-compose.yaml"}, "Path(s) to compose file(s); repeat for multiple")
+	cmd.Flags().StringArrayVar(&composeFiles, "compose", nil, "Path(s) to compose file(s); repeat for multiple (omit to skip compose checks)")
 	return cmd
 }
 ```
@@ -2675,10 +2681,10 @@ services:
 EOF
 ```
 
-Run validate (no docker-compose.yaml needed):
+Run validate (no --compose flag: compose checks skipped, no error):
 
 ```bash
-go run ./cmd/vaka/ validate -f /tmp/test-vaka.yaml --compose /dev/null 2>&1 || true
+go run ./cmd/vaka/ validate -f /tmp/test-vaka.yaml 2>&1 || true
 ```
 
 Expected: prints summary line for `codex`.
@@ -2686,7 +2692,7 @@ Expected: prints summary line for `codex`.
 Run show:
 
 ```bash
-go run ./cmd/vaka/ show codex -f /tmp/test-vaka.yaml --compose /dev/null
+go run ./cmd/vaka/ show codex -f /tmp/test-vaka.yaml
 ```
 
 Expected: nft ruleset with `table inet vaka`, implicit invariants, metadata block rules, `# unresolved: llm-gateway`, TCP rule for `10.20.0.0/16`, and `reject with icmpx type port-unreachable`.
@@ -2877,6 +2883,23 @@ func TestAllFileFlags(t *testing.T) {
 		assertArgv(t, want, got)
 	})
 
+	t.Run("stops at subcommand: -f after run is not a compose file", func(t *testing.T) {
+		// -f output.txt is an arg to the command being run, not a compose file.
+		args := []string{"run", "--rm", "svc", "myapp", "-f", "output.txt"}
+		got := allFileFlags(args)
+		if len(got) != 0 {
+			t.Fatalf("expected empty (stopped at subcommand), got %v", got)
+		}
+	})
+
+	t.Run("unknown value-taking global flag does not swallow subcommand", func(t *testing.T) {
+		// --ansi is a value-taking flag; its value must not be mistaken for subcommand.
+		args := []string{"--ansi", "always", "-f", "a.yaml", "up"}
+		got := allFileFlags(args)
+		want := []string{"a.yaml"}
+		assertArgv(t, want, got)
+	})
+
 	t.Run("no -f flags: empty result", func(t *testing.T) {
 		args := []string{"up", "--build"}
 		got := allFileFlags(args)
@@ -2897,6 +2920,9 @@ func TestFindSubcmd(t *testing.T) {
 		{[]string{"--profile", "myprofile", "run", "--rm", "svc"}, "run"},
 		{[]string{"--file=a.yaml", "exec", "svc", "bash"}, "exec"},
 		{[]string{"-p", "myproject", "ps"}, "ps"},
+		// --ansi and --progress take a value; their value must not be mistaken for subcommand.
+		{[]string{"--ansi", "always", "up", "--build"}, "up"},
+		{[]string{"--progress", "plain", "-f", "a.yaml", "run"}, "run"},
 		{[]string{}, ""},
 	}
 	for _, tc := range tests {
@@ -3041,8 +3067,32 @@ func injectStdinOverride(dockerArgs []string, defaults []string) []string {
 	return out
 }
 
-// allFileFlags returns all -f / --file values from args, in order.
-// Stops at --. Returns nil if no -f flags are found.
+// composeGlobalFlagsWithValue is the set of docker compose global flags that
+// consume the next token as their value. Both allFileFlags and findSubcmd use
+// this to skip value tokens when scanning for the subcommand boundary.
+//
+// Keep in sync with: docker compose --help (global options section).
+// Flags known to take a value as of Docker Compose v2:
+//   -f/--file, -p/--project-name, --profile, --env-file,
+//   --project-directory, --parallel, --context/-c, --ansi, --progress
+var composeGlobalFlagsWithValue = map[string]bool{
+	"-f": true, "--file": true,
+	"-p": true, "--project-name": true,
+	"--profile":           true,
+	"--env-file":          true,
+	"--project-directory": true,
+	"--parallel":          true,
+	"--context":           true,
+	"-c":                  true,
+	"--ansi":              true,
+	"--progress":          true,
+}
+
+// allFileFlags returns all -f / --file values from args that appear before
+// the subcommand boundary, in order. Scanning stops at -- or at the first
+// bare-word token (the subcommand); compose global flags only appear before
+// the subcommand, so any -f after it belongs to the subcommand or downstream
+// command (e.g. the command run by "docker compose run").
 func allFileFlags(args []string) []string {
 	var files []string
 	for i := 0; i < len(args); i++ {
@@ -3055,25 +3105,29 @@ func allFileFlags(args []string) []string {
 				files = append(files, args[i+1])
 				i++
 			}
-		} else if strings.HasPrefix(tok, "--file=") {
-			files = append(files, strings.TrimPrefix(tok, "--file="))
+			continue
 		}
+		if strings.HasPrefix(tok, "--file=") {
+			files = append(files, strings.TrimPrefix(tok, "--file="))
+			continue
+		}
+		// Other global flags that take a value: skip their value token.
+		if composeGlobalFlagsWithValue[tok] {
+			i++
+			continue
+		}
+		// --flag=value: no separate value token.
+		if strings.HasPrefix(tok, "--") && strings.Contains(tok, "=") {
+			continue
+		}
+		// Boolean flag.
+		if strings.HasPrefix(tok, "-") {
+			continue
+		}
+		// First bare-word token is the subcommand: stop here.
+		break
 	}
 	return files
-}
-
-// composeGlobalFlagsWithValue is the set of docker compose global flags that
-// consume the next token as their value. findSubcmd uses this to skip past
-// value tokens when scanning for the subcommand.
-var composeGlobalFlagsWithValue = map[string]bool{
-	"-f": true, "--file": true,
-	"-p": true, "--project-name": true,
-	"--profile":           true,
-	"--env-file":          true,
-	"--project-directory": true,
-	"--parallel":          true,
-	"--context":           true,
-	"-c":                  true,
 }
 
 // findSubcmd returns the first non-flag, non-value token from args (the compose
