@@ -388,6 +388,14 @@ Prints the nft ruleset that would be loaded inside the named service's container
 vaka show [-f vaka.yaml] <service>
 ```
 
+### `vaka version`
+
+Prints the version string stamped at build time.
+
+```
+vaka version
+```
+
 ### Passthrough commands
 
 Any subcommand not listed above is forwarded verbatim to `docker compose`:
