@@ -1,0 +1,41 @@
+table inet vaka {
+  chain egress {
+    type filter hook output priority 0;
+    policy accept;
+
+    # implicit invariants
+    ct state established,related accept
+    oif "lo" accept
+{{- if .BlockMetadata }}
+
+    # metadata endpoint block (block_metadata: true)
+{{- range .MetadataRanges }}
+    {{ . }} drop
+{{- end }}
+{{- end }}
+{{- if .DropRules }}
+
+    # explicit drop rules
+{{- range .DropRules }}
+    {{ . }}
+{{- end }}
+{{- end }}
+{{- if .RejectRules }}
+
+    # explicit reject rules
+{{- range .RejectRules }}
+    {{ . }}
+{{- end }}
+{{- end }}
+{{- if .AcceptRules }}
+
+    # explicit accept rules
+{{- range .AcceptRules }}
+    {{ . }}
+{{- end }}
+{{- end }}
+
+    # default action
+    {{ .DefaultVerdict }}
+  }
+}
