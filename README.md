@@ -426,7 +426,7 @@ vaka is designed to contain well-behaved but potentially over-reaching software:
 
 ### Requirements
 
-- Docker (no local Go toolchain required; the build script uses a golang container)
+- Docker with [buildx](https://docs.docker.com/build/buildx/) (no local Go toolchain required; the build script uses a golang container)
 - Linux or macOS host
 
 ### Build
@@ -492,11 +492,30 @@ Then run `./build.sh`. The script reads `git describe --tags --always` and stamp
 - the `emsi/vaka-init` OCI image label (`org.opencontainers.image.version`)
 - `.deb` and `.rpm` package metadata
 
-Publish the Docker image:
+Publish the Docker images. The build produces arch-specific staging tags locally; `--push` pushes those and assembles multi-arch manifest lists in the registry:
+
+**Single host with QEMU** (builds and pushes all arches in one step):
 
 ```bash
-docker push emsi/vaka-init:v0.1.0
-docker push emsi/vaka-init:latest
+sudo apt-get install -y qemu-user-static   # Debian/Ubuntu — one-time setup
+./build.sh --push
+```
+
+**Separate native hosts** (no QEMU needed — run each on its matching hardware):
+
+```bash
+ARCHS=amd64 ./build.sh --push   # on amd64 host
+ARCHS=arm64 ./build.sh --push   # on arm64 host
+./build.sh --manifest            # on any host after both arch pushes complete
+```
+
+Both workflows produce the same registry result:
+
+```
+emsi/nft-static:1.1.6          ← multi-arch manifest list
+emsi/nft-static:latest
+emsi/vaka-init:v0.1.0          ← multi-arch manifest list
+emsi/vaka-init:latest
 ```
 
 ### Run the test suite
