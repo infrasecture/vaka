@@ -48,13 +48,13 @@ flowchart LR
 
 ### What vaka-init does at container startup
 
-vaka-init runs as the container entrypoint before the application. It sets up the firewall, drops the capability it used to do so, optionally switches identity, and then hands off to the original binary.
+vaka-init runs as the container entrypoint before the application. It sets up the firewall, drops `NET_ADMIN` if vaka added it, optionally switches identity, and then hands off to the original binary.
 
 ```mermaid
 flowchart TB
     s(["container starts"]) --> i["vaka-init reads policy<br/>from Docker secret"]
     i --> f["resolves hostnames,<br/>loads nftables egress rules"]
-    f --> d["drops NET_ADMIN<br/>and any declared capabilities"]
+    f --> d["drops NET_ADMIN (if added by vaka)<br/>and any declared dropCaps"]
     d --> u["switches UID / GID<br/>(if runAs is configured)"]
     u --> e["execve — replaces itself<br/>with the original entrypoint"]
     e --> a(["application runs<br/>under enforced egress policy"])
@@ -403,7 +403,7 @@ All Docker Compose global flags (`-f`, `-p`, `--profile`, `--env-file`, `--proje
 
 ## Security model
 
-vaka loads egress firewall rules into the kernel nftables subsystem before the application binary starts. The application cannot bypass or modify those rules without `CAP_NET_ADMIN`. vaka-init drops `NET_ADMIN` before execve, so the running application does not hold that capability.
+vaka loads egress firewall rules into the kernel nftables subsystem before the application binary starts. The application cannot bypass or modify those rules without `CAP_NET_ADMIN`. vaka adds `NET_ADMIN` to the container so that vaka-init can load the nftables rules, then drops it before execve — so the running application does not hold that capability. If `NET_ADMIN` was already present in the service's `cap_add` before vaka ran, vaka treats that as intentional and leaves it in place.
 
 Ingress traffic is not modified. Containers remain reachable on their published ports.
 
