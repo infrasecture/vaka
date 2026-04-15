@@ -64,7 +64,9 @@ func BuildOverride(entries []ServiceEntry) (string, error) {
 
 		// vaka-init replaces the entrypoint; the original entrypoint+command
 		// is passed as arguments after "--".
-		cmd := append(e.Entrypoint, e.Command...)
+		cmd := make([]string, 0, len(e.Entrypoint)+len(e.Command))
+		cmd = append(cmd, e.Entrypoint...)
+		cmd = append(cmd, e.Command...)
 
 		svc := serviceOverride{
 			Entrypoint: []string{"vaka-init", "--"},
