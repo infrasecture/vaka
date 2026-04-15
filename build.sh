@@ -13,7 +13,8 @@
 #   ARCHS="amd64" ./build.sh    restrict to one architecture
 #
 # Multi-arch publishing — single host (QEMU handles foreign-arch nft C build):
-#   docker run --rm --privileged tonistiigi/binfmt --install all
+#   sudo apt-get install -y qemu-user-static   # Debian/Ubuntu
+#   # or: docker run --rm --privileged tonistiigi/binfmt --install all
 #   ./build.sh --push
 #
 # Multi-arch publishing — separate native hosts (no QEMU needed):
@@ -184,8 +185,9 @@ require_qemu_for_arch() {
     printf '\nERROR: Building the nft image for linux/%s on a %s host requires QEMU binfmt.\n' \
         "${arch}" "${NATIVE_ARCH}" >&2
     printf '\n' >&2
-    printf '  Register QEMU binfmt handlers (one-time, persists until reboot):\n' >&2
-    printf '    docker run --rm --privileged tonistiigi/binfmt --install all\n' >&2
+    printf '  Register QEMU binfmt handlers — choose one (one-time, persists until reboot):\n' >&2
+    printf '    sudo apt-get install -y qemu-user-static          # Debian/Ubuntu\n' >&2
+    printf '    docker run --rm --privileged tonistiigi/binfmt --install all  # any host with Docker\n' >&2
     printf '\n' >&2
     printf '  Or build natively on a %s host instead:\n' "${arch}" >&2
     printf '    ARCHS=%s ./build.sh\n' "${arch}" >&2
@@ -493,7 +495,8 @@ if [[ "${DO_PUSH}" == "true" ]]; then
     echo "  ${INIT_IMAGE}:latest"
 else
     echo "To publish (single host with QEMU):"
-    echo "  docker run --rm --privileged tonistiigi/binfmt --install all"
+    echo "  sudo apt-get install -y qemu-user-static   # Debian/Ubuntu"
+    echo "  # or: docker run --rm --privileged tonistiigi/binfmt --install all"
     echo "  ./build.sh --push"
     echo ""
     echo "To publish (native hosts, no QEMU needed):"
