@@ -116,11 +116,25 @@ services:
 
 func TestParseSliceSingleService(t *testing.T) {
 	p, _ := policy.Parse(strings.NewReader(minimalValid))
-	sliced := policy.SliceService(p, "codex")
+	sliced, err := policy.SliceService(p, "codex")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if len(sliced.Services) != 1 {
 		t.Errorf("len(services) = %d, want 1", len(sliced.Services))
 	}
 	if _, ok := sliced.Services["codex"]; !ok {
 		t.Error("expected service 'codex' in sliced policy")
+	}
+}
+
+func TestSliceServiceNotFound(t *testing.T) {
+	p, _ := policy.Parse(strings.NewReader(minimalValid))
+	_, err := policy.SliceService(p, "nonexistent")
+	if err == nil {
+		t.Fatal("expected error for missing service, got nil")
+	}
+	if !strings.Contains(err.Error(), "nonexistent") {
+		t.Errorf("error %q does not mention the service name", err.Error())
 	}
 }

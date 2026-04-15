@@ -35,15 +35,15 @@ func Parse(r io.Reader) (*ServicePolicy, error) {
 }
 
 // SliceService returns a new ServicePolicy containing only the named service.
-// The APIVersion and Kind fields are preserved. Panics if service not found.
-func SliceService(p *ServicePolicy, name string) *ServicePolicy {
+// The APIVersion and Kind fields are preserved. Returns an error if service not found.
+func SliceService(p *ServicePolicy, name string) (*ServicePolicy, error) {
 	svc, ok := p.Services[name]
 	if !ok {
-		panic(fmt.Sprintf("SliceService: service %q not found", name))
+		return nil, fmt.Errorf("SliceService: service %q not found", name)
 	}
 	return &ServicePolicy{
 		APIVersion: p.APIVersion,
 		Kind:       p.Kind,
 		Services:   map[string]*ServiceConfig{name: svc},
-	}
+	}, nil
 }

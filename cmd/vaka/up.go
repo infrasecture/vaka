@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"strings"
 
-	composecli "github.com/compose-spec/compose-go/v2/cli"
 	composetypes "github.com/compose-spec/compose-go/v2/types"
 	"github.com/docker/docker/client"
 	"gopkg.in/yaml.v3"
@@ -45,24 +44,12 @@ func runInjection(vakaFile string, args []string) error {
 		composeFiles = defaults
 	}
 
-	p, _, err := loadAndValidate(vakaFile, composeFiles)
+	p, project, err := loadAndValidate(vakaFile, composeFiles)
 	if err != nil {
 		return err
 	}
 
 	ctx := context.Background()
-	opts, err := composecli.NewProjectOptions(composeFiles,
-		composecli.WithWorkingDirectory("."),
-		composecli.WithOsEnv,
-		composecli.WithDotEnv,
-	)
-	if err != nil {
-		return fmt.Errorf("compose project options: %w", err)
-	}
-	project, err := opts.LoadProject(ctx)
-	if err != nil {
-		return fmt.Errorf("load compose project: %w", err)
-	}
 
 	dockerClient, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
@@ -93,7 +80,10 @@ func runInjection(vakaFile string, args []string) error {
 		}
 		fmt.Fprintf(os.Stderr, "vaka: service %s: dropCaps: %v\n", svcName, svc.Runtime.DropCaps)
 
-		sliced := policy.SliceService(p, svcName)
+		sliced, err := policy.SliceService(p, svcName)
+		if err != nil {
+			return err
+		}
 		raw, err := yaml.Marshal(sliced)
 		if err != nil {
 			return fmt.Errorf("marshal policy for %s: %w", svcName, err)

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	composecli "github.com/compose-spec/compose-go/v2/cli"
+	composetypes "github.com/compose-spec/compose-go/v2/types"
 	"github.com/spf13/cobra"
 	"vaka.dev/vaka/pkg/policy"
 )
@@ -56,8 +57,9 @@ func newValidateCmd() *cobra.Command {
 // project (all composeFiles merged via compose-go) to extract network_mode
 // per service for the host-network guard.
 // composeFiles may be empty — compose checks are skipped in that case.
-// Returns the parsed policy and a map of service name → network_mode.
-func loadAndValidate(vakaFile string, composeFiles []string) (*policy.ServicePolicy, map[string]string, error) {
+// Returns the parsed policy and the loaded compose project (nil when no
+// compose files are given).
+func loadAndValidate(vakaFile string, composeFiles []string) (*policy.ServicePolicy, *composetypes.Project, error) {
 	f, err := os.Open(vakaFile)
 	if err != nil {
 		return nil, nil, fmt.Errorf("open %s: %w", vakaFile, err)
@@ -69,9 +71,10 @@ func loadAndValidate(vakaFile string, composeFiles []string) (*policy.ServicePol
 	}
 
 	// Load compose project for network_mode checks (authoritative merge via compose-go).
-	// networkModes is nil when no compose files are given — policy.Validate treats nil
-	// as "no compose data available, skip compose-dependent checks".
+	// project is nil when no compose files are given — policy.Validate treats nil
+	// networkModes as "no compose data available, skip compose-dependent checks".
 	// When composeFiles is non-empty any loading error is surfaced immediately.
+	var project *composetypes.Project
 	var networkModes map[string]string
 	if len(composeFiles) > 0 {
 		opts, err := composecli.NewProjectOptions(composeFiles,
@@ -82,7 +85,7 @@ func loadAndValidate(vakaFile string, composeFiles []string) (*policy.ServicePol
 		if err != nil {
 			return nil, nil, fmt.Errorf("compose project options: %w", err)
 		}
-		project, err := opts.LoadProject(context.Background())
+		project, err = opts.LoadProject(context.Background())
 		if err != nil {
 			return nil, nil, fmt.Errorf("load compose project: %w", err)
 		}
@@ -110,5 +113,5 @@ func loadAndValidate(vakaFile string, composeFiles []string) (*policy.ServicePol
 		return nil, nil, fmt.Errorf("%s", strings.Join(msgs, "\n"))
 	}
 
-	return p, networkModes, nil
+	return p, project, nil
 }
