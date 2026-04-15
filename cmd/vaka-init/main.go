@@ -18,6 +18,9 @@ import (
 	"vaka.dev/vaka/pkg/policy"
 )
 
+// version is set at build time via -ldflags="-X main.version=<tag>".
+var version = "dev"
+
 const secretPath = "/run/secrets/vaka.yaml"
 const nftBin = "/usr/local/sbin/nft"
 

@@ -34,30 +34,30 @@ vaka fills that gap with nftables: a kernel firewall applied inside each contain
 
 ## How it works
 
-### The container boundary
+### How vaka starts your containers
+
+vaka reads your policy and compose files, generates a compose override in memory, and pipes it to `docker compose` via stdin. The per-service policy is delivered as a Docker secret — nothing is written to disk on the host.
 
 ```mermaid
 flowchart LR
-    subgraph host["Host"]
-        vf["vaka.yaml\n(policy)"]
-        cf["docker-compose.yaml"]
-        cli["vaka up"]
-    end
+    vf["vaka.yaml"] --> cli["vaka up"]
+    cf["docker-compose.yaml"] --> cli
+    cli -- "compose override<br/>piped via stdin<br/>no files on disk" --> dc["docker compose"]
+    dc -- "policy as<br/>Docker secret<br/>+ NET_ADMIN cap" --> c["container"]
+```
 
-    subgraph net["Container network namespace"]
-        direction TB
-        init["vaka-init\n──────────────\n1. read policy\n2. resolve DNS\n3. apply nftables\n4. drop caps\n5. execve"]
-        app["Application"]
-        fw(["nftables\negress filter"])
-    end
+### What vaka-init does at container startup
 
-    vf --> cli
-    cf --> cli
-    cli -- "compose override\n+ policy secret\n(piped via stdin,\nno files written)" --> init
-    init -- execve --> app
-    app -- outbound --> fw
-    fw -- allowed --> ok(["permitted\nendpoints"])
-    fw -- blocked --> bad(["everything\nelse"])
+vaka-init runs as the container entrypoint before the application. It sets up the firewall, drops the capability it used to do so, optionally switches identity, and then hands off to the original binary.
+
+```mermaid
+flowchart TB
+    s(["container starts"]) --> i["vaka-init reads policy<br/>from Docker secret"]
+    i --> f["resolves hostnames,<br/>loads nftables egress rules"]
+    f --> d["drops NET_ADMIN<br/>and any declared capabilities"]
+    d --> u["switches UID / GID<br/>(if runAs is configured)"]
+    u --> e["execve — replaces itself<br/>with the original entrypoint"]
+    e --> a(["application runs<br/>under enforced egress policy"])
 ```
 
 ### No files written to disk
@@ -116,16 +116,16 @@ Established connections are always accepted so in-flight requests are not droppe
 
 ### Install the vaka CLI
 
-Download the `v0.1.0` release binary for your platform and place it on your `PATH`:
+Download the binary for your platform from the [releases page](https://github.com/infrasecture/vaka/releases) and place it on your `PATH`:
 
 ```bash
 # Linux amd64
-curl -fsSL https://github.com/emsi/vaka/releases/download/v0.1.0/vaka-linux-amd64 -o vaka
+curl -fsSL https://github.com/infrasecture/vaka/releases/download/v0.1.0/vaka-linux-amd64 -o vaka
 chmod +x vaka
 sudo mv vaka /usr/local/bin/vaka
 ```
 
-Or build from source: see [Building from source](#building-from-source).
+Or build from the repository: see [Building and releasing](#building-and-releasing).
 
 ### Add vaka-init to your container image
 
@@ -411,38 +411,93 @@ vaka is designed to contain well-behaved but potentially over-reaching software:
 
 ---
 
-## Building from source
+## Building and releasing
 
 ### Requirements
 
-- Go 1.25 or later
-- Linux (the `vaka-init` binary has a `//go:build linux` constraint)
-- Docker with Compose v2 (to build the container image)
+- Docker (no local Go toolchain required; the build script uses a golang container)
+- Linux or macOS host
 
-### Build the vaka CLI
-
-```bash
-go build -o vaka ./cmd/vaka
-sudo mv vaka /usr/local/bin/vaka
-```
-
-### Build vaka-init
+### Build
 
 ```bash
-CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o vaka-init ./cmd/vaka-init
-sudo mv vaka-init /usr/local/sbin/vaka-init
+./build.sh
 ```
 
-### Build the emsi/vaka-init container image
+This builds fully static binaries for `linux/amd64` and `linux/arm64` inside a `golang:1.25-alpine` container and produces the `emsi/vaka-init` Docker image. Output lands in `./dist/`:
+
+```
+dist/vaka-linux-amd64
+dist/vaka-linux-arm64
+```
+
+The script verifies that each binary is statically linked and that the Docker image contains exactly `nft` and `vaka-init`.
+
+To build for a single architecture:
 
 ```bash
-docker build -f docker/init/Dockerfile -t emsi/vaka-init:0.1.0 .
+ARCHS=amd64 ./build.sh
 ```
 
-The multi-stage build pulls the static `nft` binary from `emsi/nft-static:1.1.6` (see [nft/README.md](nft/README.md)), compiles `vaka-init` with `CGO_ENABLED=0` inside `golang:1.25-alpine`, and produces a `scratch` final image containing exactly those two binaries.
+### Install the CLI binary
+
+```bash
+sudo install -m 0755 dist/vaka-linux-amd64 /usr/local/bin/vaka
+```
+
+### Build Linux packages
+
+```bash
+./build.sh --packages
+```
+
+Produces `.deb` and `.rpm` packages in `./dist/` using [nfpm](https://nfpm.goreleaser.com/) run in Docker (`ghcr.io/goreleaser/nfpm:v2`). Install with:
+
+```bash
+# Debian / Ubuntu
+sudo dpkg -i dist/vaka_0.1.0_amd64.deb
+
+# Fedora / RHEL / CentOS
+sudo rpm -i dist/vaka-0.1.0-1.x86_64.rpm
+```
+
+### Versioning and releasing
+
+Versions come from git tags. Tag a release and push:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+Then run `./build.sh`. The script reads `git describe --tags --always` and stamps the version into:
+
+- the `vaka version` command output (`vaka v0.1.0`)
+- the `vaka-init` binary metadata (visible via `strings`)
+- the `emsi/vaka-init` OCI image label (`org.opencontainers.image.version`)
+- `.deb` and `.rpm` package metadata
+
+Publish the Docker image:
+
+```bash
+docker push emsi/vaka-init:v0.1.0
+docker push emsi/vaka-init:latest
+```
 
 ### Run the test suite
 
+Tests run locally and require Go 1.25:
+
 ```bash
 go test ./...
+```
+
+Or inside Docker:
+
+```bash
+docker run --rm \
+    -v "$(pwd):/src:ro" -w /src \
+    -e GOWORK=off \
+    golang:1.25-alpine \
+    go test ./...
 ```
