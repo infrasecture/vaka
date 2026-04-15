@@ -6,7 +6,7 @@ package nft
 // formats them.
 type RulesetData struct {
 	BlockMetadata  bool
-	MetadataRanges []string // e.g. "ip  daddr 169.254.0.0/16"
+	MetadataRanges []string // e.g. "ip  daddr 169.254.169.254/32"
 	DropRules      []string
 	RejectRules    []string
 	AcceptRules    []string

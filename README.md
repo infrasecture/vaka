@@ -326,8 +326,12 @@ Named ICMPv6 types: `nd-neighbor-solicit`, `nd-neighbor-advert`, `nd-router-soli
 
 When set to `true`, drops all traffic to cloud instance metadata endpoints before any other rules are evaluated:
 
-- IPv4: `169.254.169.254` (AWS, GCP, Azure, DigitalOcean and others)
-- IPv6: `fd00::ec2:254`
+| Address | Provider |
+|---------|----------|
+| `169.254.169.254/32` | AWS, GCP, Azure, DigitalOcean, Hetzner, OCI, Linode |
+| `100.100.100.200/32` | Alibaba Cloud |
+| `fd00:ec2::254/128` | AWS IPv6 IMDS (Nitro instances) |
+| `fd20:ce::254/128` | GCP IPv6 IMDS (IPv6-only instances) |
 
 Recommended for any container that should not have access to cloud credentials through IMDS.
 

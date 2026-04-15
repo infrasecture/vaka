@@ -115,9 +115,10 @@ func TestGenerateBlockMetadata(t *testing.T) {
 		t.Fatalf("Generate: %v", err)
 	}
 	for _, want := range []string{
-		"ip  daddr 169.254.0.0/16 drop",
+		"ip  daddr 169.254.169.254/32 drop",
 		"ip  daddr 100.100.100.200/32 drop",
 		"ip6 daddr fd00:ec2::254/128 drop",
+		"ip6 daddr fd20:ce::254/128 drop",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("block_metadata: expected %q in output\ngot:\n%s", want, out)

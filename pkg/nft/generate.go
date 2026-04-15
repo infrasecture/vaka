@@ -18,10 +18,14 @@ var egressTmpl string
 var tmpl = template.Must(template.New("egress").Parse(egressTmpl))
 
 // metadataRanges are the cloud instance metadata endpoints to block.
+// Sources: AWS, GCP, Azure, DigitalOcean, Hetzner, OCI, Linode all use
+// 169.254.169.254/32. Alibaba Cloud uses 100.100.100.200/32. AWS and GCP
+// expose IPv6 IMDS endpoints on Nitro/IPv6-only instances.
 var metadataRanges = []string{
-	"ip  daddr 169.254.0.0/16",
-	"ip  daddr 100.100.100.200/32",
-	"ip6 daddr fd00:ec2::254/128",
+	"ip  daddr 169.254.169.254/32", // AWS, GCP, Azure, DO, Hetzner, OCI, Linode
+	"ip  daddr 100.100.100.200/32", // Alibaba Cloud
+	"ip6 daddr fd00:ec2::254/128",  // AWS IPv6 IMDS (Nitro instances)
+	"ip6 daddr fd20:ce::254/128",   // GCP IPv6 IMDS (IPv6-only instances)
 }
 
 // Generate renders the nft ruleset for e.
