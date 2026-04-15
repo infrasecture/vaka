@@ -83,7 +83,7 @@ if [[ "${DO_PUSH}" == "true" && "${DO_MANIFEST_ONLY}" == "true" ]]; then
 fi
 
 # ── Version ───────────────────────────────────────────────────────────────────
-VERSION="$(git describe --tags --always --dirty 2>/dev/null || echo "dev")"
+VERSION="${VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo "dev")}"
 PKG_VERSION="${VERSION#v}"
 
 if [[ "${DO_PUSH}" == "true" || "${DO_MANIFEST_ONLY}" == "true" ]] && \
