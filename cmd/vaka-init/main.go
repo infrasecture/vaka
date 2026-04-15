@@ -100,6 +100,10 @@ func main() {
 	if svc.Runtime != nil && svc.Runtime.RunAs != nil {
 		uid := svc.Runtime.RunAs.UID
 		gid := svc.Runtime.RunAs.GID
+		// Validate before touching syscalls.
+		if uid < 0 || gid < 0 {
+			fatal("runAs uid/gid must be non-negative, got uid=%d gid=%d", uid, gid)
+		}
 		// GID must be changed before UID.
 		if err := unix.Setresgid(gid, gid, gid); err != nil {
 			fatal("setresgid(%d): %v", gid, err)
@@ -120,15 +124,12 @@ func main() {
 	}
 }
 
-// dropCaps removes each named capability from all five sets in the correct order.
-// Order: Inheritable → Ambient (clear-all) → Bounding → Effective+Permitted.
 func dropCaps(caps []string) error {
 	capNums, err := parseCaps(caps)
 	if err != nil {
 		return err
 	}
 
-	// a. Drop from Inheritable.
 	c, err := capability.NewPid2(0)
 	if err != nil {
 		return fmt.Errorf("capability.NewPid2: %w", err)
@@ -136,47 +137,24 @@ func dropCaps(caps []string) error {
 	if err := c.Load(); err != nil {
 		return fmt.Errorf("load caps: %w", err)
 	}
+
 	for _, cap := range capNums {
 		c.Unset(capability.INHERITABLE, cap)
-	}
-	if err := c.Apply(capability.INHERITABLE); err != nil {
-		return fmt.Errorf("apply inheritable: %w", err)
+		c.Unset(capability.BOUNDS, cap)
+		c.Unset(capability.EFFECTIVE, cap)
+		c.Unset(capability.PERMITTED, cap)
 	}
 
-	// b. Clear all Ambient caps.
+	// Inheritable must be applied before clearing Ambient (kernel requires
+	// that an Ambient cap is present in Inheritable; clearing I first ensures
+	// the Ambient clear-all succeeds cleanly).
+	if err := c.Apply(capability.INHERITABLE | capability.BOUNDS | capability.EFFECTIVE | capability.PERMITTED); err != nil {
+		return fmt.Errorf("apply caps (requires CAP_SETPCAP in Effective — is CAP_SETPCAP present?): %w", err)
+	}
+
+	// Clear all Ambient caps (must be done after Inheritable is updated).
 	if err := unix.Prctl(unix.PR_CAP_AMBIENT, unix.PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0); err != nil {
 		return fmt.Errorf("prctl ambient clear: %w", err)
-	}
-
-	// c. Drop from Bounding (requires CAP_SETPCAP in E — present in default Docker caps).
-	c2, err := capability.NewPid2(0)
-	if err != nil {
-		return fmt.Errorf("capability.NewPid2: %w", err)
-	}
-	if err := c2.Load(); err != nil {
-		return fmt.Errorf("load caps: %w", err)
-	}
-	for _, cap := range capNums {
-		c2.Unset(capability.BOUNDS, cap)
-	}
-	if err := c2.Apply(capability.BOUNDS); err != nil {
-		return fmt.Errorf("apply bounds (requires CAP_SETPCAP — is cap_drop: ALL set in compose?): %w", err)
-	}
-
-	// d. Drop from Effective + Permitted.
-	c3, err := capability.NewPid2(0)
-	if err != nil {
-		return fmt.Errorf("capability.NewPid2: %w", err)
-	}
-	if err := c3.Load(); err != nil {
-		return fmt.Errorf("load caps: %w", err)
-	}
-	for _, cap := range capNums {
-		c3.Unset(capability.EFFECTIVE, cap)
-		c3.Unset(capability.PERMITTED, cap)
-	}
-	if err := c3.Apply(capability.EFFECTIVE | capability.PERMITTED); err != nil {
-		return fmt.Errorf("apply effective+permitted: %w", err)
 	}
 
 	return nil
