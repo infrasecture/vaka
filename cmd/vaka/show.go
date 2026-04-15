@@ -15,14 +15,16 @@ func newShowCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "show <service>",
 		Short: "Print the nft ruleset that would be applied for a service (dry-run)",
-		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			service := args[0]
-
 			p, _, err := loadAndValidate(vakaFile, composeFiles)
 			if err != nil {
 				return err
 			}
+
+			if len(args) == 0 {
+				return fmt.Errorf("service name required\nUsage: %s", cmd.UseLine())
+			}
+			service := args[0]
 
 			svc, ok := p.Services[service]
 			if !ok {

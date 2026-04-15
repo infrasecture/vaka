@@ -62,7 +62,7 @@ func newValidateCmd() *cobra.Command {
 func loadAndValidate(vakaFile string, composeFiles []string) (*policy.ServicePolicy, *composetypes.Project, error) {
 	f, err := os.Open(vakaFile)
 	if err != nil {
-		return nil, nil, fmt.Errorf("open %s: %w", vakaFile, err)
+		return nil, nil, err
 	}
 	p, err := policy.Parse(f)
 	f.Close()
