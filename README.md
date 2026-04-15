@@ -414,7 +414,7 @@ vaka loads egress firewall rules into the kernel nftables subsystem before the a
 
 Ingress traffic is not modified. Containers remain reachable on their published ports.
 
-Inter-container traffic is also subject to egress policy. The rules are installed on the kernel OUTPUT hook inside each container's network namespace, so all packets leaving that namespace — including those destined for other containers on the same bridge — are evaluated. If service A needs to reach service B, service B's hostname or IP range must appear in service A's egress allowlist. Docker's internal DNS resolves compose service names to container IPs, so `host: db` in the policy works as expected.
+Inter-container traffic is also subject to egress policy. The rules are installed on the kernel OUTPUT hook inside each container's network namespace, so all packets leaving that namespace — including those destined for other containers on the same bridge — are evaluated. If service A needs to reach service B, service B's hostname or IP range must appear in service A's egress allowlist. Docker's internal DNS resolves compose service names to container IPs, so `to: [db]` in the policy works as expected.
 
 Containers using `network_mode: host` share the host network namespace and cannot be isolated per-container. vaka rejects these at validation time.
 
