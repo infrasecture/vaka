@@ -48,13 +48,13 @@ flowchart LR
 
 ### What vaka-init does at container startup
 
-vaka-init runs as the container entrypoint before the application. It sets up the firewall, drops `NET_ADMIN` if vaka added it, optionally switches identity, and then hands off to the original binary.
+vaka-init runs as the container entrypoint before the application. It sets up the firewall, drops the capabilities vaka added (or an explicit `dropCaps` list if configured), optionally switches identity, and then hands off to the original binary.
 
 ```mermaid
 flowchart TB
     s(["container starts"]) --> i["vaka-init reads policy<br/>from Docker secret"]
     i --> f["resolves hostnames,<br/>loads nftables egress rules"]
-    f --> d["drops NET_ADMIN (if added by vaka)<br/>and any declared dropCaps"]
+    f --> d["drops capabilities vaka added<br/>(or explicit dropCaps list if set)"]
     d --> u["switches UID / GID<br/>(if runAs is configured)"]
     u --> e["execve — replaces itself<br/>with the original entrypoint"]
     e --> a(["application runs<br/>under enforced egress policy"])
@@ -75,7 +75,7 @@ The compose override that rewrites entrypoints and adds the secret is piped to `
 | 1 | Parse `/run/secrets/vaka.yaml` (unknown fields are errors) |
 | 2 | Resolve `dns: {}` rules and hostnames in `to:` lists to IP addresses |
 | 3 | Apply nftables ruleset atomically via `nft -f /dev/stdin` |
-| 4 | Drop capabilities listed in `dropCaps` |
+| 4 | Drop capabilities: auto-computed set vaka added, or the explicit `dropCaps` list if set |
 | 5 | `setresgid` / `setresuid` if `runAs` is configured |
 | 6 | `execve` the original application entrypoint |
 
@@ -337,9 +337,16 @@ Recommended for any container that should not have access to cloud credentials t
 
 ### runtime.dropCaps
 
-Linux capabilities to drop after the firewall is applied. Both short-form names (`NET_RAW`) and prefixed names (`CAP_NET_RAW`) are accepted.
+Controls which Linux capabilities are dropped after the firewall is applied, before `execve`. Both short-form names (`NET_RAW`) and prefixed names (`CAP_NET_RAW`) are accepted.
 
-vaka temporarily grants `NET_ADMIN` so that `vaka-init` can load the nftables rules. Once the firewall is in place, vaka-init drops `NET_ADMIN` along with any other capabilities you list here, before the application process starts. To keep `NET_ADMIN` available to the application, simply omit it from `dropCaps`.
+**Automatic behavior (no `dropCaps` in vaka.yaml):** `vaka up` adds `CAP_NET_ADMIN` to the compose override so that `vaka-init` can load the nftables ruleset. It tracks which capabilities it added on top of what the service already declares in `cap_add`. After the firewall is loaded, vaka-init drops exactly those added capabilities — for most services that means `NET_ADMIN` is dropped automatically, and the application process never holds it. If `NET_ADMIN` was already present in the service's `cap_add` before vaka ran, vaka treats that as intentional and leaves it in place.
+
+**Explicit override (`dropCaps` set in vaka.yaml):** The list you provide replaces the auto-computed set entirely — it is not additive. You are responsible for the complete drop list. If you want `NET_ADMIN` dropped but also need to drop other capabilities, include all of them:
+
+```yaml
+runtime:
+  dropCaps: [NET_ADMIN, NET_RAW, SYS_PTRACE]
+```
 
 ### runtime.runAs
 
@@ -403,7 +410,7 @@ All Docker Compose global flags (`-f`, `-p`, `--profile`, `--env-file`, `--proje
 
 ## Security model
 
-vaka loads egress firewall rules into the kernel nftables subsystem before the application binary starts. The application cannot bypass or modify those rules without `CAP_NET_ADMIN`. vaka adds `NET_ADMIN` to the container so that vaka-init can load the nftables rules, then drops it before execve — so the running application does not hold that capability. If `NET_ADMIN` was already present in the service's `cap_add` before vaka ran, vaka treats that as intentional and leaves it in place.
+vaka loads egress firewall rules into the kernel nftables subsystem before the application binary starts. The application cannot bypass or modify those rules without `CAP_NET_ADMIN`. vaka adds `NET_ADMIN` to the container so that vaka-init can load the nftables rules, then drops it before execve — so the running application does not hold that capability. If `NET_ADMIN` was already present in the service's `cap_add` before vaka ran, vaka treats that as intentional and leaves it in place. If `runtime.dropCaps` is set explicitly, that list replaces the auto-computed set and takes full effect instead.
 
 Ingress traffic is not modified. Containers remain reachable on their published ports.
 
@@ -428,11 +435,15 @@ vaka is designed to contain well-behaved but potentially over-reaching software:
 ./build.sh
 ```
 
-This builds fully static binaries for `linux/amd64` and `linux/arm64` inside a `golang:1.25-alpine` container and produces the `emsi/vaka-init` Docker image. Output lands in `./dist/`:
+This builds fully static binaries for `linux/amd64` and `linux/arm64` inside a `golang:1.25-alpine` container and produces arch-specific `emsi/vaka-init` Docker images. Output lands in `./dist/`:
 
 ```
 dist/vaka-linux-amd64
 dist/vaka-linux-arm64
+dist/vaka-init-linux-amd64
+dist/vaka-init-linux-arm64
+dist/nft-linux-amd64
+dist/nft-linux-arm64
 ```
 
 The script verifies that each binary is statically linked and that the Docker image contains exactly `nft` and `vaka-init`.
@@ -455,7 +466,7 @@ sudo install -m 0755 dist/vaka-linux-amd64 /usr/local/bin/vaka
 ./build.sh --packages
 ```
 
-Produces `.deb` and `.rpm` packages in `./dist/` using [nfpm](https://nfpm.goreleaser.com/) run in Docker (`ghcr.io/goreleaser/nfpm:v2`). Install with:
+Produces `.deb` and `.rpm` packages in `./dist/` using [nfpm](https://nfpm.goreleaser.com/) run in Docker (`ghcr.io/goreleaser/nfpm:latest`). Install with:
 
 ```bash
 # Debian / Ubuntu
