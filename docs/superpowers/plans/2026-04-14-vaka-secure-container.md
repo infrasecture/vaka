@@ -33,9 +33,9 @@
 | `cmd/vaka/main.go` | Root cobra command + `version` subcommand |
 | `cmd/vaka/validate.go` | `vaka validate`: parse vaka.yaml + docker-compose.yaml, run validation, print summary |
 | `cmd/vaka/show.go` | `vaka show <service>`: parse + validate, render nft preview without DNS resolution |
-| `cmd/vaka/inject.go` | `discoverComposeFiles()`, `extractVakaFlags()`, `injectStdinOverride()`: argv manipulation for injection path |
-| `cmd/vaka/inject_test.go` | Table-driven tests for injection algorithm: last-`-f`, no-`-f`, `--file=value`, `--` boundary |
-| `cmd/vaka/up.go` | `vaka up` / `vaka run`: Docker SDK entrypoint lookup, cap delta, compose override, dispatch via injection path; pure passthrough for all other subcommands |
+| `cmd/vaka/inject.go` | `extractVakaFlags`, `findSubcmd`, `discoverComposeFiles`, `injectStdinOverride`: all argv manipulation for injection path |
+| `cmd/vaka/inject_test.go` | Table-driven tests for injection algorithm: last-`-f`, no-`-f`, `--file=value`, `--` boundary; `TestFindSubcmd` |
+| `cmd/vaka/up.go` | `runInjection(vakaFile, args)`: load+validate, entrypoint/cap resolution, compose override, inject `-f -` into argv; `firstFileFlag`, `resolveEntrypoint`, `computeCapDelta`, `decodeStringSliceNode` |
 | `docker/init/Dockerfile` | Multi-stage: `emsi/nft-static` + Go builder → `scratch` image with exactly two binaries |
 
 ---
@@ -2455,7 +2455,6 @@ func main() {
 	rootCmd.AddCommand(
 		newValidateCmd(),
 		newShowCmd(),
-		newUpCmd(),
 		&cobra.Command{
 			Use:   "version",
 			Short: "Print version",
@@ -2470,6 +2469,8 @@ func main() {
 	}
 }
 ```
+
+Note: This is a compilable stub for Task 10. The full manual-dispatch `main()` (routing `up`/`run` to the injection path and everything else to pure passthrough) is written in Task 11 Step 6 after `inject.go` and `up.go` exist.
 
 - [ ] **Step 2: Write validate.go**
 
@@ -2715,28 +2716,59 @@ git commit -m "feat(vaka): validate and show subcommands"
 
 #### Background: argv flow
 
-`vaka` is invoked exactly like `docker compose`:
+`vaka` is a drop-in replacement for `docker compose`. Argument convention is identical:
 
 ```
 vaka [GLOBAL-FLAGS] SUBCOMMAND [SUBCOMMAND-FLAGS]
 ```
 
-For `up` and `run`, vaka must inject `-f -` (stdin override) as the **last** `-f` so Docker Compose merges the vaka override on top of all other files. For every other subcommand (`exec`, `build`, `attach`, ...) vaka is a 1:1 passthrough: just prepend `"compose"` and exec `docker`.
+Docker Compose global flags (`-f`/`--file`, `-p`/`--project-name`, `--profile`, etc.) appear **before** the subcommand. Cobra cannot handle this at the root level — it does not know `-f`, so `vaka -f a.yaml up` would fail with "unknown flag: -f".
 
-**Injection algorithm** (applied to args after stripping `--vaka-*` flags):
+**Architecture:** `main()` dispatches argv manually:
 
-1. Build `dockerArgs = ["compose"] + remainingArgs`
+1. `extractVakaFlags(raw)` — strips `--vaka-file <val>` from `os.Args[1:]`; returns vaka flags map and cleaned `rest`.
+2. `findSubcmd(rest)` — scans `rest` for the first non-flag, non-value token. Uses `composeGlobalFlagsWithValue` to skip value tokens for known compose global flags.
+3. Switch on subcommand:
+   - `"validate"`, `"show"`, `"version"`, `""` → `rootCmd.SetArgs(rest); rootCmd.Execute()`
+   - `"up"`, `"run"` → `runInjection(vakaFile, rest)`
+   - anything else → pure passthrough: `exec docker ["compose"] + rest`
+
+**Known compose global flags that take a value** (for `findSubcmd` to skip their values):
+`-f`/`--file`, `-p`/`--project-name`, `--profile`, `--env-file`, `--project-directory`, `--parallel`, `--context`/`-c`
+
+**Injection algorithm** (inside `runInjection(vakaFile, args)`):
+
+1. `dockerArgs = ["compose"] + args` (args already contains global flags and subcommand at the correct positions)
 2. Scan `dockerArgs[1:]` left to right, stop at `--`:
    - `-f VALUE` or `--file VALUE` (two tokens) → track position of `VALUE` token
    - `--file=VALUE` (one token) → track position of this token
-3. If any `-f` found: insert `["-f", "-"]` at `lastFilePos+1`
-4. If none found: discover default compose files on disk, insert `["-f", file…, "-f", "-"]` at index 1
+3. If any `-f` found: insert `["-f", "-"]` after the last file value token
+4. If none found: `discoverComposeFiles(".")` → if files exist insert `-f <file>… -f -` at index 1; if no files found → return error "no compose configuration file found in current directory"
 
 **Default compose file discovery** (mirrors Docker Compose behaviour):
 
 - Primary: first of `docker-compose.yaml`, `docker-compose.yml` that exists
 - Override: first of `docker-compose.override.yaml`, `docker-compose.override.yml` that exists
 - Insert all found (primary first, then override) before `-f -`
+
+**Correct examples:**
+
+```
+vaka -f a.yaml -f b.yaml up --build
+→ docker compose -f a.yaml -f b.yaml -f - up --build
+
+vaka --vaka-file vaka.yaml --file a.yaml -f b.yaml run -ti --rm svc bash
+→ docker compose --file a.yaml -f b.yaml -f - run -ti --rm svc bash
+
+vaka up   (docker-compose.yaml exists)
+→ docker compose -f ./docker-compose.yaml -f - up
+
+vaka up   (no defaults found)
+→ ERROR: no compose configuration file found in current directory
+
+vaka -f dupa.yaml exec svc bash
+→ docker compose -f dupa.yaml exec svc bash   (pure passthrough)
+```
 
 - [ ] **Step 1: Write inject_test.go (failing)**
 
@@ -2786,22 +2818,19 @@ func TestInjectStdinOverride(t *testing.T) {
 		assertArgv(t, want, got)
 	})
 
-	t.Run("no -f and no defaults: inject only -f -", func(t *testing.T) {
-		args := []string{"compose", "up"}
-		got := injectStdinOverride(args, nil)
-		want := []string{"compose", "-f", "-", "up"}
-		assertArgv(t, want, got)
-	})
+	// NOTE: The "no -f and no defaults" case is not tested here.
+	// runInjection returns an error before calling injectStdinOverride when
+	// no -f flags are present and discoverComposeFiles returns nothing.
 }
 
 func TestExtractVakaFlags(t *testing.T) {
-	t.Run("extracts --vaka-file and removes from argv", func(t *testing.T) {
-		raw := []string{"up", "--build", "--vaka-file", "vaka.yaml", "--detach"}
+	t.Run("extracts --vaka-file and leaves compose global flags in rest", func(t *testing.T) {
+		raw := []string{"--vaka-file", "vaka.yaml", "-f", "a.yaml", "up", "--build"}
 		flags, rest := extractVakaFlags(raw)
 		if flags["--vaka-file"] != "vaka.yaml" {
 			t.Fatalf("expected vaka-file=vaka.yaml, got %v", flags)
 		}
-		want := []string{"up", "--build", "--detach"}
+		want := []string{"-f", "a.yaml", "up", "--build"}
 		assertArgv(t, want, rest)
 	})
 
@@ -2840,6 +2869,27 @@ func TestDiscoverComposeFiles(t *testing.T) {
 	})
 }
 
+func TestFindSubcmd(t *testing.T) {
+	tests := []struct {
+		args []string
+		want string
+	}{
+		{[]string{"up", "--build"}, "up"},
+		{[]string{"-f", "a.yaml", "up", "--build"}, "up"},
+		{[]string{"--file", "a.yaml", "-f", "b.yaml", "run", "--rm", "svc"}, "run"},
+		{[]string{"--profile", "myprofile", "run", "--rm", "svc"}, "run"},
+		{[]string{"--file=a.yaml", "exec", "svc", "bash"}, "exec"},
+		{[]string{"-p", "myproject", "ps"}, "ps"},
+		{[]string{}, ""},
+	}
+	for _, tc := range tests {
+		got := findSubcmd(tc.args)
+		if got != tc.want {
+			t.Errorf("findSubcmd(%v) = %q, want %q", tc.args, got, tc.want)
+		}
+	}
+}
+
 func assertArgv(t *testing.T, want, got []string) {
 	t.Helper()
 	if len(want) != len(got) {
@@ -2856,10 +2906,10 @@ func assertArgv(t *testing.T, want, got []string) {
 - [ ] **Step 2: Run the test to confirm it fails**
 
 ```bash
-cd /home/emsi/git/vaka && go test ./cmd/vaka/ -run 'TestInjectStdinOverride|TestExtractVakaFlags|TestDiscoverComposeFiles' -v 2>&1 | head -20
+cd /home/emsi/git/vaka && go test ./cmd/vaka/ -run 'TestInjectStdinOverride|TestExtractVakaFlags|TestDiscoverComposeFiles|TestFindSubcmd' -v 2>&1 | head -20
 ```
 
-Expected: compilation error — `injectStdinOverride`, `extractVakaFlags`, `discoverComposeFiles` not defined.
+Expected: compilation error — `injectStdinOverride`, `extractVakaFlags`, `discoverComposeFiles`, `findSubcmd` not defined.
 
 - [ ] **Step 3: Write inject.go**
 
@@ -2930,8 +2980,10 @@ func discoverComposeFiles(dir string) []string {
 // stdin) wins over all other compose files.
 //
 // defaults is the list of compose files to inject when the user supplied no
-// explicit -f flags (output of discoverComposeFiles). Pass nil when no
-// discovery is needed (e.g. when -f is already present).
+// explicit -f flags (output of discoverComposeFiles). Pass nil only when -f
+// flags are already present in dockerArgs. Callers must NOT pass nil defaults
+// when there are also no -f flags in dockerArgs — that case must be caught by
+// the caller and returned as an error before calling injectStdinOverride.
 func injectStdinOverride(dockerArgs []string, defaults []string) []string {
 	// Find the position of the value token belonging to the last -f/--file
 	// before any -- end-of-options marker.
@@ -2972,26 +3024,48 @@ func injectStdinOverride(dockerArgs []string, defaults []string) []string {
 	return out
 }
 
-// needsInjection reports whether the subcommand at the given position requires
-// the vaka stdin-override injection path (up, run) versus pure passthrough.
-func needsInjection(argv []string) bool {
-	for _, tok := range argv {
+// composeGlobalFlagsWithValue is the set of docker compose global flags that
+// consume the next token as their value. findSubcmd uses this to skip past
+// value tokens when scanning for the subcommand.
+var composeGlobalFlagsWithValue = map[string]bool{
+	"-f": true, "--file": true,
+	"-p": true, "--project-name": true,
+	"--profile":           true,
+	"--env-file":          true,
+	"--project-directory": true,
+	"--parallel":          true,
+	"--context":           true,
+	"-c":                  true,
+}
+
+// findSubcmd returns the first non-flag, non-value token from args (the compose
+// subcommand). Returns "" if no subcommand is found.
+func findSubcmd(args []string) string {
+	for i := 0; i < len(args); i++ {
+		tok := args[i]
 		if tok == "--" {
 			break
 		}
-		if !strings.HasPrefix(tok, "-") {
-			// First non-flag token is the subcommand.
-			return tok == "up" || tok == "run"
+		if composeGlobalFlagsWithValue[tok] {
+			i++ // skip value token
+			continue
 		}
+		if strings.HasPrefix(tok, "--") && strings.Contains(tok, "=") {
+			continue // --flag=value: no separate value token
+		}
+		if strings.HasPrefix(tok, "-") {
+			continue // boolean flag
+		}
+		return tok
 	}
-	return false
+	return ""
 }
 ```
 
 - [ ] **Step 4: Run the injection tests**
 
 ```bash
-cd /home/emsi/git/vaka && go test ./cmd/vaka/ -run 'TestInjectStdinOverride|TestExtractVakaFlags|TestDiscoverComposeFiles' -v
+cd /home/emsi/git/vaka && go test ./cmd/vaka/ -run 'TestInjectStdinOverride|TestExtractVakaFlags|TestDiscoverComposeFiles|TestFindSubcmd' -v
 ```
 
 Expected: all tests PASS.
@@ -3011,7 +3085,6 @@ import (
 	"strings"
 
 	"github.com/docker/docker/client"
-	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 	"vaka.dev/vaka/pkg/compose"
 	"vaka.dev/vaka/pkg/policy"
@@ -3027,75 +3100,19 @@ var defaultDockerCaps = map[string]bool{
 	"CAP_AUDIT_WRITE": true, "CAP_SETFCAP": true,
 }
 
-// newUpCmd returns a cobra command for "vaka up".  DisableFlagParsing is set
-// so that all flags are forwarded verbatim to docker compose via the injection
-// path.
-func newUpCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:                "up [compose-flags...]",
-		Short:              "Validate, inject vaka policy, and proxy docker compose up",
-		DisableFlagParsing: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			vakaFlags, rest := extractVakaFlags(args)
-			vakaFile := vakaFlags["--vaka-file"]
-			if vakaFile == "" {
-				vakaFile = "vaka.yaml"
-			}
-			return runInjection("up", vakaFile, rest)
-		},
-	}
-}
-
-// newRunCmd returns a cobra command for "vaka run" — identical injection logic
-// to "up".
-func newRunCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:                "run [compose-flags...]",
-		Short:              "Validate, inject vaka policy, and proxy docker compose run",
-		DisableFlagParsing: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			vakaFlags, rest := extractVakaFlags(args)
-			vakaFile := vakaFlags["--vaka-file"]
-			if vakaFile == "" {
-				vakaFile = "vaka.yaml"
-			}
-			return runInjection("run", vakaFile, rest)
-		},
-	}
-}
-
-// newPassthroughCmd creates a cobra command that forwards everything verbatim
-// to "docker compose".  Used for exec, build, attach, ps, logs, etc.
-func newPassthroughCmd(subcmd string) *cobra.Command {
-	return &cobra.Command{
-		Use:                subcmd,
-		Short:              fmt.Sprintf("Proxy docker compose %s", subcmd),
-		DisableFlagParsing: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			dockerArgs := append([]string{"compose", subcmd}, args...)
-			c := exec.Command("docker", dockerArgs...)
-			c.Stdin = os.Stdin
-			c.Stdout = os.Stdout
-			c.Stderr = os.Stderr
-			return c.Run()
-		},
-	}
-}
-
-// runInjection implements the injection path shared by "up" and "run":
-// load+validate vaka config, resolve entrypoints, compute cap deltas,
-// build compose override YAML, inject -f - into argv, exec docker.
-// subcmd is the Docker Compose subcommand ("up" or "run"); cobra consumes it
-// before passing args to RunE, so it must be re-injected explicitly.
-func runInjection(subcmd, vakaFile string, subArgs []string) error {
-	// Load vaka policy; we need any compose file listed in -f to parse
-	// service definitions. Use the first -f value if present, else default.
-	composeFile := firstFileFlag(subArgs)
+// runInjection is the injection path for "up" and "run".
+// vakaFile: path to vaka.yaml.
+// args: remaining argv after extractVakaFlags — includes global flags AND the
+// subcommand token in their original positions (e.g. ["-f","a.yaml","up","--build"]).
+func runInjection(vakaFile string, args []string) error {
+	composeFile := firstFileFlag(args)
+	var defaults []string
 	if composeFile == "" {
-		composeFile = "docker-compose.yaml"
-		if _, err := os.Stat(composeFile); os.IsNotExist(err) {
-			composeFile = "docker-compose.yml"
+		defaults = discoverComposeFiles(".")
+		if len(defaults) == 0 {
+			return fmt.Errorf("no compose configuration file found in current directory")
 		}
+		composeFile = defaults[0]
 	}
 
 	p, _, err := loadAndValidate(vakaFile, composeFile)
@@ -3167,14 +3184,9 @@ func runInjection(subcmd, vakaFile string, subArgs []string) error {
 		return fmt.Errorf("build override: %w", err)
 	}
 
-	// Build docker argv with "-f -" injected.
-	// subcmd ("up"/"run") is prepended explicitly because cobra consumed it.
-	dockerArgs := append([]string{"compose", subcmd}, subArgs...)
-	var defaults []string
-	if firstFileFlag(subArgs) == "" {
-		defaults = discoverComposeFiles(".")
-	}
-	dockerArgs = injectStdinOverride(dockerArgs, defaults)
+	// args already contains global flags + subcommand in correct positions.
+	// Prepend "compose"; injectStdinOverride inserts -f - after the last -f.
+	dockerArgs := injectStdinOverride(append([]string{"compose"}, args...), defaults)
 
 	c := exec.Command("docker", dockerArgs...)
 	c.Stdin = strings.NewReader(overrideYAML)
@@ -3263,35 +3275,99 @@ func decodeStringSliceNode(node yaml.Node) []string {
 }
 ```
 
-- [ ] **Step 6: Register newRunCmd and passthrough subcommands in main.go**
+- [ ] **Step 6: Replace main.go with manual dispatch (definitive version)**
 
-Edit `cmd/vaka/main.go` — add `newRunCmd()` and a selection of common passthrough subcommands to `rootCmd.AddCommand(...)`:
+Replace `cmd/vaka/main.go` entirely. This supersedes the Task 10 stub and wires up the manual argv dispatcher:
 
 ```go
-rootCmd.AddCommand(
-    newValidateCmd(),
-    newShowCmd(),
-    newUpCmd(),
-    newRunCmd(),
-    newPassthroughCmd("exec"),
-    newPassthroughCmd("build"),
-    newPassthroughCmd("ps"),
-    newPassthroughCmd("logs"),
-    newPassthroughCmd("down"),
-    newPassthroughCmd("attach"),
-    newPassthroughCmd("pull"),
-    newPassthroughCmd("push"),
-    newPassthroughCmd("restart"),
-    newPassthroughCmd("stop"),
-    newPassthroughCmd("start"),
-    &cobra.Command{
-        Use:   "version",
-        Short: "Print vaka version",
-        Run: func(cmd *cobra.Command, args []string) {
-            fmt.Fprintln(os.Stdout, "vaka dev")
-        },
-    },
+// cmd/vaka/main.go
+package main
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+
+	"github.com/spf13/cobra"
 )
+
+var version = "dev"
+
+var rootCmd = &cobra.Command{
+	Use:   "vaka",
+	Short: "Secure container layer for AI agentic harnesses",
+	Long: `vaka enforces nftables egress policy inside Docker containers running
+AI agentic harnesses. Run 'vaka up' instead of 'docker compose up'.`,
+	SilenceUsage: true,
+}
+
+func main() {
+	rootCmd.AddCommand(
+		newValidateCmd(),
+		newShowCmd(),
+		&cobra.Command{
+			Use:   "version",
+			Short: "Print version",
+			Run: func(cmd *cobra.Command, args []string) {
+				fmt.Println("vaka", version)
+			},
+		},
+	)
+
+	raw := os.Args[1:]
+
+	// Step 1: Extract vaka-specific flags (--vaka-file).
+	vakaFlags, rest := extractVakaFlags(raw)
+	vakaFile := vakaFlags["--vaka-file"]
+	if vakaFile == "" {
+		vakaFile = "vaka.yaml"
+	}
+
+	// Step 2: Find the subcommand (first non-flag, non-value token).
+	subcmd := findSubcmd(rest)
+
+	// Step 3: Route.
+	switch subcmd {
+	case "validate", "show", "version", "":
+		// cobra-handled commands. SetArgs so cobra sees a clean argv
+		// (--vaka-file already stripped by extractVakaFlags).
+		rootCmd.SetArgs(rest)
+		if err := rootCmd.Execute(); err != nil {
+			os.Exit(1)
+		}
+
+	case "up", "run":
+		// Injection path: validate vaka policy and inject -f - into compose argv.
+		if err := runInjection(vakaFile, rest); err != nil {
+			fmt.Fprintln(os.Stderr, "vaka:", err)
+			os.Exit(exitCode(err))
+		}
+
+	default:
+		// Pure passthrough: prepend "compose" and exec docker verbatim.
+		c := exec.Command("docker", append([]string{"compose"}, rest...)...)
+		c.Stdin = os.Stdin
+		c.Stdout = os.Stdout
+		c.Stderr = os.Stderr
+		if err := c.Run(); err != nil {
+			os.Exit(exitCode(err))
+		}
+	}
+}
+
+// exitCode extracts the process exit code from an *exec.ExitError so that
+// vaka propagates docker's exit code faithfully.
+func exitCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode()
+	}
+	return 1
+}
 ```
 
 - [ ] **Step 7: Verify the CLI compiles**
@@ -3308,13 +3384,13 @@ Expected: exit 0.
 cd /home/emsi/git/vaka && go run ./cmd/vaka/ --help
 ```
 
-Expected: usage output listing `up`, `run`, `exec`, `build`, `validate`, `show`, `version`, and other passthrough subcommands.
+Expected: usage output listing `validate`, `show`, `version` only. `up`, `run`, `exec`, `build`, and other docker compose subcommands do **not** appear — they are handled by the manual dispatch switch, not cobra.
 
 - [ ] **Step 9: Commit**
 
 ```bash
 git add cmd/vaka/inject.go cmd/vaka/inject_test.go cmd/vaka/up.go cmd/vaka/main.go
-git commit -m "feat(vaka): injection path for up/run, pure passthrough for all other subcommands"
+git commit -m "feat(vaka): manual argv dispatch; injection for up/run; pure passthrough for all other subcommands"
 ```
 
 ---
