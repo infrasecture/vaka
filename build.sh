@@ -352,30 +352,47 @@ for ARCH in $ARCHS; do
 done
 
 # ── Phase 5: Verify native-arch image ────────────────────────────────────────
-native_init_tag="${INIT_IMAGE}:${VERSION}-${NATIVE_ARCH}"
-echo "==> Verifying ${native_init_tag}..."
-cid="$(docker create --platform "linux/${NATIVE_ARCH}" "${native_init_tag}" /opt/vaka/bin/vaka-init)"
-cleanup_cid() { docker rm -f -- "${cid}" >/dev/null 2>&1 || true; }
-trap cleanup_cid EXIT
-
-for expected in opt/vaka/bin/nft opt/vaka/bin/vaka-init; do
-    printf '    /%-39s' "${expected}"
-    # docker export produces tar entries with an optional './' prefix; strip it
-    # before matching so both './opt/...' and 'opt/...' formats are handled.
-    if docker export "${cid}" | tar -t 2>/dev/null | sed 's|^\./||' | grep -q "^${expected}$"; then
-        echo "OK"
+# Only verify when the native arch was actually built this run.
+# (e.g. ARCHS=arm64 on an amd64 host skips this — the amd64 image wasn't built)
+verify_arch="${NATIVE_ARCH}"
+if ! echo " ${ARCHS} " | grep -qF " ${verify_arch} "; then
+    # Fall back to verifying whatever single arch was requested, if only one
+    arch_count=$(echo "${ARCHS}" | wc -w)
+    if [[ "${arch_count}" -eq 1 ]]; then
+        verify_arch="${ARCHS}"
     else
-        echo "MISSING"
-        echo "ERROR: ${expected} not found in image" >&2
-        echo "--- image contents ---" >&2
-        docker export "${cid}" | tar -t 2>/dev/null | sed 's|^\./||' | grep -v '/$' >&2 || true
-        exit 1
+        echo "==> Skipping image verification (native arch ${NATIVE_ARCH} not in requested ARCHS: ${ARCHS})"
+        echo ""
+        verify_arch=""
     fi
-done
+fi
 
-docker rm -f -- "${cid}" >/dev/null 2>&1 || true
-trap - EXIT
-echo ""
+if [[ -n "${verify_arch}" ]]; then
+    verify_tag="${INIT_IMAGE}:${VERSION}-${verify_arch}"
+    echo "==> Verifying ${verify_tag}..."
+    cid="$(docker create --platform "linux/${verify_arch}" "${verify_tag}" /opt/vaka/bin/vaka-init)"
+    cleanup_cid() { docker rm -f -- "${cid}" >/dev/null 2>&1 || true; }
+    trap cleanup_cid EXIT
+
+    for expected in opt/vaka/bin/nft opt/vaka/bin/vaka-init; do
+        printf '    /%-39s' "${expected}"
+        # docker export produces tar entries with an optional './' prefix; strip it
+        # before matching so both './opt/...' and 'opt/...' formats are handled.
+        if docker export "${cid}" | tar -t 2>/dev/null | sed 's|^\./||' | grep -q "^${expected}$"; then
+            echo "OK"
+        else
+            echo "MISSING"
+            echo "ERROR: ${expected} not found in image" >&2
+            echo "--- image contents ---" >&2
+            docker export "${cid}" | tar -t 2>/dev/null | sed 's|^\./||' | grep -v '/$' >&2 || true
+            exit 1
+        fi
+    done
+
+    docker rm -f -- "${cid}" >/dev/null 2>&1 || true
+    trap - EXIT
+    echo ""
+fi
 
 # ── Phase 6: Linux packages (.deb / .rpm) ────────────────────────────────────
 if [[ "${BUILD_PACKAGES}" == "true" ]]; then
