@@ -35,7 +35,7 @@
 | `cmd/vaka/show.go` | `vaka show <service>`: parse + validate, render nft preview without DNS resolution |
 | `cmd/vaka/inject.go` | `extractVakaFlags`, `findSubcmd`, `discoverComposeFiles`, `injectStdinOverride`: all argv manipulation for injection path |
 | `cmd/vaka/inject_test.go` | Table-driven tests for injection algorithm: last-`-f`, no-`-f`, `--file=value`, `--` boundary; `TestFindSubcmd` |
-| `cmd/vaka/up.go` | `runInjection(vakaFile, args)`: load+validate, entrypoint/cap resolution, compose override, inject `-f -` into argv; `firstFileFlag`, `resolveEntrypoint`, `computeCapDelta`, `decodeStringSliceNode` |
+| `cmd/vaka/up.go` | `runInjection(vakaFile, args)`: load+validate, compose-go multi-file merge, entrypoint/cap resolution, compose override, inject `-f -` into argv; `resolveEntrypoint`, `computeCapDelta` |
 | `docker/init/Dockerfile` | Multi-stage: `emsi/nft-static` + Go builder → `scratch` image with exactly two binaries |
 
 ---
@@ -63,6 +63,7 @@ go get golang.org/x/sys@latest
 go get github.com/syndtr/gocapability@latest
 go get github.com/docker/docker@latest
 go get github.com/spf13/cobra@latest
+go get github.com/compose-spec/compose-go/v2@latest
 go mod tidy
 ```
 
@@ -2479,38 +2480,25 @@ Note: This is a compilable stub for Task 10. The full manual-dispatch `main()` (
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
 
+	composecli "github.com/compose-spec/compose-go/v2/cli"
 	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
 	"vaka.dev/vaka/pkg/policy"
 )
 
-// minimalComposeFile is used only to read service-level network_mode.
-type minimalComposeFile struct {
-	Services map[string]minimalService `yaml:"services"`
-}
-
-type minimalService struct {
-	NetworkMode string   `yaml:"network_mode"`
-	Entrypoint  yaml.Node `yaml:"entrypoint"`
-	Command     yaml.Node `yaml:"command"`
-	CapAdd      []string  `yaml:"cap_add"`
-	CapDrop     []string  `yaml:"cap_drop"`
-	Image       string    `yaml:"image"`
-}
-
 func newValidateCmd() *cobra.Command {
 	var vakaFile string
-	var composeFile string
+	var composeFiles []string
 
 	cmd := &cobra.Command{
 		Use:   "validate",
 		Short: "Validate vaka.yaml and print per-service summary",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			p, networkModes, err := loadAndValidate(vakaFile, composeFile)
+			p, networkModes, err := loadAndValidate(vakaFile, composeFiles)
 			if err != nil {
 				return err
 			}
@@ -2539,13 +2527,16 @@ func newValidateCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVarP(&vakaFile, "file", "f", "vaka.yaml", "Path to vaka.yaml")
-	cmd.Flags().StringVar(&composeFile, "compose", "docker-compose.yaml", "Path to docker-compose.yaml")
+	cmd.Flags().StringArrayVar(&composeFiles, "compose", []string{"docker-compose.yaml"}, "Path(s) to compose file(s); repeat for multiple")
 	return cmd
 }
 
-// loadAndValidate reads and validates vaka.yaml + docker-compose.yaml.
+// loadAndValidate reads and validates vaka.yaml, then loads the compose
+// project (all composeFiles merged via compose-go) to extract network_mode
+// per service for the host-network guard.
+// composeFiles may be empty — compose checks are skipped in that case.
 // Returns the parsed policy and a map of service name → network_mode.
-func loadAndValidate(vakaFile, composeFile string) (*policy.ServicePolicy, map[string]string, error) {
+func loadAndValidate(vakaFile string, composeFiles []string) (*policy.ServicePolicy, map[string]string, error) {
 	f, err := os.Open(vakaFile)
 	if err != nil {
 		return nil, nil, fmt.Errorf("open %s: %w", vakaFile, err)
@@ -2556,19 +2547,21 @@ func loadAndValidate(vakaFile, composeFile string) (*policy.ServicePolicy, map[s
 		return nil, nil, err
 	}
 
-	// Read compose for network_mode and service existence checks.
+	// Load compose project for network_mode checks (authoritative merge via compose-go).
 	networkModes := map[string]string{}
-	cf, err := os.Open(composeFile)
-	if err == nil {
-		var compose minimalComposeFile
-		dec := yaml.NewDecoder(cf)
-		// Don't use KnownFields here — we only care about a few compose fields.
-		if decErr := dec.Decode(&compose); decErr == nil {
-			for svcName, svc := range compose.Services {
-				networkModes[svcName] = svc.NetworkMode
+	if len(composeFiles) > 0 {
+		opts, err := composecli.NewProjectOptions(composeFiles,
+			composecli.WithWorkingDirectory("."),
+			composecli.WithOsEnv,
+			composecli.WithDotEnv,
+		)
+		if err == nil {
+			if project, err := opts.LoadProject(context.Background()); err == nil {
+				for name, svc := range project.Services {
+					networkModes[name] = svc.NetworkMode
+				}
 			}
 		}
-		cf.Close()
 	}
 
 	errs := policy.Validate(p, networkModes)
@@ -2608,7 +2601,7 @@ import (
 
 func newShowCmd() *cobra.Command {
 	var vakaFile string
-	var composeFile string
+	var composeFiles []string
 
 	cmd := &cobra.Command{
 		Use:   "show <service>",
@@ -2617,7 +2610,7 @@ func newShowCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			service := args[0]
 
-			p, _, err := loadAndValidate(vakaFile, composeFile)
+			p, _, err := loadAndValidate(vakaFile, composeFiles)
 			if err != nil {
 				return err
 			}
@@ -2643,7 +2636,7 @@ func newShowCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVarP(&vakaFile, "file", "f", "vaka.yaml", "Path to vaka.yaml")
-	cmd.Flags().StringVar(&composeFile, "compose", "docker-compose.yaml", "Path to docker-compose.yaml")
+	cmd.Flags().StringArrayVar(&composeFiles, "compose", []string{"docker-compose.yaml"}, "Path(s) to compose file(s); repeat for multiple")
 	return cmd
 }
 ```
@@ -2869,6 +2862,30 @@ func TestDiscoverComposeFiles(t *testing.T) {
 	})
 }
 
+func TestAllFileFlags(t *testing.T) {
+	t.Run("multiple -f forms collected in order", func(t *testing.T) {
+		args := []string{"-f", "a.yaml", "--file", "b.yaml", "--file=c.yaml", "up"}
+		got := allFileFlags(args)
+		want := []string{"a.yaml", "b.yaml", "c.yaml"}
+		assertArgv(t, want, got)
+	})
+
+	t.Run("stops at --", func(t *testing.T) {
+		args := []string{"-f", "a.yaml", "run", "--", "-f", "trick.yaml"}
+		got := allFileFlags(args)
+		want := []string{"a.yaml"}
+		assertArgv(t, want, got)
+	})
+
+	t.Run("no -f flags: empty result", func(t *testing.T) {
+		args := []string{"up", "--build"}
+		got := allFileFlags(args)
+		if len(got) != 0 {
+			t.Fatalf("expected empty, got %v", got)
+		}
+	})
+}
+
 func TestFindSubcmd(t *testing.T) {
 	tests := []struct {
 		args []string
@@ -2906,10 +2923,10 @@ func assertArgv(t *testing.T, want, got []string) {
 - [ ] **Step 2: Run the test to confirm it fails**
 
 ```bash
-cd /home/emsi/git/vaka && go test ./cmd/vaka/ -run 'TestInjectStdinOverride|TestExtractVakaFlags|TestDiscoverComposeFiles|TestFindSubcmd' -v 2>&1 | head -20
+cd /home/emsi/git/vaka && go test ./cmd/vaka/ -run 'TestInjectStdinOverride|TestExtractVakaFlags|TestDiscoverComposeFiles|TestFindSubcmd|TestAllFileFlags' -v 2>&1 | head -20
 ```
 
-Expected: compilation error — `injectStdinOverride`, `extractVakaFlags`, `discoverComposeFiles`, `findSubcmd` not defined.
+Expected: compilation error — `injectStdinOverride`, `extractVakaFlags`, `discoverComposeFiles`, `findSubcmd`, `allFileFlags` not defined.
 
 - [ ] **Step 3: Write inject.go**
 
@@ -3024,6 +3041,27 @@ func injectStdinOverride(dockerArgs []string, defaults []string) []string {
 	return out
 }
 
+// allFileFlags returns all -f / --file values from args, in order.
+// Stops at --. Returns nil if no -f flags are found.
+func allFileFlags(args []string) []string {
+	var files []string
+	for i := 0; i < len(args); i++ {
+		tok := args[i]
+		if tok == "--" {
+			break
+		}
+		if tok == "-f" || tok == "--file" {
+			if i+1 < len(args) {
+				files = append(files, args[i+1])
+				i++
+			}
+		} else if strings.HasPrefix(tok, "--file=") {
+			files = append(files, strings.TrimPrefix(tok, "--file="))
+		}
+	}
+	return files
+}
+
 // composeGlobalFlagsWithValue is the set of docker compose global flags that
 // consume the next token as their value. findSubcmd uses this to skip past
 // value tokens when scanning for the subcommand.
@@ -3065,7 +3103,7 @@ func findSubcmd(args []string) string {
 - [ ] **Step 4: Run the injection tests**
 
 ```bash
-cd /home/emsi/git/vaka && go test ./cmd/vaka/ -run 'TestInjectStdinOverride|TestExtractVakaFlags|TestDiscoverComposeFiles|TestFindSubcmd' -v
+cd /home/emsi/git/vaka && go test ./cmd/vaka/ -run 'TestInjectStdinOverride|TestExtractVakaFlags|TestDiscoverComposeFiles|TestFindSubcmd|TestAllFileFlags' -v
 ```
 
 Expected: all tests PASS.
@@ -3084,7 +3122,10 @@ import (
 	"os/exec"
 	"strings"
 
+	composecli "github.com/compose-spec/compose-go/v2/cli"
+	composetypes "github.com/compose-spec/compose-go/v2/types"
 	"github.com/docker/docker/client"
+	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 	"vaka.dev/vaka/pkg/compose"
 	"vaka.dev/vaka/pkg/policy"
@@ -3100,54 +3141,109 @@ var defaultDockerCaps = map[string]bool{
 	"CAP_AUDIT_WRITE": true, "CAP_SETFCAP": true,
 }
 
-// runInjection is the injection path for "up" and "run".
-// vakaFile: path to vaka.yaml.
-// args: remaining argv after extractVakaFlags — includes global flags AND the
-// subcommand token in their original positions (e.g. ["-f","a.yaml","up","--build"]).
+func newUpCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:                "up [compose-flags...]",
+		Short:              "Validate, inject vaka policy, and proxy docker compose up",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			vakaFlags, rest := extractVakaFlags(args)
+			vakaFile := vakaFlags["--vaka-file"]
+			if vakaFile == "" {
+				vakaFile = "vaka.yaml"
+			}
+			return runInjection(vakaFile, rest)
+		},
+	}
+}
+
+func newRunCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:                "run [compose-flags...]",
+		Short:              "Validate, inject vaka policy, and proxy docker compose run",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			vakaFlags, rest := extractVakaFlags(args)
+			vakaFile := vakaFlags["--vaka-file"]
+			if vakaFile == "" {
+				vakaFile = "vaka.yaml"
+			}
+			return runInjection(vakaFile, rest)
+		},
+	}
+}
+
+// newPassthroughCmd creates a cobra command that forwards everything verbatim
+// to "docker compose". Used for exec, build, attach, ps, logs, etc.
+func newPassthroughCmd(subcmd string) *cobra.Command {
+	return &cobra.Command{
+		Use:                subcmd,
+		Short:              fmt.Sprintf("Proxy docker compose %s", subcmd),
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			dockerArgs := append([]string{"compose", subcmd}, args...)
+			c := exec.Command("docker", dockerArgs...)
+			c.Stdin = os.Stdin
+			c.Stdout = os.Stdout
+			c.Stderr = os.Stderr
+			return c.Run()
+		},
+	}
+}
+
+// runInjection is the injection path for "up" and "run":
+// 1. Collect all -f files from args (or discover defaults if none).
+// 2. Validate vaka.yaml against the merged compose project.
+// 3. Load the fully-merged compose project via compose-go (authoritative for
+//    entrypoint/cap data — handles multi-file merge, env interpolation, etc.).
+// 4. Per service: resolve entrypoint, compute cap delta, serialise policy.
+// 5. Build override YAML, inject -f - into argv, exec docker.
 func runInjection(vakaFile string, args []string) error {
-	composeFile := firstFileFlag(args)
+	composeFiles := allFileFlags(args)
 	var defaults []string
-	if composeFile == "" {
+	if len(composeFiles) == 0 {
 		defaults = discoverComposeFiles(".")
 		if len(defaults) == 0 {
 			return fmt.Errorf("no compose configuration file found in current directory")
 		}
-		composeFile = defaults[0]
+		composeFiles = defaults
 	}
 
-	p, _, err := loadAndValidate(vakaFile, composeFile)
+	p, _, err := loadAndValidate(vakaFile, composeFiles)
 	if err != nil {
 		return err
 	}
 
-	cf, err := os.Open(composeFile)
-	if err != nil {
-		return fmt.Errorf("open %s: %w", composeFile, err)
-	}
-	var composeDef minimalComposeFile
-	if err := yaml.NewDecoder(cf).Decode(&composeDef); err != nil {
-		cf.Close()
-		return fmt.Errorf("parse %s: %w", composeFile, err)
-	}
-	cf.Close()
-
 	ctx := context.Background()
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	opts, err := composecli.NewProjectOptions(composeFiles,
+		composecli.WithWorkingDirectory("."),
+		composecli.WithOsEnv,
+		composecli.WithDotEnv,
+	)
+	if err != nil {
+		return fmt.Errorf("compose project options: %w", err)
+	}
+	project, err := opts.LoadProject(ctx)
+	if err != nil {
+		return fmt.Errorf("load compose project: %w", err)
+	}
+
+	dockerClient, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
 		return fmt.Errorf("docker client: %w", err)
 	}
-	defer cli.Close()
+	defer dockerClient.Close()
 
 	var entries []compose.ServiceEntry
 	envVars := os.Environ()
 
 	for svcName, svc := range p.Services {
-		composeSvc, ok := composeDef.Services[svcName]
+		composeSvc, ok := project.Services[svcName]
 		if !ok {
-			return fmt.Errorf("service %q: not found in %s", svcName, composeFile)
+			return fmt.Errorf("service %q: not found in compose files %v", svcName, composeFiles)
 		}
 
-		entrypoint, cmd, err := resolveEntrypoint(ctx, cli, svcName, composeSvc, composeFile)
+		entrypoint, cmd, err := resolveEntrypoint(ctx, dockerClient, svcName, composeSvc)
 		if err != nil {
 			return err
 		}
@@ -3184,7 +3280,7 @@ func runInjection(vakaFile string, args []string) error {
 		return fmt.Errorf("build override: %w", err)
 	}
 
-	// args already contains global flags + subcommand in correct positions.
+	// args already contains global flags + subcommand at correct positions.
 	// Prepend "compose"; injectStdinOverride inserts -f - after the last -f.
 	dockerArgs := injectStdinOverride(append([]string{"compose"}, args...), defaults)
 
@@ -3196,42 +3292,23 @@ func runInjection(vakaFile string, args []string) error {
 	return c.Run()
 }
 
-// firstFileFlag returns the value of the first -f / --file flag in args,
-// or "" if none is present.
-func firstFileFlag(args []string) string {
-	for i := 0; i < len(args); i++ {
-		if args[i] == "--" {
-			break
-		}
-		if args[i] == "-f" || args[i] == "--file" {
-			if i+1 < len(args) {
-				return args[i+1]
-			}
-		}
-		if strings.HasPrefix(args[i], "--file=") {
-			return strings.TrimPrefix(args[i], "--file=")
-		}
-	}
-	return ""
-}
-
-// resolveEntrypoint returns the effective entrypoint and command for a service.
-func resolveEntrypoint(ctx context.Context, cli *client.Client, svcName string, svc minimalService, composeFile string) ([]string, []string, error) {
-	ep := decodeStringSliceNode(svc.Entrypoint)
-	cmd := decodeStringSliceNode(svc.Command)
-	if len(ep) > 0 || len(cmd) > 0 {
-		return ep, cmd, nil
+// resolveEntrypoint returns the effective entrypoint and command for a service,
+// using the already-merged compose-go ServiceConfig (all -f files merged).
+// Falls back to Docker SDK image inspection only when neither entrypoint nor
+// command is declared in any of the compose files.
+func resolveEntrypoint(ctx context.Context, dockerClient *client.Client, svcName string, svc composetypes.ServiceConfig) ([]string, []string, error) {
+	if len(svc.Entrypoint) > 0 || len(svc.Command) > 0 {
+		return svc.Entrypoint, svc.Command, nil
 	}
 	if svc.Image == "" {
-		return nil, nil, fmt.Errorf(
-			"service %s: no image in compose and no entrypoint/command declared", svcName)
+		return nil, nil, fmt.Errorf("service %s: no image and no entrypoint/command declared", svcName)
 	}
-	inspect, err := cli.ImageInspect(ctx, svc.Image)
+	inspect, err := dockerClient.ImageInspect(ctx, svc.Image)
 	if err != nil {
 		if client.IsErrNotFound(err) {
 			return nil, nil, fmt.Errorf(
-				"service %s: image %q not available locally and no entrypoint/command in %s — pull first or add entrypoint:",
-				svcName, svc.Image, composeFile)
+				"service %s: image %q not available locally and no entrypoint/command declared — pull first or add entrypoint:",
+				svcName, svc.Image)
 		}
 		return nil, nil, fmt.Errorf("service %s: inspect %q: %w", svcName, svc.Image, err)
 	}
@@ -3242,10 +3319,10 @@ func resolveEntrypoint(ctx context.Context, cli *client.Client, svcName string, 
 }
 
 // computeCapDelta returns the capabilities vaka needs that are absent from
-// Docker's default set and not already in the compose service's cap_add.
-func computeCapDelta(composeSvc minimalService) []string {
+// Docker's default set and not already in the merged compose service's cap_add.
+func computeCapDelta(svc composetypes.ServiceConfig) []string {
 	existing := map[string]bool{}
-	for _, cap := range composeSvc.CapAdd {
+	for _, cap := range svc.CapAdd {
 		existing[strings.ToUpper(cap)] = true
 	}
 	var delta []string
@@ -3255,23 +3332,6 @@ func computeCapDelta(composeSvc minimalService) []string {
 		}
 	}
 	return delta
-}
-
-// decodeStringSliceNode handles compose entrypoint/command (string or sequence).
-func decodeStringSliceNode(node yaml.Node) []string {
-	switch node.Kind {
-	case yaml.SequenceNode:
-		var parts []string
-		for _, child := range node.Content {
-			parts = append(parts, child.Value)
-		}
-		return parts
-	case yaml.ScalarNode:
-		if node.Value != "" {
-			return strings.Fields(node.Value)
-		}
-	}
-	return nil
 }
 ```
 
@@ -3515,6 +3575,8 @@ git commit -m "feat(docker): emsi/vaka-init multi-stage Dockerfile with scratch 
 | `-f -` injection: last existing `-f` wins; no user `-f` → discover defaults | Task 11 |
 | `--vaka-file` extracted before passthrough; `--vaka-*` unknown flags left for compose | Task 11 |
 | Pure 1:1 passthrough for exec/build/ps/logs/down/attach/pull/push/restart/stop/start | Task 11 |
+| Multi-file compose merge correctness via `compose-go/v2` (not hand-rolled) | Tasks 1, 10, 11 |
+| `allFileFlags` collects all `-f` values; compose-go merges them all for entrypoint/cap data | Task 11 |
 | `emsi/vaka-init` scratch image | Task 12 |
 | Harness `ENTRYPOINT` not changed in image | Documented in spec §5.1 |
 | Edge case: `cap_drop: ALL` exits with clear error | Covered by the `apply bounds` error message in Task 9 |
@@ -3532,4 +3594,4 @@ No TBD, TODO, or incomplete sections found.
 - `compose.ServiceEntry`, `compose.BuildOverride` — defined in Task 8, called in Task 11.
 - `policy.SliceService(p, name)` — defined in Task 3, called in Task 11.
 - `loadAndValidate(vakaFile, composeFile)` — defined in Task 10, called in Tasks 10 and 11.
-- `minimalService.Entrypoint` / `.Command` typed as `yaml.Node` for flexible YAML decoding — used in Task 11 via `decodeStringSliceNode`.
+- `composetypes.ServiceConfig.Entrypoint` / `.Command` are `[]string` (compose-go `ShellCommand`); `composetypes.ServiceConfig.CapAdd` is `[]string` — no custom YAML decoding needed.
