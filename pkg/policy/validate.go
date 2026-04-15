@@ -15,6 +15,27 @@ var (
 	// svcNameRegexp matches valid Docker Compose service names (DNS label + underscore).
 	svcNameRegexp = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 
+	// knownICMPTypes is the set of named ICMP type keywords recognised by nft.
+	knownICMPTypes = map[string]bool{
+		"echo-reply":              true,
+		"echo-request":            true,
+		"destination-unreachable": true,
+		"parameter-problem":       true,
+		"redirect":                true,
+		"router-advertisement":    true,
+		"router-solicitation":     true,
+		"time-exceeded":           true,
+		"timestamp-reply":         true,
+		"timestamp-request":       true,
+		// ICMPv6
+		"nd-neighbor-solicit": true,
+		"nd-neighbor-advert":  true,
+		"nd-router-solicit":   true,
+		"nd-router-advert":    true,
+		"mld-listener-query":  true,
+		"mld-listener-report": true,
+	}
+
 	// knownLinuxCaps is the set of short-form capability names defined in
 	// include/uapi/linux/capability.h through Linux 5.x / 6.x.
 	// Short-form means without the "CAP_" prefix.
@@ -192,24 +213,5 @@ func validateToEntry(s string) error {
 
 // knownICMPType returns true if name is a valid nft ICMP type keyword.
 func knownICMPType(name string) bool {
-	known := map[string]bool{
-		"echo-reply":              true,
-		"echo-request":            true,
-		"destination-unreachable": true,
-		"parameter-problem":       true,
-		"redirect":                true,
-		"router-advertisement":    true,
-		"router-solicitation":     true,
-		"time-exceeded":           true,
-		"timestamp-reply":         true,
-		"timestamp-request":       true,
-		// ICMPv6
-		"nd-neighbor-solicit":  true,
-		"nd-neighbor-advert":   true,
-		"nd-router-solicit":    true,
-		"nd-router-advert":     true,
-		"mld-listener-query":   true,
-		"mld-listener-report":  true,
-	}
-	return known[name]
+	return knownICMPTypes[name]
 }
