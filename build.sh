@@ -1,14 +1,36 @@
 #!/usr/bin/env bash
-# build.sh — Docker-based build for vaka. No local Go toolchain required.
+# build.sh — multi-arch Docker-based build for vaka. No local Go toolchain required.
 #
-# Requires: docker
+# Requires: docker (with buildx)
 #
 # Usage:
-#   ./build.sh                  build binaries + emsi/vaka-init image
+#   ./build.sh                  build for all ARCHS locally (arch-specific tags)
+#   ./build.sh --push           build, push arch tags, create manifest lists
+#   ./build.sh --manifest       create manifest lists from already-pushed arch images
 #   ./build.sh --packages       also produce .deb and .rpm packages via nfpm
-#   ./build.sh --rebuild-nft    force rebuild of emsi/nft-static even if present
+#   ./build.sh --rebuild-nft    force rebuild of emsi/nft-static images
 #   ./build.sh --rebuild-go     force rebuild of Go binaries even if up to date
-#   ARCHS="amd64" ./build.sh    build a single architecture only
+#   ARCHS="amd64" ./build.sh    restrict to one architecture
+#
+# Multi-arch publishing — single host (QEMU handles foreign-arch nft C build):
+#   docker run --rm --privileged tonistiigi/binfmt --install all
+#   ./build.sh --push
+#
+# Multi-arch publishing — separate native hosts (no QEMU needed):
+#   ARCHS=amd64 ./build.sh --push   # on amd64 host
+#   ARCHS=arm64 ./build.sh --push   # on arm64 host
+#   ./build.sh --manifest            # on any host after both are pushed
+#
+# Image tagging model:
+#   Arch-specific (local + push staging):
+#     emsi/nft-static:1.1.6-amd64,  emsi/nft-static:1.1.6-arm64
+#     emsi/vaka-init:v0.1.0-amd64,  emsi/vaka-init:v0.1.0-arm64
+#
+#   Manifest lists (registry only, created by --push or --manifest):
+#     emsi/nft-static:1.1.6    → auto-selects amd64 or arm64 at pull time
+#     emsi/nft-static:latest   → auto-selects amd64 or arm64 at pull time
+#     emsi/vaka-init:v0.1.0    → auto-selects amd64 or arm64 at pull time
+#     emsi/vaka-init:latest    → auto-selects amd64 or arm64 at pull time
 #
 # Environment overrides:
 #   ARCHS          space-separated Go arch names     (default: amd64 arm64)
@@ -20,12 +42,12 @@
 # Output layout in ./dist/:
 #   vaka-linux-<arch>        — vaka host CLI, one per requested arch
 #   vaka-init-linux-<arch>   — vaka-init container binary, one per requested arch
-#   nft-linux-<native-arch>  — static nft binary extracted from emsi/nft-static image
+#   nft-linux-<arch>         — static nft binary, one per requested arch
 #
 # When installed via .deb/.rpm the binaries are named:
 #   /usr/local/bin/vaka
 #   /usr/local/sbin/vaka-init
-#   /usr/local/sbin/nft          (native arch only)
+#   /usr/local/sbin/nft
 
 set -euo pipefail
 
@@ -37,18 +59,27 @@ cd "$SCRIPT_DIR"
 BUILD_PACKAGES=false
 REBUILD_NFT=false
 REBUILD_GO=false
+DO_PUSH=false
+DO_MANIFEST_ONLY=false
 
 for arg in "$@"; do
     case "$arg" in
-        --packages)   BUILD_PACKAGES=true ;;
+        --packages)    BUILD_PACKAGES=true ;;
         --rebuild-nft) REBUILD_NFT=true ;;
         --rebuild-go)  REBUILD_GO=true ;;
+        --push)        DO_PUSH=true ;;
+        --manifest)    DO_MANIFEST_ONLY=true ;;
         *)
-            printf 'Unknown argument: %s\nUsage: %s [--packages] [--rebuild-nft] [--rebuild-go]\n' "$arg" "$0" >&2
+            printf 'Unknown argument: %s\nUsage: %s [--push] [--manifest] [--packages] [--rebuild-nft] [--rebuild-go]\n' "$arg" "$0" >&2
             exit 1
             ;;
     esac
 done
+
+if [[ "${DO_PUSH}" == "true" && "${DO_MANIFEST_ONLY}" == "true" ]]; then
+    echo "ERROR: --push and --manifest are mutually exclusive" >&2
+    exit 1
+fi
 
 # ── Version ───────────────────────────────────────────────────────────────────
 VERSION="$(git describe --tags --always --dirty 2>/dev/null || echo "dev")"
@@ -57,7 +88,7 @@ PKG_VERSION="${VERSION#v}"
 # ── Native architecture ───────────────────────────────────────────────────────
 NATIVE_ARCH="$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')"
 
-# ── nft image location ────────────────────────────────────────────────────────
+# ── nft Dockerfile location ───────────────────────────────────────────────────
 GIT_COMMON_DIR="$(cd "$(git rev-parse --git-common-dir)" && pwd)"
 MAIN_REPO_ROOT="$(dirname "${GIT_COMMON_DIR}")"
 NFT_DIR="${MAIN_REPO_ROOT}/nft"
@@ -77,54 +108,132 @@ NFT_IMAGE="${NFT_IMAGE:-emsi/nft-static}"
 INIT_IMAGE="${INIT_IMAGE:-emsi/vaka-init}"
 NFPM_IMAGE="${NFPM_IMAGE:-ghcr.io/goreleaser/nfpm:latest}"
 
-NFT_RELEASE_TAG="${NFT_IMAGE}:${NFTABLES_VERSION}"
-NFT_ARCH_TAG="${NFT_IMAGE}:${NFTABLES_VERSION}-${NATIVE_ARCH}"
-RELEASE_TAG="${INIT_IMAGE}:${VERSION}"
-ARCH_RELEASE_TAG="${INIT_IMAGE}:${VERSION}-${NATIVE_ARCH}"
-LATEST_TAG="${INIT_IMAGE}:latest"
+# Tag scheme:
+#   Arch-specific (local + push staging): emsi/nft-static:1.1.6-amd64
+#   Manifest lists (registry only):       emsi/nft-static:1.1.6
+# Arch tags are computed inside loops; manifest tags are assembled at push time.
 
 mkdir -p dist
 
-echo "==> vaka ${VERSION}"
+echo "==> vaka ${VERSION} (archs: ${ARCHS})"
 echo ""
+
+# ─────────────────────────────────────────────────────────────────────────────
+# --manifest only: assemble manifest lists from already-pushed arch images.
+# Run this after pushing from separate native hosts (no build performed).
+# ─────────────────────────────────────────────────────────────────────────────
+if [[ "${DO_MANIFEST_ONLY}" == "true" ]]; then
+    echo "==> Creating manifest lists (archs: ${ARCHS})..."
+
+    nft_sources=()
+    init_sources=()
+    for ARCH in $ARCHS; do
+        nft_sources+=("${NFT_IMAGE}:${NFTABLES_VERSION}-${ARCH}")
+        init_sources+=("${INIT_IMAGE}:${VERSION}-${ARCH}")
+    done
+
+    printf '    %s\n' "${NFT_IMAGE}:${NFTABLES_VERSION}"
+    docker buildx imagetools create \
+        --tag "${NFT_IMAGE}:${NFTABLES_VERSION}" \
+        --tag "${NFT_IMAGE}:latest" \
+        "${nft_sources[@]}"
+
+    printf '    %s\n' "${INIT_IMAGE}:${VERSION}"
+    docker buildx imagetools create \
+        --tag "${INIT_IMAGE}:${VERSION}" \
+        --tag "${INIT_IMAGE}:latest" \
+        "${init_sources[@]}"
+
+    echo ""
+    echo "Manifest lists created in registry:"
+    printf '  %s   (%s)\n' "${NFT_IMAGE}:${NFTABLES_VERSION}" "${ARCHS}"
+    printf '  %s  (%s)\n'  "${NFT_IMAGE}:latest"              "${ARCHS}"
+    printf '  %s   (%s)\n' "${INIT_IMAGE}:${VERSION}"         "${ARCHS}"
+    printf '  %s  (%s)\n'  "${INIT_IMAGE}:latest"             "${ARCHS}"
+    exit 0
+fi
 
 # ── Go module/build cache volumes ────────────────────────────────────────────
 docker volume create vaka-gomodcache   >/dev/null
 docker volume create vaka-gobuildcache >/dev/null
 
-# ── Phase 1: nft image ────────────────────────────────────────────────────────
-# Skip if the versioned tag already exists locally. The nft build downloads and
-# compiles C sources — it is slow. --rebuild-nft forces a fresh build.
-if [[ "${REBUILD_NFT}" == "false" ]] && \
-   docker image inspect "${NFT_RELEASE_TAG}" >/dev/null 2>&1; then
-    echo "==> Skipping nft build (${NFT_RELEASE_TAG} already present locally)"
-    echo "    Use --rebuild-nft to force a rebuild."
-else
-    echo "==> Building ${NFT_RELEASE_TAG} (nftables ${NFTABLES_VERSION})..."
-    docker build \
-        --file "${NFT_DIR}/Dockerfile" \
-        --target artifacts \
-        --tag "${NFT_RELEASE_TAG}" \
-        --tag "${NFT_ARCH_TAG}" \
-        --tag "${NFT_IMAGE}:latest" \
-        "${NFT_DIR}"
-fi
+# ── QEMU check helper ─────────────────────────────────────────────────────────
+# Exits with a clear error if ARCH requires QEMU for C compilation (nft image)
+# and the relevant binfmt handler is not registered.
+# Not needed for vaka-init images (FROM scratch + COPY — no RUN instructions).
+require_qemu_for_arch() {
+    local arch="$1"
+    [[ "${arch}" == "${NATIVE_ARCH}" ]] && return 0
+
+    # Map Go arch names to the qemu-binfmt names used in /proc/sys/fs/binfmt_misc/
+    local qemu_arch
+    case "${arch}" in
+        arm64)   qemu_arch="aarch64" ;;
+        amd64)   qemu_arch="x86_64" ;;
+        arm)     qemu_arch="arm" ;;
+        s390x)   qemu_arch="s390x" ;;
+        ppc64le) qemu_arch="ppc64le" ;;
+        386)     qemu_arch="i386" ;;
+        *)       qemu_arch="${arch}" ;;
+    esac
+
+    if [[ -f "/proc/sys/fs/binfmt_misc/qemu-${qemu_arch}" ]]; then
+        return 0
+    fi
+
+    printf '\nERROR: Building the nft image for linux/%s on a %s host requires QEMU binfmt.\n' \
+        "${arch}" "${NATIVE_ARCH}" >&2
+    printf '\n' >&2
+    printf '  Register QEMU binfmt handlers (one-time, persists until reboot):\n' >&2
+    printf '    docker run --rm --privileged tonistiigi/binfmt --install all\n' >&2
+    printf '\n' >&2
+    printf '  Or build natively on a %s host instead:\n' "${arch}" >&2
+    printf '    ARCHS=%s ./build.sh\n' "${arch}" >&2
+    exit 1
+}
+
+# ── Phase 1: nft images — one per arch ───────────────────────────────────────
+# Uses docker buildx build --platform to set correct OCI platform metadata.
+# C compilation for a foreign arch (e.g. arm64 on amd64) requires QEMU binfmt.
+# The QEMU check is skipped when the image is already present (cache hit).
+for ARCH in $ARCHS; do
+    arch_nft_tag="${NFT_IMAGE}:${NFTABLES_VERSION}-${ARCH}"
+    if [[ "${REBUILD_NFT}" == "false" ]] && \
+       docker image inspect "${arch_nft_tag}" >/dev/null 2>&1; then
+        echo "==> Skipping nft build for ${ARCH} (${arch_nft_tag} already present locally)"
+        echo "    Use --rebuild-nft to force a rebuild."
+    else
+        require_qemu_for_arch "${ARCH}"
+        echo "==> Building ${arch_nft_tag} (nftables ${NFTABLES_VERSION}, platform linux/${ARCH})..."
+        docker buildx build \
+            --platform "linux/${ARCH}" \
+            --load \
+            --file "${NFT_DIR}/Dockerfile" \
+            --target artifacts \
+            --tag "${arch_nft_tag}" \
+            "${NFT_DIR}"
+    fi
+    echo ""
+done
+
+# ── Phase 2: Extract nft binaries — one per arch ─────────────────────────────
+# docker create on a non-native arch image works because no code is executed;
+# docker cp just reads the layer filesystem.
+echo "==> Extracting nft binaries..."
+for ARCH in $ARCHS; do
+    arch_nft_tag="${NFT_IMAGE}:${NFTABLES_VERSION}-${ARCH}"
+    printf '    dist/nft-linux-%-10s' "${ARCH}"
+    nft_cid="$(docker create --platform "linux/${ARCH}" "${arch_nft_tag}" /opt/nftables/bin/nft)"
+    cleanup_nft_cid() { docker rm -f -- "${nft_cid}" >/dev/null 2>&1 || true; }
+    trap cleanup_nft_cid EXIT
+    docker cp "${nft_cid}:/opt/nftables/bin/nft" "dist/nft-linux-${ARCH}"
+    docker rm -f -- "${nft_cid}" >/dev/null 2>&1 || true
+    trap - EXIT
+    echo "OK"
+done
 echo ""
 
-# ── Extract nft binary from image into dist/ ──────────────────────────────────
-# Always re-extract to ensure dist/nft-linux-<arch> matches the current image,
-# even when the build was skipped above.
-printf '==> Extracting nft from %s...\n' "${NFT_RELEASE_TAG}"
-nft_cid="$(docker create "${NFT_RELEASE_TAG}" /opt/nftables/bin/nft)"
-cleanup_nft_cid() { docker rm -f -- "${nft_cid}" >/dev/null 2>&1 || true; }
-trap cleanup_nft_cid EXIT
-docker cp "${nft_cid}:/opt/nftables/bin/nft" "dist/nft-linux-${NATIVE_ARCH}"
-docker rm -f -- "${nft_cid}" >/dev/null 2>&1 || true
-trap - EXIT
-printf '    dist/nft-linux-%-24s OK\n' "${NATIVE_ARCH}"
-echo ""
-
-# ── Phase 2: Go binaries ──────────────────────────────────────────────────────
+# ── Phase 3: Go binaries — skip if up to date ────────────────────────────────
 # Skip if all output files exist AND no .go source is newer than the oldest one.
 # --rebuild-go forces a fresh build.
 need_go_build=false
@@ -141,7 +250,6 @@ else
         done
     done
     if [[ "${need_go_build}" == "false" ]]; then
-        # Find the oldest output binary; check if any .go is newer
         oldest_out=""
         for ARCH in $ARCHS; do
             for TARGET in vaka vaka-init; do
@@ -215,33 +323,36 @@ docker run --rm \
     '
 echo ""
 
-# ── Phase 3: vaka-init Docker image ──────────────────────────────────────────
-# Pass a minimal build context containing only the two native-arch binaries.
-# The Dockerfile is a pure scratch assembly — no Go stage, no external FROM,
-# no BuildKit cache fragility.
-echo "==> Building ${RELEASE_TAG}..."
-ctx="$(mktemp -d)"
-cleanup_ctx() { rm -rf -- "${ctx}"; }
-trap cleanup_ctx EXIT
-cp "dist/vaka-init-linux-${NATIVE_ARCH}" "${ctx}/vaka-init"
-cp "dist/nft-linux-${NATIVE_ARCH}"       "${ctx}/nft"
+# ── Phase 4: vaka-init images — one per arch ─────────────────────────────────
+# FROM scratch + COPY does not need QEMU; --platform only sets OCI metadata.
+# Each arch gets its own minimal build context with the matching binaries.
+for ARCH in $ARCHS; do
+    arch_init_tag="${INIT_IMAGE}:${VERSION}-${ARCH}"
+    echo "==> Building ${arch_init_tag} (platform linux/${ARCH})..."
+    ctx="$(mktemp -d)"
+    cleanup_ctx() { rm -rf -- "${ctx}"; }
+    trap cleanup_ctx EXIT
+    cp "dist/vaka-init-linux-${ARCH}" "${ctx}/vaka-init"
+    cp "dist/nft-linux-${ARCH}"       "${ctx}/nft"
 
-docker build \
-    --file docker/init/Dockerfile \
-    --build-arg "VERSION=${VERSION}" \
-    --build-arg "NFTABLES_VERSION=${NFTABLES_VERSION}" \
-    --tag "${RELEASE_TAG}" \
-    --tag "${ARCH_RELEASE_TAG}" \
-    --tag "${LATEST_TAG}" \
-    "${ctx}"
+    docker buildx build \
+        --platform "linux/${ARCH}" \
+        --load \
+        --file docker/init/Dockerfile \
+        --build-arg "VERSION=${VERSION}" \
+        --build-arg "NFTABLES_VERSION=${NFTABLES_VERSION}" \
+        --tag "${arch_init_tag}" \
+        "${ctx}"
 
-rm -rf -- "${ctx}"
-trap - EXIT
-echo ""
+    rm -rf -- "${ctx}"
+    trap - EXIT
+    echo ""
+done
 
-# ── Phase 4: Verify image ─────────────────────────────────────────────────────
-echo "==> Verifying ${RELEASE_TAG}..."
-cid="$(docker create "${RELEASE_TAG}" /opt/vaka/bin/vaka-init)"
+# ── Phase 5: Verify native-arch image ────────────────────────────────────────
+native_init_tag="${INIT_IMAGE}:${VERSION}-${NATIVE_ARCH}"
+echo "==> Verifying ${native_init_tag}..."
+cid="$(docker create --platform "linux/${NATIVE_ARCH}" "${native_init_tag}" /opt/vaka/bin/vaka-init)"
 cleanup_cid() { docker rm -f -- "${cid}" >/dev/null 2>&1 || true; }
 trap cleanup_cid EXIT
 
@@ -264,7 +375,7 @@ docker rm -f -- "${cid}" >/dev/null 2>&1 || true
 trap - EXIT
 echo ""
 
-# ── Linux packages (.deb / .rpm) ──────────────────────────────────────────────
+# ── Phase 6: Linux packages (.deb / .rpm) ────────────────────────────────────
 if [[ "${BUILD_PACKAGES}" == "true" ]]; then
     echo "==> Building Linux packages (using ${NFPM_IMAGE})..."
 
@@ -320,27 +431,73 @@ NFPM
     echo ""
 fi
 
+# ── Phase 7: Push arch images + create manifest lists (--push only) ───────────
+if [[ "${DO_PUSH}" == "true" ]]; then
+    echo "==> Pushing arch-specific images..."
+    nft_sources=()
+    init_sources=()
+
+    for ARCH in $ARCHS; do
+        arch_nft_tag="${NFT_IMAGE}:${NFTABLES_VERSION}-${ARCH}"
+        arch_init_tag="${INIT_IMAGE}:${VERSION}-${ARCH}"
+
+        printf '    %s  ' "${arch_nft_tag}"
+        docker push "${arch_nft_tag}"
+        echo "OK"
+
+        printf '    %s  ' "${arch_init_tag}"
+        docker push "${arch_init_tag}"
+        echo "OK"
+
+        nft_sources+=("${arch_nft_tag}")
+        init_sources+=("${arch_init_tag}")
+    done
+    echo ""
+
+    echo "==> Creating manifest lists..."
+    printf '    %s\n' "${NFT_IMAGE}:${NFTABLES_VERSION}"
+    docker buildx imagetools create \
+        --tag "${NFT_IMAGE}:${NFTABLES_VERSION}" \
+        --tag "${NFT_IMAGE}:latest" \
+        "${nft_sources[@]}"
+
+    printf '    %s\n' "${INIT_IMAGE}:${VERSION}"
+    docker buildx imagetools create \
+        --tag "${INIT_IMAGE}:${VERSION}" \
+        --tag "${INIT_IMAGE}:latest" \
+        "${init_sources[@]}"
+
+    echo ""
+fi
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo "Build complete."
 echo ""
-echo "Artifacts:"
+echo "Artifacts in dist/:"
 while IFS= read -r f; do
     printf '  %-42s %s\n' "$f" "$(du -sh "$f" 2>/dev/null | cut -f1)"
 done < <(find dist -maxdepth 1 -not -name '.*' -not -name 'dist' | sort)
 echo ""
-echo "Docker images:"
-echo "  ${NFT_RELEASE_TAG}"
-echo "  ${NFT_ARCH_TAG}"
-echo "  ${NFT_IMAGE}:latest"
-echo "  ${RELEASE_TAG}"
-echo "  ${ARCH_RELEASE_TAG}"
-echo "  ${LATEST_TAG}"
+echo "Local images (arch-specific staging tags):"
+for ARCH in $ARCHS; do
+    echo "  ${NFT_IMAGE}:${NFTABLES_VERSION}-${ARCH}"
+    echo "  ${INIT_IMAGE}:${VERSION}-${ARCH}"
+done
 echo ""
-echo "To release:"
-echo "  git tag v${PKG_VERSION}"
-echo "  git push origin v${PKG_VERSION}"
-echo "  docker push ${NFT_RELEASE_TAG}"
-echo "  docker push ${NFT_ARCH_TAG}"
-echo "  docker push ${RELEASE_TAG}"
-echo "  docker push ${ARCH_RELEASE_TAG}"
-echo "  docker push ${LATEST_TAG}"
+
+if [[ "${DO_PUSH}" == "true" ]]; then
+    echo "Registry manifest lists (multi-arch, auto-selected by 'docker pull'):"
+    echo "  ${NFT_IMAGE}:${NFTABLES_VERSION}"
+    echo "  ${NFT_IMAGE}:latest"
+    echo "  ${INIT_IMAGE}:${VERSION}"
+    echo "  ${INIT_IMAGE}:latest"
+else
+    echo "To publish (single host with QEMU):"
+    echo "  docker run --rm --privileged tonistiigi/binfmt --install all"
+    echo "  ./build.sh --push"
+    echo ""
+    echo "To publish (native hosts, no QEMU needed):"
+    echo "  ARCHS=amd64 ./build.sh --push   # on amd64 host"
+    echo "  ARCHS=arm64 ./build.sh --push   # on arm64 host"
+    echo "  ./build.sh --manifest            # on any host after both are pushed"
+fi
