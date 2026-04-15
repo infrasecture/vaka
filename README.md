@@ -96,8 +96,8 @@ table inet vaka {
     oif "lo" accept
 
     # metadata endpoint block (block_metadata: true)
-    ip  daddr { 169.254.169.254 } drop
-    ip6 daddr { fd00::ec2:254   } drop
+    ip  daddr { 169.254.169.254, 100.100.100.200 } drop
+    ip6 daddr { fd00:ec2::254, fd20:ce::254 } drop
 
     # explicit accept rules
     ip daddr { 93.184.216.34 } tcp dport { 443 } accept
@@ -254,7 +254,7 @@ services:
     network:
       egress:
         defaultAction: reject    # accept | reject | drop  (default: reject)
-        block_metadata: false    # drops traffic to 169.254.169.254 and fd00::ec2:254
+        block_metadata: false    # drops 169.254.169.254, 100.100.100.200, fd00:ec2::254, fd20:ce::254
         accept: [<rule>, ...]
         reject: [<rule>, ...]
         drop:   [<rule>, ...]

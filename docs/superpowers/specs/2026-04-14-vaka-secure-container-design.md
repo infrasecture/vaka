@@ -211,9 +211,10 @@ The metadata block rules are inserted into the ruleset immediately after the imp
 ```
 ct state established,related accept   # implicit invariant
 oif "lo" accept                       # implicit invariant (output chain → oif)
-ip  daddr 169.254.0.0/16 drop         # block_metadata: true
+ip  daddr 169.254.169.254/32 drop     # block_metadata: true
 ip  daddr 100.100.100.200/32 drop     # block_metadata: true
 ip6 daddr fd00:ec2::254/128 drop      # block_metadata: true
+ip6 daddr fd20:ce::254/128 drop      # block_metadata: true
 # ... user rules follow
 ```
 
