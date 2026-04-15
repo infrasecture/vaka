@@ -116,7 +116,7 @@ echo ""
 
 # ── Verify Docker image ───────────────────────────────────────────────────────
 echo "==> Verifying ${RELEASE_TAG}..."
-cid="$(docker create "${RELEASE_TAG}")"
+cid="$(docker create "${RELEASE_TAG}" /opt/vaka/bin/vaka-init)"
 cleanup_cid() { docker rm -f -- "${cid}" >/dev/null 2>&1 || true; }
 trap cleanup_cid EXIT
 
