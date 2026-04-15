@@ -2548,10 +2548,10 @@ func loadAndValidate(vakaFile string, composeFiles []string) (*policy.ServicePol
 	}
 
 	// Load compose project for network_mode checks (authoritative merge via compose-go).
-	// composeFiles is empty when the caller omits --compose: skip compose checks silently.
-	// composeFiles is non-empty when the caller explicitly provides files: any loading
-	// error is a real problem (malformed YAML, missing include, etc.) and is surfaced.
-	networkModes := map[string]string{}
+	// networkModes is nil when no compose files are given — policy.Validate treats nil
+	// as "no compose data available, skip compose-dependent checks".
+	// When composeFiles is non-empty any loading error is surfaced immediately.
+	var networkModes map[string]string
 	if len(composeFiles) > 0 {
 		opts, err := composecli.NewProjectOptions(composeFiles,
 			composecli.WithWorkingDirectory("."),
@@ -2565,6 +2565,7 @@ func loadAndValidate(vakaFile string, composeFiles []string) (*policy.ServicePol
 		if err != nil {
 			return nil, nil, fmt.Errorf("load compose project: %w", err)
 		}
+		networkModes = make(map[string]string)
 		for name, svc := range project.Services {
 			networkModes[name] = svc.NetworkMode
 		}
@@ -3420,6 +3421,21 @@ func main() {
 	rootCmd.AddCommand(
 		newValidateCmd(),
 		newShowCmd(),
+		// up and run stubs exist only for --help visibility.
+		// Actual execution is handled by the manual dispatch switch below
+		// and never reaches these cobra commands.
+		&cobra.Command{
+			Use:                "up [compose-flags...]",
+			Short:              "Validate, inject vaka policy, and proxy to docker compose up",
+			DisableFlagParsing: true,
+			Run:                func(*cobra.Command, []string) {},
+		},
+		&cobra.Command{
+			Use:                "run [compose-flags...]",
+			Short:              "Validate, inject vaka policy, and proxy to docker compose run",
+			DisableFlagParsing: true,
+			Run:                func(*cobra.Command, []string) {},
+		},
 		&cobra.Command{
 			Use:   "version",
 			Short: "Print version",
@@ -3498,7 +3514,7 @@ Expected: exit 0.
 cd /home/emsi/git/vaka && go run ./cmd/vaka/ --help
 ```
 
-Expected: usage output listing `validate`, `show`, `version` only. `up`, `run`, `exec`, `build`, and other docker compose subcommands do **not** appear — they are handled by the manual dispatch switch, not cobra.
+Expected: usage output listing `up`, `run`, `validate`, `show`, `version`. `exec`, `build`, and other passthrough subcommands do **not** appear — they are handled by the `default:` branch of the manual dispatch switch, not cobra. The `up` and `run` stubs are registered with cobra purely for help visibility; actual execution goes through the dispatch switch.
 
 - [ ] **Step 9: Commit**
 
