@@ -189,12 +189,12 @@ A top-level boolean under `network.egress`. When `true`, `vaka-init` prepends ex
 
 Covered ranges (as of v1alpha1):
 
-| Cloud | IPv4 | IPv6 |
-|---|---|---|
-| AWS, GCP, Azure, DigitalOcean, Hetzner | `169.254.169.254/32` | `fd00:ec2::254/128` (AWS) |
-| Alibaba Cloud | `100.100.100.200/32` | — |
-| Azure IMDS (additional) | `169.254.169.254/32` | — |
-| Link-local metadata range (general) | `169.254.0.0/16` | — |
+| Address | Provider |
+|---|---|
+| `169.254.169.254/32` | AWS, GCP, Azure, DigitalOcean, Hetzner, OCI, Linode |
+| `100.100.100.200/32` | Alibaba Cloud |
+| `fd00:ec2::254/128` | AWS IPv6 IMDS (Nitro instances) |
+| `fd20:ce::254/128` | GCP IPv6 IMDS (IPv6-only instances) |
 
 ```yaml
 egress:
