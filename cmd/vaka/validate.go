@@ -20,11 +20,10 @@ func newValidateCmd() *cobra.Command {
 		Use:   "validate",
 		Short: "Validate vaka.yaml and print per-service summary",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			p, networkModes, err := loadAndValidate(vakaFile, composeFiles)
+			p, _, err := loadAndValidate(vakaFile, composeFiles)
 			if err != nil {
 				return err
 			}
-			_ = networkModes
 
 			// Print per-service summary.
 			for name, svc := range p.Services {
@@ -106,7 +105,7 @@ func loadAndValidate(vakaFile string, composeFiles []string) (*policy.ServicePol
 	if len(errs) > 0 {
 		msgs := make([]string, len(errs))
 		for i, e := range errs {
-			msgs[i] = "Error: " + e.Error()
+			msgs[i] = e.Error()
 		}
 		return nil, nil, fmt.Errorf("%s", strings.Join(msgs, "\n"))
 	}
