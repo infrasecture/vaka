@@ -204,6 +204,63 @@ func TestGenerateProtoUDPNoToNoPortsBareRule(t *testing.T) {
 	}
 }
 
+// ICMP rule syntax tests — guard against the double-protocol-keyword bug.
+func TestGenerateICMPRuleSyntax(t *testing.T) {
+	tests := []struct {
+		name    string
+		rule    policy.Rule
+		wantIn  string
+		wantOut string
+	}{
+		{
+			name:   "icmp named type",
+			rule:   policy.Rule{Proto: "icmp", Type: &policy.ICMPSpec{Name: "echo-request"}},
+			wantIn: "meta l4proto icmp icmp type echo-request drop",
+		},
+		{
+			name:   "icmp numeric type",
+			rule:   policy.Rule{Proto: "icmp", Type: &policy.ICMPSpec{Num: 8, IsNum: true}},
+			wantIn: "meta l4proto icmp icmp type 8 drop",
+		},
+		{
+			name:   "icmp no type",
+			rule:   policy.Rule{Proto: "icmp"},
+			wantIn: "meta l4proto icmp drop",
+		},
+		{
+			name:   "icmpv6 named type",
+			rule:   policy.Rule{Proto: "icmpv6", Type: &policy.ICMPSpec{Name: "nd-neighbor-solicit"}},
+			wantIn: "meta l4proto ipv6-icmp icmpv6 type nd-neighbor-solicit drop",
+		},
+		{
+			name:   "icmpv6 no type",
+			rule:   policy.Rule{Proto: "icmpv6"},
+			wantIn: "meta l4proto ipv6-icmp drop",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			e := &policy.EgressPolicy{
+				DefaultAction: "reject",
+				Drop:          []policy.Rule{tc.rule},
+			}
+			out, err := nft.Generate(e)
+			if err != nil {
+				t.Fatalf("Generate: %v", err)
+			}
+			if !strings.Contains(out, tc.wantIn) {
+				t.Errorf("expected %q in output\ngot:\n%s", tc.wantIn, out)
+			}
+			// Ensure no duplicate protocol keyword (the original bug).
+			for _, bad := range []string{"icmp  icmp", "icmpv6 icmpv6", "l4proto icmpv6"} {
+				if strings.Contains(out, bad) {
+					t.Errorf("duplicate/wrong protocol keyword %q in output:\n%s", bad, out)
+				}
+			}
+		})
+	}
+}
+
 // proto+ports path must continue to emit dport set (regression guard).
 func TestGenerateProtoAndPortsEmitsDportSet(t *testing.T) {
 	out, err := nft.Generate(egressWithAccept(policy.Rule{

@@ -147,10 +147,11 @@ func expandICMPRule(r policy.Rule, verdict string) []string {
 	}
 
 	if r.Proto == "icmp" {
-		return []string{fmt.Sprintf("meta l4proto icmp  icmp   %s%s", typeClause, verdict)}
+		return []string{fmt.Sprintf("meta l4proto icmp %s%s", typeClause, verdict)}
 	}
 	// r.Proto == "icmpv6" — the only other value that reaches this function.
-	return []string{fmt.Sprintf("meta l4proto icmpv6 icmpv6 %s%s", typeClause, verdict)}
+	// nft uses "ipv6-icmp" as the meta l4proto keyword; "icmpv6" is the match keyword.
+	return []string{fmt.Sprintf("meta l4proto ipv6-icmp %s%s", typeClause, verdict)}
 }
 
 // portList renders a list of PortSpec into a comma-separated nft set string.
