@@ -101,7 +101,7 @@ services:
         drop:
           - proto: icmp
             type: echo-request      # named or numeric (8)
-        block_metadata: true        # optional; see Section 4.3; false if omitted
+        block_metadata: drop        # optional; accept | drop | reject; omit to disable
     runtime:
       dropCaps:                     # optional user override; see Section 4.3 and Section 8
         - NET_ADMIN                 # normally auto-computed by vaka CLI (delta caps)
@@ -185,7 +185,30 @@ Name resolution at init time means resolved IPs are baked into the static nft ru
 
 #### `block_metadata`
 
-A top-level boolean under `network.egress`. When `true`, `vaka-init` prepends explicit `drop` rules for all known cloud instance metadata service endpoints before any user rules. These rules are part of the implicit invariants section of the generated ruleset and take precedence over user-defined `accept` rules.
+A field under `network.egress` that controls the verdict applied to all known cloud instance metadata (IMDS) endpoints. When omitted, no metadata rules are emitted.
+
+| Value | Behaviour |
+|---|---|
+| `drop` | Silently discard all traffic to metadata endpoints. **(recommended)** |
+| `reject` | Reject traffic; TCP receives RST by default (controlled by `with_tcp_reset`). |
+| `accept` | Explicitly allow metadata traffic. |
+
+The mapping form allows `with_tcp_reset` to be configured when `action: reject`:
+
+```yaml
+egress:
+  block_metadata: drop    # scalar form — recommended
+  defaultAction: reject
+  accept:
+    - dns: {}
+
+# or:
+  block_metadata:
+    action: reject
+    with_tcp_reset: false   # emit admin-prohibited for all protocols
+```
+
+`block_metadata: true` and `block_metadata: false` are parse errors — use the explicit string form or omit the field entirely.
 
 Covered ranges (as of v1alpha1):
 
@@ -196,25 +219,15 @@ Covered ranges (as of v1alpha1):
 | `fd00:ec2::254/128` | AWS IPv6 IMDS (Nitro instances) |
 | `fd20:ce::254/128` | GCP IPv6 IMDS (IPv6-only instances) |
 
-```yaml
-egress:
-  block_metadata: true    # drop all known metadata endpoints; false if omitted
-  defaultAction: reject
-  accept:
-    - dns: {}
-```
-
-When `block_metadata: false` (the default), no metadata rules are generated. Operators running in cloud environments where the metadata service exposes IAM credentials or tokens **should** set `block_metadata: true`.
-
 The metadata block rules are inserted into the ruleset immediately after the implicit invariants (`established,related` and `lo`) and before any user-defined `drop`/`reject`/`accept` rules:
 
 ```
-ct state established,related accept   # implicit invariant
-oif "lo" accept                       # implicit invariant (output chain → oif)
-ip  daddr 169.254.169.254/32 drop     # block_metadata: true
-ip  daddr 100.100.100.200/32 drop     # block_metadata: true
-ip6 daddr fd00:ec2::254/128 drop      # block_metadata: true
-ip6 daddr fd20:ce::254/128 drop      # block_metadata: true
+ct state established,related accept      # implicit invariant
+oif "lo" accept                          # implicit invariant (output chain → oif)
+ip  daddr 169.254.169.254/32 drop        # block_metadata: drop
+ip  daddr 100.100.100.200/32 drop        # block_metadata: drop
+ip6 daddr fd00:ec2::254/128 drop         # block_metadata: drop
+ip6 daddr fd20:ce::254/128 drop          # block_metadata: drop
 # ... user rules follow
 ```
 
@@ -253,7 +266,7 @@ When `proto: icmp` or `proto: icmpv6` is specified, only that family is targeted
 | `rule.type` | string or int | ICMP type name or 0–255 | no |
 | `rule.dns` | map | `{}` or `servers: [...]` | special shorthand |
 | `rule.with_tcp_reset` | bool | TCP RST for this rule; only valid in `reject:` list with `proto: tcp`; default `true` | no |
-| `services.<name>.network.egress.block_metadata` | bool | `true`/`false`; default `false` | no |
+| `services.<name>.network.egress.block_metadata` | string or map | `accept` \| `drop` \| `reject`; or `{action, with_tcp_reset}`; omit to disable | no |
 | `runtime.dropCaps` | list of string | Linux capability names (short form); normally auto-computed by vaka CLI; explicit value in `vaka.yaml` overrides auto-computation | no |
 | `runtime.runAs.uid` | int | ≥ 0 | no |
 | `runtime.runAs.gid` | int | ≥ 0 | no |
@@ -416,11 +429,11 @@ table inet vaka {
     # implicit invariants
     ct state established,related accept
     oif "lo" accept
-{{- if .BlockMetadata }}
+{{- if .MetadataRules }}
 
-    # metadata endpoint block (block_metadata: true)
-{{- range .MetadataRanges }}
-    {{ . }} drop
+    # metadata endpoint block
+{{- range .MetadataRules }}
+    {{ . }}
 {{- end }}
 {{- end }}
 {{- if .DropRules }}
@@ -744,6 +757,6 @@ Preventing an agent from reading its own process memory (env vars, heap) is an u
 | nft ruleset via Go `text/template` | nft syntax is a custom DSL with no Go marshaler; template keeps formatting readable and auditable; rule expansion logic stays in Go; embedded via `embed.FS` |
 | compose override via `yaml.Marshal()` | The override has a well-defined Go struct shape; marshaling from structs is safer than a YAML template (no indentation fragility, no drift between template and types) |
 | `defaultAction` defaults to `reject` | Secure by default; operators must explicitly choose `accept` and are warned when they do |
-| `block_metadata: false` by default | Opt-in avoids surprising behaviour on non-cloud deployments; operators in cloud environments should enable it explicitly |
+| `block_metadata` omitted by default | Opt-in avoids surprising behaviour on non-cloud deployments; operators in cloud environments should set `drop` explicitly |
 | Hard error on `network_mode: host` | Sharing the host network namespace defeats container egress isolation entirely and risks applying nft rules to the host; this must never be allowed silently |
 | nft application is atomic | `nft -f` commits the full ruleset in a single kernel transaction — no intermediate half-loaded state is possible |

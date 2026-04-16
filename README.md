@@ -95,9 +95,11 @@ table inet vaka {
     ct state established,related accept
     oif "lo" accept
 
-    # metadata endpoint block (block_metadata: true)
-    ip  daddr { 169.254.169.254, 100.100.100.200 } drop
-    ip6 daddr { fd00:ec2::254, fd20:ce::254 } drop
+    # metadata endpoint block
+    ip  daddr 169.254.169.254/32 drop
+    ip  daddr 100.100.100.200/32 drop
+    ip6 daddr fd00:ec2::254/128 drop
+    ip6 daddr fd20:ce::254/128 drop
 
     # explicit accept rules
     ip daddr { 93.184.216.34 } tcp dport { 443 } accept
@@ -183,7 +185,7 @@ services:
     network:
       egress:
         defaultAction: reject
-        block_metadata: true
+        block_metadata: drop
         accept:
           - dns: {}                        # allow DNS to resolv.conf servers
           - proto: tcp
@@ -256,7 +258,7 @@ services:
       egress:
         defaultAction: reject    # accept | reject | drop  (default: reject)
         with_tcp_reset: true     # TCP RST for reject; only valid with defaultAction: reject (default: true)
-        block_metadata: false    # drops 169.254.169.254, 100.100.100.200, fd00:ec2::254, fd20:ce::254
+        block_metadata: drop     # accept | drop | reject; omit to disable
         accept: [<rule>, ...]
         reject: [<rule>, ...]
         drop:   [<rule>, ...]
@@ -354,7 +356,24 @@ reject:
 
 ### block_metadata
 
-When set to `true`, drops all traffic to cloud instance metadata endpoints before any other rules are evaluated:
+Controls the verdict applied to all known cloud instance metadata (IMDS) endpoints. When omitted, no metadata rules are emitted.
+
+| Value | Behaviour |
+|-------|-----------|
+| `drop` | Silently discard all traffic to metadata endpoints. **(recommended)** |
+| `reject` | Reject traffic; TCP receives RST by default (see `with_tcp_reset`). |
+| `accept` | Explicitly allow metadata traffic. |
+
+```yaml
+block_metadata: drop    # recommended
+
+# or, for reject with explicit TCP RST control:
+block_metadata:
+  action: reject
+  with_tcp_reset: false  # emit admin-prohibited for all protocols
+```
+
+Covered endpoints:
 
 | Address | Provider |
 |---------|----------|
@@ -362,6 +381,8 @@ When set to `true`, drops all traffic to cloud instance metadata endpoints befor
 | `100.100.100.200/32` | Alibaba Cloud |
 | `fd00:ec2::254/128` | AWS IPv6 IMDS (Nitro instances) |
 | `fd20:ce::254/128` | GCP IPv6 IMDS (IPv6-only instances) |
+
+> `block_metadata: true` and `block_metadata: false` are **not valid** — use `drop`, `accept`, or `reject` explicitly. Omit the field entirely to disable metadata blocking.
 
 Recommended for any container that should not have access to cloud credentials through IMDS.
 

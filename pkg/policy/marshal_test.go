@@ -21,7 +21,7 @@ services:
     network:
       egress:
         defaultAction: reject
-        block_metadata: true
+        block_metadata: drop
         accept:
           - dns: {}
           - proto: tcp
@@ -73,6 +73,100 @@ func TestPortSpecMarshalRoundTrip(t *testing.T) {
 	}
 	if rangeRule.Ports[0].RangeStart != 8080 || rangeRule.Ports[0].RangeEnd != 8090 {
 		t.Errorf("range = %d-%d, want 8080-8090", rangeRule.Ports[0].RangeStart, rangeRule.Ports[0].RangeEnd)
+	}
+}
+
+func TestBlockMetadataScalarRoundTrip(t *testing.T) {
+	input := `
+apiVersion: vaka.dev/v1alpha1
+kind: ServicePolicy
+services:
+  s:
+    network:
+      egress:
+        defaultAction: reject
+        block_metadata: drop
+`
+	p, err := policy.Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	raw, err := yaml.Marshal(p)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	p2, err := policy.Parse(strings.NewReader(string(raw)))
+	if err != nil {
+		t.Fatalf("re-parse after marshal: %v\nYAML:\n%s", err, raw)
+	}
+	bm := p2.Services["s"].Network.Egress.BlockMetadata
+	if bm.Action != "drop" {
+		t.Errorf("BlockMetadata.Action = %q, want \"drop\"", bm.Action)
+	}
+	if bm.WithTCPReset != nil {
+		t.Errorf("BlockMetadata.WithTCPReset = %v, want nil", bm.WithTCPReset)
+	}
+}
+
+func TestBlockMetadataMappingRoundTrip(t *testing.T) {
+	input := `
+apiVersion: vaka.dev/v1alpha1
+kind: ServicePolicy
+services:
+  s:
+    network:
+      egress:
+        defaultAction: reject
+        block_metadata:
+          action: reject
+          with_tcp_reset: false
+`
+	p, err := policy.Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	raw, err := yaml.Marshal(p)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	p2, err := policy.Parse(strings.NewReader(string(raw)))
+	if err != nil {
+		t.Fatalf("re-parse after marshal: %v\nYAML:\n%s", err, raw)
+	}
+	bm := p2.Services["s"].Network.Egress.BlockMetadata
+	if bm.Action != "reject" {
+		t.Errorf("BlockMetadata.Action = %q, want \"reject\"", bm.Action)
+	}
+	if bm.WithTCPReset == nil || *bm.WithTCPReset != false {
+		t.Errorf("BlockMetadata.WithTCPReset = %v, want *false", bm.WithTCPReset)
+	}
+}
+
+func TestBlockMetadataBoolParseError(t *testing.T) {
+	for _, input := range []string{
+		`
+apiVersion: vaka.dev/v1alpha1
+kind: ServicePolicy
+services:
+  s:
+    network:
+      egress:
+        block_metadata: true
+`,
+		`
+apiVersion: vaka.dev/v1alpha1
+kind: ServicePolicy
+services:
+  s:
+    network:
+      egress:
+        block_metadata: false
+`,
+	} {
+		_, err := policy.Parse(strings.NewReader(input))
+		if err == nil {
+			t.Errorf("expected parse error for bool block_metadata in:\n%s", input)
+		}
 	}
 }
 

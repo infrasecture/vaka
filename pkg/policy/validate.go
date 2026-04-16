@@ -112,6 +112,16 @@ func Validate(p *ServicePolicy, networkModes map[string]string) []error {
 				add("%s.with_tcp_reset: only valid when defaultAction is \"reject\" (got %q)", ep, e.DefaultAction)
 			}
 
+			// block_metadata
+			if bm := e.BlockMetadata; bm.Action != "" {
+				if bm.Action != "accept" && bm.Action != "drop" && bm.Action != "reject" {
+					add("%s.block_metadata: unknown action %q (expected accept, drop, reject)", ep, bm.Action)
+				}
+				if bm.WithTCPReset != nil && bm.Action != "reject" {
+					add("%s.block_metadata.with_tcp_reset: only valid when action is \"reject\" (got %q)", ep, bm.Action)
+				}
+			}
+
 			// Validate all rule lists.
 			for listName, rules := range map[string][]Rule{
 				"accept": e.Accept,

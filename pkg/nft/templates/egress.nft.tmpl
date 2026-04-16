@@ -6,11 +6,11 @@ table inet vaka {
     # implicit invariants
     ct state established,related accept
     oif "lo" accept
-{{- if .BlockMetadata }}
+{{- if .MetadataRules }}
 
-    # metadata endpoint block (block_metadata: true)
-{{- range .MetadataRanges }}
-    {{ . }} drop
+    # metadata endpoint block
+{{- range .MetadataRules }}
+    {{ . }}
 {{- end }}
 {{- end }}
 {{- if .DropRules }}

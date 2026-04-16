@@ -101,6 +101,7 @@ func ResolvePolicy(ctx context.Context, e *policy.EgressPolicy, resolvConf io.Re
 
 	resolved := &policy.EgressPolicy{
 		DefaultAction: e.DefaultAction,
+		WithTCPReset:  e.WithTCPReset,
 		BlockMetadata: e.BlockMetadata,
 	}
 
