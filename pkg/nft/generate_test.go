@@ -105,10 +105,10 @@ func TestGenerateDropRuleBeforeAcceptRule(t *testing.T) {
 	_ = acceptIdx
 }
 
-func TestGenerateBlockMetadata(t *testing.T) {
+func TestGenerateBlockMetadataDrop(t *testing.T) {
 	e := &policy.EgressPolicy{
 		DefaultAction: "reject",
-		BlockMetadata: true,
+		BlockMetadata: policy.BlockMetadataConfig{Action: "drop"},
 	}
 	out, err := nft.Generate(e)
 	if err != nil {
@@ -121,7 +121,108 @@ func TestGenerateBlockMetadata(t *testing.T) {
 		"ip6 daddr fd20:ce::254/128 drop",
 	} {
 		if !strings.Contains(out, want) {
-			t.Errorf("block_metadata: expected %q in output\ngot:\n%s", want, out)
+			t.Errorf("block_metadata drop: expected %q in output\ngot:\n%s", want, out)
+		}
+	}
+}
+
+func TestGenerateBlockMetadataAccept(t *testing.T) {
+	e := &policy.EgressPolicy{
+		DefaultAction: "reject",
+		BlockMetadata: policy.BlockMetadataConfig{Action: "accept"},
+	}
+	out, err := nft.Generate(e)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	for _, want := range []string{
+		"ip  daddr 169.254.169.254/32 accept",
+		"ip  daddr 100.100.100.200/32 accept",
+		"ip6 daddr fd00:ec2::254/128 accept",
+		"ip6 daddr fd20:ce::254/128 accept",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("block_metadata accept: expected %q in output\ngot:\n%s", want, out)
+		}
+	}
+}
+
+func TestGenerateBlockMetadataRejectNoReset(t *testing.T) {
+	f := false
+	e := &policy.EgressPolicy{
+		DefaultAction: "reject",
+		BlockMetadata: policy.BlockMetadataConfig{Action: "reject", WithTCPReset: &f},
+	}
+	out, err := nft.Generate(e)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	for _, want := range []string{
+		"ip  daddr 169.254.169.254/32 reject with icmpx type admin-prohibited",
+		"ip  daddr 100.100.100.200/32 reject with icmpx type admin-prohibited",
+		"ip6 daddr fd00:ec2::254/128 reject with icmpx type admin-prohibited",
+		"ip6 daddr fd20:ce::254/128 reject with icmpx type admin-prohibited",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("block_metadata reject no-reset: expected %q in output\ngot:\n%s", want, out)
+		}
+	}
+	// No metadata rule should contain tcp reset (the default verdict may still have it).
+	for _, addr := range []string{
+		"ip  daddr 169.254.169.254/32",
+		"ip  daddr 100.100.100.200/32",
+		"ip6 daddr fd00:ec2::254/128",
+		"ip6 daddr fd20:ce::254/128",
+	} {
+		if strings.Contains(out, addr+" meta l4proto tcp reject with tcp reset") {
+			t.Errorf("block_metadata reject no-reset: tcp reset rule must not appear for %s\ngot:\n%s", addr, out)
+		}
+	}
+}
+
+func TestGenerateBlockMetadataRejectWithReset(t *testing.T) {
+	// nil WithTCPReset = default true
+	e := &policy.EgressPolicy{
+		DefaultAction: "reject",
+		BlockMetadata: policy.BlockMetadataConfig{Action: "reject"},
+	}
+	out, err := nft.Generate(e)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	// Each address should produce two rules: tcp reset + admin-prohibited.
+	for _, addr := range []string{
+		"ip  daddr 169.254.169.254/32",
+		"ip  daddr 100.100.100.200/32",
+		"ip6 daddr fd00:ec2::254/128",
+		"ip6 daddr fd20:ce::254/128",
+	} {
+		if !strings.Contains(out, addr+" meta l4proto tcp reject with tcp reset") {
+			t.Errorf("block_metadata reject: expected tcp reset rule for %s\ngot:\n%s", addr, out)
+		}
+		if !strings.Contains(out, addr+" reject with icmpx type admin-prohibited") {
+			t.Errorf("block_metadata reject: expected admin-prohibited rule for %s\ngot:\n%s", addr, out)
+		}
+	}
+}
+
+func TestGenerateBlockMetadataDisabled(t *testing.T) {
+	e := &policy.EgressPolicy{
+		DefaultAction: "reject",
+		// BlockMetadata zero value = disabled
+	}
+	out, err := nft.Generate(e)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	for _, addr := range []string{
+		"169.254.169.254",
+		"100.100.100.200",
+		"fd00:ec2::254",
+		"fd20:ce::254",
+	} {
+		if strings.Contains(out, addr) {
+			t.Errorf("block_metadata disabled: metadata address %s must not appear\ngot:\n%s", addr, out)
 		}
 	}
 }

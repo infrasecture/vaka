@@ -5,8 +5,7 @@ package nft
 // All rule strings are pre-rendered by the generator; the template only
 // formats them.
 type RulesetData struct {
-	BlockMetadata       bool
-	MetadataRanges      []string // e.g. "ip  daddr 169.254.169.254/32"
+	MetadataRules       []string // pre-rendered IMDS rules; nil = disabled
 	DropRules           []string
 	RejectRules         []string
 	AcceptRules         []string

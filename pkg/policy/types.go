@@ -35,11 +35,84 @@ type EgressPolicy struct {
 	//   meta l4proto tcp reject with tcp reset
 	//   reject with icmpx type admin-prohibited
 	// Only valid when defaultAction is "reject" (or empty, which defaults to "reject").
-	WithTCPReset  *bool  `yaml:"with_tcp_reset,omitempty"`
-	Accept        []Rule `yaml:"accept,omitempty"`
-	Reject        []Rule `yaml:"reject,omitempty"`
-	Drop          []Rule `yaml:"drop,omitempty"`
-	BlockMetadata bool   `yaml:"block_metadata,omitempty"`
+	WithTCPReset  *bool               `yaml:"with_tcp_reset,omitempty"`
+	Accept        []Rule              `yaml:"accept,omitempty"`
+	Reject        []Rule              `yaml:"reject,omitempty"`
+	Drop          []Rule              `yaml:"drop,omitempty"`
+	BlockMetadata BlockMetadataConfig `yaml:"block_metadata,omitempty"`
+}
+
+// BlockMetadataConfig controls the verdict applied to cloud IMDS endpoints.
+// Scalar form:  block_metadata: drop          (accept | drop | reject)
+// Mapping form: block_metadata: {action: reject, with_tcp_reset: false}
+// Omitting the field disables metadata blocking entirely.
+type BlockMetadataConfig struct {
+	Action       string `yaml:"action,omitempty"`
+	WithTCPReset *bool  `yaml:"with_tcp_reset,omitempty"`
+}
+
+// UnmarshalYAML accepts the scalar form ("accept", "drop", "reject") or the
+// mapping form ({action: reject, with_tcp_reset: false}). Boolean values
+// (true/false) are not valid — omit the field to disable metadata blocking.
+func (b *BlockMetadataConfig) UnmarshalYAML(value *yaml.Node) error {
+	switch value.Kind {
+	case yaml.ScalarNode:
+		switch value.Value {
+		case "accept", "drop", "reject":
+			b.Action = value.Value
+		default:
+			return fmt.Errorf("block_metadata: unknown value %q (expected accept, drop, or reject)", value.Value)
+		}
+		return nil
+	case yaml.MappingNode:
+		// Walk key/value pairs manually to reject unknown/duplicate keys and require action.
+		allowed := map[string]bool{"action": true, "with_tcp_reset": true}
+		seen := map[string]bool{}
+		for i := 0; i+1 < len(value.Content); i += 2 {
+			key := value.Content[i].Value
+			val := value.Content[i+1]
+			if !allowed[key] {
+				return fmt.Errorf("block_metadata: unknown field %q", key)
+			}
+			if seen[key] {
+				return fmt.Errorf("block_metadata: duplicate key %q", key)
+			}
+			seen[key] = true
+			switch key {
+			case "action":
+				switch val.Value {
+				case "accept", "drop", "reject":
+					b.Action = val.Value
+				default:
+					return fmt.Errorf("block_metadata.action: unknown value %q (expected accept, drop, or reject)", val.Value)
+				}
+			case "with_tcp_reset":
+				var v bool
+				if err := val.Decode(&v); err != nil {
+					return fmt.Errorf("block_metadata.with_tcp_reset: %w", err)
+				}
+				b.WithTCPReset = &v
+			}
+		}
+		if b.Action == "" {
+			return fmt.Errorf("block_metadata: mapping form requires action: (accept, drop, or reject)")
+		}
+		return nil
+	}
+	return fmt.Errorf("block_metadata: unexpected YAML node kind %v", value.Kind)
+}
+
+// MarshalYAML emits the scalar form when WithTCPReset is not set, and the
+// mapping form when it is. A zero-value BlockMetadataConfig (Action == "")
+// is omitted by the parent struct's omitempty tag.
+func (b BlockMetadataConfig) MarshalYAML() (any, error) {
+	if b.WithTCPReset != nil {
+		return map[string]any{
+			"action":        b.Action,
+			"with_tcp_reset": *b.WithTCPReset,
+		}, nil
+	}
+	return b.Action, nil
 }
 
 // Rule is one entry in an accept/reject/drop list.

@@ -28,14 +28,39 @@ var metadataRanges = []string{
 	"ip6 daddr fd20:ce::254/128",   // GCP IPv6 IMDS (IPv6-only instances)
 }
 
+// expandMetadataRules pre-renders nft rule strings for IMDS endpoints.
+// Returns nil when cfg is disabled (Action == "").
+func expandMetadataRules(cfg policy.BlockMetadataConfig) []string {
+	if cfg.Action == "" {
+		return nil
+	}
+	switch cfg.Action {
+	case "accept", "drop":
+		rules := make([]string, len(metadataRanges))
+		for i, r := range metadataRanges {
+			rules[i] = r + " " + cfg.Action
+		}
+		return rules
+	case "reject":
+		var rules []string
+		for _, r := range metadataRanges {
+			if withTCPReset(cfg.WithTCPReset) {
+				rules = append(rules, r+" meta l4proto tcp reject with tcp reset")
+			}
+			rules = append(rules, r+" reject with icmpx type admin-prohibited")
+		}
+		return rules
+	}
+	return nil
+}
+
 // Generate renders the nft ruleset for e.
 // If a to: entry is a hostname (not IP/CIDR), it is rendered as a comment
 // with a stub — suitable for vaka show output. vaka-init always passes
 // pre-resolved policies.
 func Generate(e *policy.EgressPolicy) (string, error) {
 	data := RulesetData{
-		BlockMetadata:       e.BlockMetadata,
-		MetadataRanges:      metadataRanges,
+		MetadataRules:       expandMetadataRules(e.BlockMetadata),
 		DropRules:           expandRules(e.Drop, "drop"),
 		RejectRules:         expandRules(e.Reject, "reject"),
 		AcceptRules:         expandRules(e.Accept, "accept"),

@@ -280,6 +280,130 @@ services:
 	}
 }
 
+func TestValidateBlockMetadata(t *testing.T) {
+	tests := []struct {
+		name    string
+		yaml    string
+		wantErr bool
+		errFrag string
+	}{
+		{
+			name: "drop is valid",
+			yaml: `
+apiVersion: vaka.dev/v1alpha1
+kind: ServicePolicy
+services:
+  s:
+    network:
+      egress:
+        defaultAction: reject
+        block_metadata: drop
+`,
+		},
+		{
+			name: "accept is valid",
+			yaml: `
+apiVersion: vaka.dev/v1alpha1
+kind: ServicePolicy
+services:
+  s:
+    network:
+      egress:
+        defaultAction: reject
+        block_metadata: accept
+`,
+		},
+		{
+			name: "reject is valid",
+			yaml: `
+apiVersion: vaka.dev/v1alpha1
+kind: ServicePolicy
+services:
+  s:
+    network:
+      egress:
+        defaultAction: reject
+        block_metadata: reject
+`,
+		},
+		{
+			name: "mapping form reject with with_tcp_reset false is valid",
+			yaml: `
+apiVersion: vaka.dev/v1alpha1
+kind: ServicePolicy
+services:
+  s:
+    network:
+      egress:
+        defaultAction: reject
+        block_metadata:
+          action: reject
+          with_tcp_reset: false
+`,
+		},
+		{
+			name:    "mapping form drop with with_tcp_reset is invalid",
+			wantErr: true,
+			errFrag: "with_tcp_reset",
+			yaml: `
+apiVersion: vaka.dev/v1alpha1
+kind: ServicePolicy
+services:
+  s:
+    network:
+      egress:
+        defaultAction: reject
+        block_metadata:
+          action: drop
+          with_tcp_reset: true
+`,
+		},
+		{
+			name:    "mapping form accept with with_tcp_reset is invalid",
+			wantErr: true,
+			errFrag: "with_tcp_reset",
+			yaml: `
+apiVersion: vaka.dev/v1alpha1
+kind: ServicePolicy
+services:
+  s:
+    network:
+      egress:
+        defaultAction: reject
+        block_metadata:
+          action: accept
+          with_tcp_reset: false
+`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			p := mustParse(t, tc.yaml)
+			errs := policy.Validate(p, nil)
+			if tc.wantErr {
+				if len(errs) == 0 {
+					t.Fatal("expected validation error, got none")
+				}
+				found := false
+				for _, e := range errs {
+					if strings.Contains(e.Error(), tc.errFrag) {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("expected error containing %q, got: %v", tc.errFrag, errs)
+				}
+			} else {
+				if len(errs) != 0 {
+					t.Fatalf("expected no errors, got: %v", errs)
+				}
+			}
+		})
+	}
+}
+
 func TestValidateWithTCPReset(t *testing.T) {
 	tests := []struct {
 		name    string
