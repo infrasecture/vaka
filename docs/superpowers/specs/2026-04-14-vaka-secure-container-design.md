@@ -208,8 +208,6 @@ egress:
     with_tcp_reset: false   # emit admin-prohibited for all protocols
 ```
 
-`block_metadata: true` and `block_metadata: false` are parse errors — use the explicit string form or omit the field entirely.
-
 Covered ranges (as of v1alpha1):
 
 | Address | Provider |

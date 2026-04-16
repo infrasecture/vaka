@@ -382,8 +382,6 @@ Covered endpoints:
 | `fd00:ec2::254/128` | AWS IPv6 IMDS (Nitro instances) |
 | `fd20:ce::254/128` | GCP IPv6 IMDS (IPv6-only instances) |
 
-> `block_metadata: true` and `block_metadata: false` are **not valid** — use `drop`, `accept`, or `reject` explicitly. Omit the field entirely to disable metadata blocking.
-
 Recommended for any container that should not have access to cloud credentials through IMDS.
 
 ### runtime.dropCaps
