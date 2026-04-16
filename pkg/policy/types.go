@@ -65,8 +65,34 @@ func (b *BlockMetadataConfig) UnmarshalYAML(value *yaml.Node) error {
 		}
 		return nil
 	case yaml.MappingNode:
-		type shadow BlockMetadataConfig
-		return value.Decode((*shadow)(b))
+		// Walk key/value pairs manually to reject unknown keys and require action.
+		allowed := map[string]bool{"action": true, "with_tcp_reset": true}
+		for i := 0; i+1 < len(value.Content); i += 2 {
+			key := value.Content[i].Value
+			val := value.Content[i+1]
+			if !allowed[key] {
+				return fmt.Errorf("block_metadata: unknown field %q", key)
+			}
+			switch key {
+			case "action":
+				switch val.Value {
+				case "accept", "drop", "reject":
+					b.Action = val.Value
+				default:
+					return fmt.Errorf("block_metadata.action: unknown value %q (expected accept, drop, or reject)", val.Value)
+				}
+			case "with_tcp_reset":
+				var v bool
+				if err := val.Decode(&v); err != nil {
+					return fmt.Errorf("block_metadata.with_tcp_reset: %w", err)
+				}
+				b.WithTCPReset = &v
+			}
+		}
+		if b.Action == "" {
+			return fmt.Errorf("block_metadata: mapping form requires action: (accept, drop, or reject)")
+		}
+		return nil
 	}
 	return fmt.Errorf("block_metadata: unexpected YAML node kind %v", value.Kind)
 }

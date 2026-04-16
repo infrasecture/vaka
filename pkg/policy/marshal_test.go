@@ -170,6 +170,41 @@ services:
 	}
 }
 
+func TestBlockMetadataMappingUnknownKeyIsError(t *testing.T) {
+	input := `
+apiVersion: vaka.dev/v1alpha1
+kind: ServicePolicy
+services:
+  s:
+    network:
+      egress:
+        block_metadata:
+          action: reject
+          with_tcp_rst: false
+`
+	_, err := policy.Parse(strings.NewReader(input))
+	if err == nil {
+		t.Error("expected parse error for unknown key with_tcp_rst, got nil")
+	}
+}
+
+func TestBlockMetadataMappingMissingActionIsError(t *testing.T) {
+	input := `
+apiVersion: vaka.dev/v1alpha1
+kind: ServicePolicy
+services:
+  s:
+    network:
+      egress:
+        block_metadata:
+          with_tcp_reset: false
+`
+	_, err := policy.Parse(strings.NewReader(input))
+	if err == nil {
+		t.Error("expected parse error for mapping form without action, got nil")
+	}
+}
+
 func TestICMPSpecMarshalRoundTrip(t *testing.T) {
 	p, err := policy.Parse(strings.NewReader(roundTripInput))
 	if err != nil {
