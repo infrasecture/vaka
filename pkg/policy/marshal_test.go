@@ -188,6 +188,24 @@ services:
 	}
 }
 
+func TestBlockMetadataMappingDuplicateKeyIsError(t *testing.T) {
+	input := `
+apiVersion: vaka.dev/v1alpha1
+kind: ServicePolicy
+services:
+  s:
+    network:
+      egress:
+        block_metadata:
+          action: reject
+          action: drop
+`
+	_, err := policy.Parse(strings.NewReader(input))
+	if err == nil {
+		t.Error("expected parse error for duplicate action key, got nil")
+	}
+}
+
 func TestBlockMetadataMappingMissingActionIsError(t *testing.T) {
 	input := `
 apiVersion: vaka.dev/v1alpha1

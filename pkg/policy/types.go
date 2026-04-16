@@ -65,14 +65,19 @@ func (b *BlockMetadataConfig) UnmarshalYAML(value *yaml.Node) error {
 		}
 		return nil
 	case yaml.MappingNode:
-		// Walk key/value pairs manually to reject unknown keys and require action.
+		// Walk key/value pairs manually to reject unknown/duplicate keys and require action.
 		allowed := map[string]bool{"action": true, "with_tcp_reset": true}
+		seen := map[string]bool{}
 		for i := 0; i+1 < len(value.Content); i += 2 {
 			key := value.Content[i].Value
 			val := value.Content[i+1]
 			if !allowed[key] {
 				return fmt.Errorf("block_metadata: unknown field %q", key)
 			}
+			if seen[key] {
+				return fmt.Errorf("block_metadata: duplicate key %q", key)
+			}
+			seen[key] = true
 			switch key {
 			case "action":
 				switch val.Value {
