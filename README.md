@@ -1,4 +1,4 @@
-# vaka  `v0.1.0`
+# vaka
 
 vaka is a secure container layer that controls which network endpoints your containers are allowed to reach. Write a short policy file describing what outbound connections each service needs, run `vaka up` instead of `docker compose up`, and a kernel-level firewall is applied inside each container before its application process starts. Everything not on the allowlist is blocked.
 
