@@ -103,7 +103,8 @@ table inet vaka {
     ip daddr { 93.184.216.34 } tcp dport { 443 } accept
 
     # default action
-    reject
+    meta l4proto tcp reject with tcp reset
+    reject with icmpx type admin-prohibited
   }
 }
 ```
@@ -254,6 +255,7 @@ services:
     network:
       egress:
         defaultAction: reject    # accept | reject | drop  (default: reject)
+        with_tcp_reset: true     # TCP RST for reject; only valid with defaultAction: reject (default: true)
         block_metadata: false    # drops 169.254.169.254, 100.100.100.200, fd00:ec2::254, fd20:ce::254
         accept: [<rule>, ...]
         reject: [<rule>, ...]
@@ -318,9 +320,37 @@ Named ICMPv6 types: `nd-neighbor-solicit`, `nd-neighbor-advert`, `nd-router-soli
 
 | Value | Behaviour |
 |-------|-----------|
-| `reject` | Unmatched packets receive a TCP RST or ICMP port-unreachable. The application sees a connection refused immediately. **(default)** |
+| `reject` | Unmatched TCP receives a TCP RST; other protocols receive ICMP `admin-prohibited`. The application sees a connection refused immediately. **(default)** |
 | `drop` | Unmatched packets are silently discarded. The application waits until it times out. |
 | `accept` | Unmatched packets are allowed through. Use the `drop` or `reject` lists to block specific destinations. Emits a warning. |
+
+### with_tcp_reset
+
+When `defaultAction: reject` and `with_tcp_reset` is `true` (the default), vaka emits two terminal rules at the end of the chain instead of one:
+
+```
+meta l4proto tcp reject with tcp reset
+reject with icmpx type admin-prohibited
+```
+
+TCP connections receive an in-protocol RST — fast, in-band, and handled by all TCP stacks. UDP and ICMP receive ICMP `admin-prohibited`, which is semantically correct ("a firewall blocked this" rather than "nothing is listening").
+
+Set `with_tcp_reset: false` to emit only `admin-prohibited` for all protocols.
+
+The same option is available on individual rules in the `reject:` list when `proto: tcp` is set. By default, these rules also use `reject with tcp reset`:
+
+```yaml
+reject:
+  - proto: tcp
+    to: [10.0.0.1]
+    ports: [22]
+    with_tcp_reset: false  # emit admin-prohibited for this rule only
+```
+
+`with_tcp_reset` is a validation error when used outside a `reject` context:
+- On `defaultAction: accept` or `defaultAction: drop` → error
+- On a rule in the `accept:` or `drop:` list → error
+- On a `reject:` rule with `proto: udp`, `proto: icmp`, `proto: icmpv6`, or no proto → error
 
 ### block_metadata
 

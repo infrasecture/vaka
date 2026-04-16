@@ -36,6 +36,8 @@ table inet vaka {
 {{- end }}
 
     # default action
-    {{ .DefaultVerdict }}
+{{- range .DefaultVerdictLines }}
+    {{ . }}
+{{- end }}
   }
 }

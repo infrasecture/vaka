@@ -106,6 +106,12 @@ func Validate(p *ServicePolicy, networkModes map[string]string) []error {
 				add("%s.defaultAction: unknown value %q (expected accept, reject, drop)", ep, e.DefaultAction)
 			}
 
+			// with_tcp_reset is only valid when defaultAction is "reject" (or empty,
+			// which Parse normalises to "reject").
+			if e.WithTCPReset != nil && e.DefaultAction != "reject" && e.DefaultAction != "" {
+				add("%s.with_tcp_reset: only valid when defaultAction is \"reject\" (got %q)", ep, e.DefaultAction)
+			}
+
 			// Validate all rule lists.
 			for listName, rules := range map[string][]Rule{
 				"accept": e.Accept,
@@ -114,7 +120,7 @@ func Validate(p *ServicePolicy, networkModes map[string]string) []error {
 			} {
 				for i, rule := range rules {
 					rp := fmt.Sprintf("%s.%s[%d]", ep, listName, i)
-					errs = append(errs, validateRule(rp, rule)...)
+					errs = append(errs, validateRule(rp, listName, rule)...)
 				}
 			}
 		}
@@ -144,7 +150,7 @@ func Validate(p *ServicePolicy, networkModes map[string]string) []error {
 	return errs
 }
 
-func validateRule(prefix string, r Rule) []error {
+func validateRule(prefix string, listName string, r Rule) []error {
 	var errs []error
 	add := func(format string, args ...any) {
 		errs = append(errs, fmt.Errorf(format, args...))
@@ -189,6 +195,19 @@ func validateRule(prefix string, r Rule) []error {
 		// Named ICMP types — validate against known nft names.
 		if !knownICMPType(r.Type.Name) {
 			add("%s.type: unknown ICMP type name %q", prefix, r.Type.Name)
+		}
+	}
+
+	// with_tcp_reset is only valid for proto: tcp rules in the reject list.
+	if r.WithTCPReset != nil {
+		if listName != "reject" {
+			add("%s.with_tcp_reset: only valid in the reject list (found in %q list)", prefix, listName)
+		} else if r.Proto != "tcp" {
+			proto := r.Proto
+			if proto == "" {
+				proto = "(none)"
+			}
+			add("%s.with_tcp_reset: only valid for proto: tcp (got %q)", prefix, proto)
 		}
 	}
 

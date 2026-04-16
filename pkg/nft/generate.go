@@ -34,12 +34,12 @@ var metadataRanges = []string{
 // pre-resolved policies.
 func Generate(e *policy.EgressPolicy) (string, error) {
 	data := RulesetData{
-		BlockMetadata:  e.BlockMetadata,
-		MetadataRanges: metadataRanges,
-		DropRules:      expandRules(e.Drop, "drop"),
-		RejectRules:    expandRules(e.Reject, "reject"),
-		AcceptRules:    expandRules(e.Accept, "accept"),
-		DefaultVerdict: defaultVerdict(e.DefaultAction),
+		BlockMetadata:       e.BlockMetadata,
+		MetadataRanges:      metadataRanges,
+		DropRules:           expandRules(e.Drop, "drop"),
+		RejectRules:         expandRules(e.Reject, "reject"),
+		AcceptRules:         expandRules(e.Accept, "accept"),
+		DefaultVerdictLines: defaultVerdictLines(e.DefaultAction, withTCPReset(e.WithTCPReset)),
 	}
 
 	var buf bytes.Buffer
@@ -49,23 +49,49 @@ func Generate(e *policy.EgressPolicy) (string, error) {
 	return buf.String(), nil
 }
 
-// defaultVerdict returns the nft terminal verdict for the default action.
-func defaultVerdict(action string) string {
+// withTCPReset returns true when b is nil (default) or explicitly true.
+func withTCPReset(b *bool) bool { return b == nil || *b }
+
+// defaultVerdictLines returns the terminal verdict lines for the default action.
+// When action is "reject" and reset is true (the default), two lines are emitted:
+// TCP connections receive an in-protocol RST; other protocols receive the
+// semantically correct ICMP admin-prohibited.
+func defaultVerdictLines(action string, reset bool) []string {
 	switch action {
 	case "drop":
-		return "drop"
+		return []string{"drop"}
 	case "accept":
-		return "accept"
-	default: // "reject" and the defaulted value
-		return "reject with icmpx type port-unreachable"
+		return []string{"accept"}
+	default: // "reject" and the empty default
+		if reset {
+			return []string{
+				"meta l4proto tcp reject with tcp reset",
+				"reject with icmpx type admin-prohibited",
+			}
+		}
+		return []string{"reject with icmpx type admin-prohibited"}
 	}
+}
+
+// rejectVerdict returns the nft verdict for a rule in the reject list.
+// TCP rules use "reject with tcp reset" by default; all other protocols use
+// "reject with icmpx type admin-prohibited".
+func rejectVerdict(r policy.Rule) string {
+	if r.Proto == "tcp" && withTCPReset(r.WithTCPReset) {
+		return "reject with tcp reset"
+	}
+	return "reject with icmpx type admin-prohibited"
 }
 
 // expandRules converts a list of policy Rules into pre-rendered nft rule strings.
 func expandRules(rules []policy.Rule, verdict string) []string {
 	var out []string
 	for _, r := range rules {
-		out = append(out, expandRule(r, verdict)...)
+		v := verdict
+		if verdict == "reject" {
+			v = rejectVerdict(r)
+		}
+		out = append(out, expandRule(r, v)...)
 	}
 	return out
 }

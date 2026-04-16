@@ -127,12 +127,19 @@ func TestGenerateBlockMetadata(t *testing.T) {
 }
 
 func TestGenerateDefaultActionReject(t *testing.T) {
+	// Default reject emits two terminal lines: TCP RST for TCP, admin-prohibited for all.
 	out, err := nft.Generate(&policy.EgressPolicy{DefaultAction: "reject"})
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	if !strings.Contains(out, "reject with icmpx type port-unreachable") {
-		t.Errorf("expected default reject verdict, got:\n%s", out)
+	if !strings.Contains(out, "meta l4proto tcp reject with tcp reset") {
+		t.Errorf("expected tcp reset line in default reject output, got:\n%s", out)
+	}
+	if !strings.Contains(out, "reject with icmpx type admin-prohibited") {
+		t.Errorf("expected admin-prohibited line in default reject output, got:\n%s", out)
+	}
+	if strings.Contains(out, "port-unreachable") {
+		t.Errorf("port-unreachable must not appear in default reject output:\n%s", out)
 	}
 }
 
@@ -274,8 +281,83 @@ func TestGenerateProtoAndPortsEmitsDportSet(t *testing.T) {
 	if !strings.Contains(out, "tcp dport { 443, 80 } accept") {
 		t.Errorf("expected dport set for tcp+ports rule, got:\n%s", out)
 	}
-	// meta l4proto must NOT appear when dport is already in the rule.
-	if strings.Contains(out, "meta l4proto tcp") {
+	// meta l4proto must NOT appear as part of the accept rule itself —
+	// dport already encodes the protocol restriction. The default verdict
+	// legitimately emits "meta l4proto tcp reject with tcp reset", so check
+	// specifically for the wrongly-generated accept form.
+	if strings.Contains(out, "meta l4proto tcp accept") {
 		t.Errorf("dport rule should not also emit meta l4proto:\n%s", out)
+	}
+}
+
+// --- with_tcp_reset tests ---
+
+func TestGenerateDefaultRejectWithTCPResetFalse(t *testing.T) {
+	f := false
+	out, err := nft.Generate(&policy.EgressPolicy{DefaultAction: "reject", WithTCPReset: &f})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if strings.Contains(out, "tcp reset") {
+		t.Errorf("tcp reset must not appear when with_tcp_reset: false:\n%s", out)
+	}
+	if !strings.Contains(out, "reject with icmpx type admin-prohibited") {
+		t.Errorf("expected admin-prohibited verdict, got:\n%s", out)
+	}
+}
+
+func TestGenerateRejectRuleTCPUsesReset(t *testing.T) {
+	e := &policy.EgressPolicy{
+		DefaultAction: "reject",
+		Reject: []policy.Rule{
+			{Proto: "tcp", To: []string{"10.0.0.1"}, Ports: []policy.PortSpec{{Single: 22}}},
+		},
+	}
+	out, err := nft.Generate(e)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if !strings.Contains(out, "ip  daddr { 10.0.0.1 } tcp dport { 22 } reject with tcp reset") {
+		t.Errorf("TCP reject rule must use tcp reset by default:\n%s", out)
+	}
+}
+
+func TestGenerateRejectRuleTCPResetFalse(t *testing.T) {
+	f := false
+	e := &policy.EgressPolicy{
+		DefaultAction: "reject",
+		Reject: []policy.Rule{
+			{Proto: "tcp", To: []string{"10.0.0.1"}, Ports: []policy.PortSpec{{Single: 22}}, WithTCPReset: &f},
+		},
+	}
+	out, err := nft.Generate(e)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if !strings.Contains(out, "ip  daddr { 10.0.0.1 } tcp dport { 22 } reject with icmpx type admin-prohibited") {
+		t.Errorf("expected admin-prohibited for tcp rule with with_tcp_reset: false:\n%s", out)
+	}
+	if strings.Contains(out, "tcp dport { 22 } reject with tcp reset") {
+		t.Errorf("tcp reset must not appear when with_tcp_reset: false on rule:\n%s", out)
+	}
+}
+
+func TestGenerateRejectRuleUDPUsesAdminProhibited(t *testing.T) {
+	e := &policy.EgressPolicy{
+		DefaultAction: "reject",
+		Reject: []policy.Rule{
+			{Proto: "udp", To: []string{"8.8.8.8"}, Ports: []policy.PortSpec{{Single: 53}}},
+		},
+	}
+	out, err := nft.Generate(e)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	// UDP never uses tcp reset.
+	if strings.Contains(out, "udp dport { 53 } reject with tcp reset") {
+		t.Errorf("UDP rule must not produce tcp reset:\n%s", out)
+	}
+	if !strings.Contains(out, "udp dport { 53 } reject with icmpx type admin-prohibited") {
+		t.Errorf("expected admin-prohibited for UDP rule:\n%s", out)
 	}
 }

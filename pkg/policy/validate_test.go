@@ -279,3 +279,203 @@ services:
 		t.Errorf("expected SYS_PTRACE unchanged, got %q", svc.Runtime.DropCaps[1])
 	}
 }
+
+func TestValidateWithTCPReset(t *testing.T) {
+	tests := []struct {
+		name    string
+		yaml    string
+		wantErr bool
+		errFrag string // substring expected in the error message
+	}{
+		{
+			name: "with_tcp_reset true on defaultAction reject is valid",
+			yaml: `
+apiVersion: vaka.dev/v1alpha1
+kind: ServicePolicy
+services:
+  s:
+    network:
+      egress:
+        defaultAction: reject
+        with_tcp_reset: true
+`,
+		},
+		{
+			name: "with_tcp_reset false on defaultAction reject is valid",
+			yaml: `
+apiVersion: vaka.dev/v1alpha1
+kind: ServicePolicy
+services:
+  s:
+    network:
+      egress:
+        defaultAction: reject
+        with_tcp_reset: false
+`,
+		},
+		{
+			name:    "with_tcp_reset on defaultAction accept is invalid",
+			wantErr: true,
+			errFrag: "with_tcp_reset",
+			yaml: `
+apiVersion: vaka.dev/v1alpha1
+kind: ServicePolicy
+services:
+  s:
+    network:
+      egress:
+        defaultAction: accept
+        with_tcp_reset: true
+`,
+		},
+		{
+			name:    "with_tcp_reset on defaultAction drop is invalid",
+			wantErr: true,
+			errFrag: "with_tcp_reset",
+			yaml: `
+apiVersion: vaka.dev/v1alpha1
+kind: ServicePolicy
+services:
+  s:
+    network:
+      egress:
+        defaultAction: drop
+        with_tcp_reset: true
+`,
+		},
+		{
+			name: "rule with_tcp_reset true in reject list with proto tcp is valid",
+			yaml: `
+apiVersion: vaka.dev/v1alpha1
+kind: ServicePolicy
+services:
+  s:
+    network:
+      egress:
+        defaultAction: reject
+        reject:
+          - proto: tcp
+            to: [10.0.0.1]
+            ports: [22]
+            with_tcp_reset: true
+`,
+		},
+		{
+			name: "rule with_tcp_reset false in reject list with proto tcp is valid",
+			yaml: `
+apiVersion: vaka.dev/v1alpha1
+kind: ServicePolicy
+services:
+  s:
+    network:
+      egress:
+        defaultAction: reject
+        reject:
+          - proto: tcp
+            to: [10.0.0.1]
+            ports: [22]
+            with_tcp_reset: false
+`,
+		},
+		{
+			name:    "rule with_tcp_reset in reject list with proto udp is invalid",
+			wantErr: true,
+			errFrag: "with_tcp_reset",
+			yaml: `
+apiVersion: vaka.dev/v1alpha1
+kind: ServicePolicy
+services:
+  s:
+    network:
+      egress:
+        defaultAction: reject
+        reject:
+          - proto: udp
+            to: [8.8.8.8]
+            ports: [53]
+            with_tcp_reset: true
+`,
+		},
+		{
+			name:    "rule with_tcp_reset in accept list is invalid",
+			wantErr: true,
+			errFrag: "with_tcp_reset",
+			yaml: `
+apiVersion: vaka.dev/v1alpha1
+kind: ServicePolicy
+services:
+  s:
+    network:
+      egress:
+        defaultAction: reject
+        accept:
+          - proto: tcp
+            to: [10.0.0.1]
+            ports: [443]
+            with_tcp_reset: true
+`,
+		},
+		{
+			name:    "rule with_tcp_reset in drop list is invalid",
+			wantErr: true,
+			errFrag: "with_tcp_reset",
+			yaml: `
+apiVersion: vaka.dev/v1alpha1
+kind: ServicePolicy
+services:
+  s:
+    network:
+      egress:
+        defaultAction: reject
+        drop:
+          - proto: tcp
+            to: [10.0.0.1]
+            ports: [22]
+            with_tcp_reset: true
+`,
+		},
+		{
+			name:    "rule with_tcp_reset in reject list with no proto is invalid",
+			wantErr: true,
+			errFrag: "with_tcp_reset",
+			yaml: `
+apiVersion: vaka.dev/v1alpha1
+kind: ServicePolicy
+services:
+  s:
+    network:
+      egress:
+        defaultAction: reject
+        reject:
+          - to: [10.0.0.1]
+            with_tcp_reset: true
+`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			p := mustParse(t, tc.yaml)
+			errs := policy.Validate(p, nil)
+			if tc.wantErr {
+				if len(errs) == 0 {
+					t.Fatal("expected validation error, got none")
+				}
+				found := false
+				for _, e := range errs {
+					if strings.Contains(e.Error(), tc.errFrag) {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("expected error containing %q, got: %v", tc.errFrag, errs)
+				}
+			} else {
+				if len(errs) != 0 {
+					t.Fatalf("expected no errors, got: %v", errs)
+				}
+			}
+		})
+	}
+}

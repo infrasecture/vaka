@@ -23,7 +23,7 @@ This spec addresses threat 1 in full. Threat 2 is documented as future work (see
 A two-component system:
 
 - **`vaka-init`** — a minimal static Go binary that runs as the container's entrypoint. It reads a policy file injected via Docker secrets, configures nftables egress rules, drops Linux capabilities, optionally changes UID/GID, then `execve`s the actual harness. After handoff, `vaka-init` no longer exists in memory.
-- **`vaka` CLI** — a host-side tool that reads `vaka.yaml`, validates it strictly, generates a Docker Compose override (piped via stdin), and proxies `docker compose up`. It injects per-service policy as Docker secrets via environment variables, rewrites service entrypoints to `vaka-init` transparently, and leaves no artifacts on disk.
+- **`vaka` CLI** — a host-side tool that reads `vaka.yaml`, validates it strictly, generates a Docker Compose override (piped via stdin), and proxies `docker compose up`/`run`. It injects per-service policy as Docker secrets via environment variables, rewrites service entrypoints to `vaka-init` transparently, and leaves no artifacts on disk.
 
 The operator writes a normal `docker-compose.yaml` with no mention of `vaka`. The `vaka` CLI handles everything behind the scenes.
 
@@ -243,6 +243,7 @@ When `proto: icmp` or `proto: icmpv6` is specified, only that family is targeted
 | `apiVersion` | string | `vaka.dev/v1alpha1` | yes |
 | `kind` | string | `ServicePolicy` | yes |
 | `services.<name>.network.egress.defaultAction` | string | `accept`, `reject`, `drop`; default `reject` if omitted | no |
+| `services.<name>.network.egress.with_tcp_reset` | bool | TCP RST for reject; only valid with `defaultAction: reject`; default `true` | no |
 | `services.<name>.network.egress.accept` | list | Rule entries | no |
 | `services.<name>.network.egress.reject` | list | Rule entries | no |
 | `services.<name>.network.egress.drop` | list | Rule entries | no |
@@ -251,6 +252,7 @@ When `proto: icmp` or `proto: icmpv6` is specified, only that family is targeted
 | `rule.ports` | list | int or `"N-M"` string | no (omit = any) |
 | `rule.type` | string or int | ICMP type name or 0–255 | no |
 | `rule.dns` | map | `{}` or `servers: [...]` | special shorthand |
+| `rule.with_tcp_reset` | bool | TCP RST for this rule; only valid in `reject:` list with `proto: tcp`; default `true` | no |
 | `services.<name>.network.egress.block_metadata` | bool | `true`/`false`; default `false` | no |
 | `runtime.dropCaps` | list of string | Linux capability names (short form); normally auto-computed by vaka CLI; explicit value in `vaka.yaml` overrides auto-computation | no |
 | `runtime.runAs.uid` | int | ≥ 0 | no |
@@ -262,7 +264,7 @@ When `proto: icmp` or `proto: icmpv6` is specified, only that family is targeted
 
 ### 5.1 How vaka-init is invoked
 
-`vaka-init` must be present in the harness image (see Section 7) but is **not** set as the image `ENTRYPOINT`. The `vaka` CLI injects it transparently at `vaka up` time by rewriting `entrypoint:` and `command:` in the compose override, passing the original harness entrypoint and command as arguments to `vaka-init` after `--`. Isolation only takes effect when the container is started via `vaka up` — running directly with `docker compose up` bypasses vaka entirely.
+`vaka-init` must be present in the harness image (see Section 7) but is **not** set as the image `ENTRYPOINT`. The `vaka` CLI injects it transparently at `vaka up`/`vaka run` time by rewriting `entrypoint:` and `command:` in the compose override, passing the original harness entrypoint and command as arguments to `vaka-init` after `--`. Isolation only takes effect when the container is started via `vaka up` or `vaka run` — running directly with `docker compose up`/`docker compose run` bypasses vaka entirely.
 
 ### 5.2 Startup sequence
 
@@ -372,9 +374,10 @@ table inet vaka {
     ip  daddr { 10.20.0.0/16 } tcp dport { 443, 80 } accept
 
     # ── DEFAULT ACTION ───────────────────────────────────────────────────────
-    # icmpx = protocol-agnostic: emits correct ICMP/ICMPv6 message automatically
-    reject with icmpx type port-unreachable   # defaultAction: reject
-    # (or: drop / accept)
+    # with_tcp_reset: true (default) — TCP gets in-protocol RST, others get admin-prohibited
+    meta l4proto tcp reject with tcp reset    # defaultAction: reject, with_tcp_reset: true
+    reject with icmpx type admin-prohibited
+    # (or: drop / accept / single "reject with icmpx type admin-prohibited" when with_tcp_reset: false)
   }
 }
 ```
@@ -443,7 +446,9 @@ table inet vaka {
 {{- end }}
 
     # default action
-    {{ .DefaultVerdict }}
+{{- range .DefaultVerdictLines }}
+    {{ . }}
+{{- end }}
   }
 }
 ```
@@ -468,14 +473,15 @@ This approach means the template stays stable and auditable; complexity lives in
 
 ```
 vaka up [compose-flags...]   Validate, inject, proxy to docker compose up
+vaka run [compose-flags...]  Validate, inject, proxy to docker compose run
 vaka validate                Validate vaka.yaml; print per-service summary; exit non-zero on error
 vaka show <service>          Print generated nft ruleset for <service> (dry-run, no DNS resolution)
 vaka version                 Print version
 ```
 
-All flags not recognised by `vaka up` are forwarded verbatim to `docker compose up`.
+All flags not recognised by `vaka up`/`vaka run` are forwarded verbatim to `docker compose` with the selected subcommand.
 
-### 6.2 `vaka up` sequence
+### 6.2 `vaka up` / `vaka run` sequence
 
 ```
 1. Locate vaka.yaml (current directory, or -f <path>).
@@ -499,7 +505,7 @@ All flags not recognised by `vaka up` are forwarded verbatim to `docker compose 
       client.ImageInspect(ctx, image) → read .Config.Entrypoint and .Config.Cmd.
       This uses the Docker socket directly; no subprocess is spawned.
    c. If the image is not available locally (not pulled, not built), ImageInspect
-      returns a not-found error → vaka up errors:
+      returns a not-found error → vaka up/run errors:
       "Error: service <name>: image <image> is not available locally and no
        entrypoint/command is declared in docker-compose.yaml. Either pull the
        image first or add entrypoint: to the service definition."
@@ -552,7 +558,7 @@ All flags not recognised by `vaka up` are forwarded verbatim to `docker compose 
    exec.Command("docker", "compose",
      "-f", "docker-compose.yaml",
      "-f", "-",                        # read override from stdin
-     "up", <user-flags...>)
+     "<up-or-run>", <user-flags...>)
    cmd.Stdin  = strings.NewReader(overrideYAML)
    cmd.Stdout = os.Stdout
    cmd.Stderr = os.Stderr
@@ -573,7 +579,7 @@ Validation runs before any docker interaction. A single validation failure print
 | `kind` | Must be exactly `ServicePolicy` |
 | Service name | Valid DNS label; must exist in `docker-compose.yaml` |
 | `defaultAction` | One of: `accept`, `reject`, `drop`. Defaults to `reject` if omitted. `vaka` CLI emits a prominent warning when `accept` is used: "WARNING: service <name> uses defaultAction: accept — all unmatched egress traffic is allowed." |
-| `network_mode` (compose) | Services listed in `vaka.yaml` must not use `network_mode: host` in `docker-compose.yaml`. `vaka up` and `vaka validate` both hard-error if this condition is detected: "Error: service <name> uses network_mode: host. vaka cannot isolate a container sharing the host network namespace. Remove network_mode: host or exclude this service from vaka.yaml." |
+| `network_mode` (compose) | Services listed in `vaka.yaml` must not use `network_mode: host` in `docker-compose.yaml`. `vaka up`, `vaka run`, and `vaka validate` all hard-error if this condition is detected: "Error: service <name> uses network_mode: host. vaka cannot isolate a container sharing the host network namespace. Remove network_mode: host or exclude this service from vaka.yaml." |
 | `proto` | One of: `tcp`, `udp`, `icmp`, `icmpv6` |
 | `to:` entries | Each string: valid IPv4, valid IPv6, valid CIDR, or syntactically valid hostname (`[a-z0-9]([a-z0-9\-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9\-]*[a-z0-9])?)*`) |
 | `ports:` entries | Integer 1–65535, or string `"N-M"` where `N < M` and both in range |
@@ -634,7 +640,7 @@ COPY --from=builder /out/vaka-init          /opt/vaka/bin/vaka-init
 
 ### Including vaka-init in a harness image
 
-Any harness image that will be used with `vaka up` must include the `vaka-init` and `nft` binaries. Copy them in from `emsi/vaka-init` using a multi-stage build:
+Any harness image that will be used with `vaka up` or `vaka run` must include the `vaka-init` and `nft` binaries. Copy them in from `emsi/vaka-init` using a multi-stage build:
 
 ```dockerfile
 FROM emsi/vaka-init:latest AS vaka
@@ -645,7 +651,7 @@ COPY --from=vaka /opt/vaka/bin/vaka-init /usr/local/sbin/vaka-init
 COPY --from=vaka /opt/vaka/bin/nft       /usr/local/sbin/nft
 ```
 
-The `ENTRYPOINT` in the image remains the harness's own entry point. The `vaka` CLI injects `vaka-init` transparently at `vaka up` time by rewriting `entrypoint:` and `command:` in the compose override. No changes to the harness image `ENTRYPOINT` are required or expected. The container carries only two vaka binaries; no other vaka code runs inside the container.
+The `ENTRYPOINT` in the image remains the harness's own entry point. The `vaka` CLI injects `vaka-init` transparently at `vaka up`/`vaka run` time by rewriting `entrypoint:` and `command:` in the compose override. No changes to the harness image `ENTRYPOINT` are required or expected. The container carries only two vaka binaries; no other vaka code runs inside the container.
 
 ---
 
@@ -687,7 +693,7 @@ vaka-init then drops exactly those capabilities from all five sets (I → A → 
 
 The remaining default Docker capabilities (`SETPCAP`, `SETUID`, `SETGID`, etc.) are cleared from E and P automatically by the Linux kernel's **UID fixup** when `setresuid(uid, uid, uid)` transitions all UIDs from 0 to nonzero (see §5.2 step 6). No manual clearing of those caps is needed.
 
-**User override:** If `runtime.dropCaps` is explicitly set in `vaka.yaml`, that value takes precedence over the auto-computed delta. Use this only when the compose setup differs from Docker defaults or when additional caps need to be dropped. This is documented behaviour — the auto-computed value is always logged at `vaka up` time so the operator can see what would have been used.
+**User override:** If `runtime.dropCaps` is explicitly set in `vaka.yaml`, that value takes precedence over the auto-computed delta. Use this only when the compose setup differs from Docker defaults or when additional caps need to be dropped. This is documented behaviour — the auto-computed value is always logged at `vaka up`/`vaka run` time so the operator can see what would have been used.
 
 ### 8.4 Edge case: `cap_drop: ALL` in the original compose
 

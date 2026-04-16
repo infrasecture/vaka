@@ -30,6 +30,12 @@ type NetworkConfig struct {
 // EgressPolicy defines allowed/denied outbound traffic for one service.
 type EgressPolicy struct {
 	DefaultAction string `yaml:"defaultAction,omitempty"`
+	// WithTCPReset controls whether reject emits a TCP RST for TCP traffic.
+	// nil (omitted) and true both enable the two-rule tail:
+	//   meta l4proto tcp reject with tcp reset
+	//   reject with icmpx type admin-prohibited
+	// Only valid when defaultAction is "reject" (or empty, which defaults to "reject").
+	WithTCPReset  *bool  `yaml:"with_tcp_reset,omitempty"`
 	Accept        []Rule `yaml:"accept,omitempty"`
 	Reject        []Rule `yaml:"reject,omitempty"`
 	Drop          []Rule `yaml:"drop,omitempty"`
@@ -44,6 +50,10 @@ type Rule struct {
 	To    []string   `yaml:"to,omitempty"`
 	Ports []PortSpec `yaml:"ports,omitempty"`
 	Type  *ICMPSpec  `yaml:"type,omitempty"`
+	// WithTCPReset controls whether this reject rule uses "reject with tcp reset".
+	// Only valid in the reject list with proto: tcp.
+	// nil (omitted) and true both enable tcp reset; false uses admin-prohibited.
+	WithTCPReset *bool `yaml:"with_tcp_reset,omitempty"`
 }
 
 // DNSRule is the dns: {} shorthand. Servers overrides resolv.conf if set.
