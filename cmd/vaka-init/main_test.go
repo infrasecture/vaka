@@ -1,0 +1,111 @@
+// cmd/vaka-init/main_test.go
+//go:build linux
+
+package main
+
+import (
+	"encoding/base64"
+	"os"
+	"testing"
+
+	"gopkg.in/yaml.v3"
+	"vaka.dev/vaka/pkg/policy"
+)
+
+// encodePolicy marshals p to YAML and base64-encodes it, replicating exactly
+// what vaka up does before setting the VAKA_<SERVICE>_CONF env var.
+func encodePolicy(t *testing.T, p *policy.ServicePolicy) string {
+	t.Helper()
+	raw, err := yaml.Marshal(p)
+	if err != nil {
+		t.Fatalf("marshal policy: %v", err)
+	}
+	return base64.StdEncoding.EncodeToString(raw)
+}
+
+// writeTmp writes content to a temp file and returns its path.
+// The file is removed when the test ends.
+func writeTmp(t *testing.T, content string) string {
+	t.Helper()
+	f, err := os.CreateTemp(t.TempDir(), "vaka-secret-*")
+	if err != nil {
+		t.Fatalf("create temp file: %v", err)
+	}
+	if _, err := f.WriteString(content); err != nil {
+		t.Fatalf("write temp file: %v", err)
+	}
+	f.Close()
+	return f.Name()
+}
+
+func TestReadPolicy_roundtrip(t *testing.T) {
+	want := &policy.ServicePolicy{
+		APIVersion: "vaka.dev/v1alpha1",
+		Kind:       "ServicePolicy",
+		Services: map[string]*policy.ServiceConfig{
+			"svc": {
+				Network: &policy.NetworkConfig{
+					Egress: &policy.EgressPolicy{
+						DefaultAction: "reject",
+					},
+				},
+			},
+		},
+	}
+
+	path := writeTmp(t, encodePolicy(t, want))
+
+	got, err := readPolicy(path)
+	if err != nil {
+		t.Fatalf("readPolicy: %v", err)
+	}
+
+	if got.APIVersion != want.APIVersion {
+		t.Errorf("apiVersion = %q, want %q", got.APIVersion, want.APIVersion)
+	}
+	svc, ok := got.Services["svc"]
+	if !ok {
+		t.Fatal("service 'svc' not found in parsed policy")
+	}
+	if svc.Network.Egress.DefaultAction != "reject" {
+		t.Errorf("defaultAction = %q, want %q", svc.Network.Egress.DefaultAction, "reject")
+	}
+}
+
+func TestReadPolicy_trailingNewline(t *testing.T) {
+	// Docker compose appends a newline when writing env-var secrets.
+	// TrimSpace must strip it before base64 decoding.
+	p := &policy.ServicePolicy{
+		APIVersion: "vaka.dev/v1alpha1",
+		Kind:       "ServicePolicy",
+		Services: map[string]*policy.ServiceConfig{
+			"svc": {
+				Network: &policy.NetworkConfig{
+					Egress: &policy.EgressPolicy{DefaultAction: "reject"},
+				},
+			},
+		},
+	}
+	path := writeTmp(t, encodePolicy(t, p)+"\n")
+
+	if _, err := readPolicy(path); err != nil {
+		t.Fatalf("readPolicy with trailing newline: %v", err)
+	}
+}
+
+func TestReadPolicy_notBase64(t *testing.T) {
+	// Raw YAML (not base64-encoded) must be rejected — this would be the
+	// behaviour if vaka-init were pointed at the old unencoded secret format.
+	path := writeTmp(t, "apiVersion: vaka.dev/v1alpha1\nkind: ServicePolicy\n")
+
+	if _, err := readPolicy(path); err == nil {
+		t.Fatal("expected error for non-base64 content, got nil")
+	}
+}
+
+func TestReadPolicy_missingFile(t *testing.T) {
+	_, err := readPolicy("/nonexistent/vaka.yaml")
+	if err == nil {
+		t.Fatal("expected error for missing file, got nil")
+	}
+}

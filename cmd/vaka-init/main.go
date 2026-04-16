@@ -4,7 +4,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"os"
@@ -34,14 +36,11 @@ func main() {
 	}
 
 	// Step 1: Read and parse per-service policy from Docker secret.
-	f, err := os.Open(secretPath)
+	// The secret file contains the base64-encoded policy YAML written by
+	// docker compose from the VAKA_<SERVICE>_CONF environment variable.
+	p, err := readPolicy(secretPath)
 	if err != nil {
-		fatal("open %s: %v", secretPath, err)
-	}
-	p, err := policy.Parse(f)
-	f.Close()
-	if err != nil {
-		fatal("parse policy: %v", err)
+		fatal("%v", err)
 	}
 	if len(p.Services) != 1 {
 		fatal("policy must contain exactly one service, got %d", len(p.Services))
@@ -125,6 +124,30 @@ func main() {
 	if err := syscall.Exec(argv0, harness, os.Environ()); err != nil {
 		fatal("execve %s: %v", argv0, err)
 	}
+}
+
+// readPolicy reads the base64-encoded policy YAML from path, decodes it, and
+// parses it. Docker compose writes the VAKA_<SERVICE>_CONF env var value
+// directly into the secret file, so the file contains base64 text, not raw YAML.
+func readPolicy(path string) (*policy.ServicePolicy, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", path, err)
+	}
+	raw, err := io.ReadAll(f)
+	f.Close()
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(raw)))
+	if err != nil {
+		return nil, fmt.Errorf("base64-decode %s: %w", path, err)
+	}
+	p, err := policy.Parse(bytes.NewReader(decoded))
+	if err != nil {
+		return nil, fmt.Errorf("parse policy: %w", err)
+	}
+	return p, nil
 }
 
 func dropCaps(caps []string) error {
