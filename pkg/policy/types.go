@@ -94,6 +94,16 @@ func (p *PortSpec) UnmarshalYAML(value *yaml.Node) error {
 	return nil
 }
 
+// MarshalYAML serialises back to the canonical form accepted by UnmarshalYAML:
+// an integer for a single port, or the string "N-M" for a range.
+// Without this, yaml.Marshal emits the struct fields and the round-trip fails.
+func (p PortSpec) MarshalYAML() (any, error) {
+	if p.IsRange {
+		return fmt.Sprintf("%d-%d", p.RangeStart, p.RangeEnd), nil
+	}
+	return p.Single, nil
+}
+
 // NftString returns the nft representation of this port spec.
 func (p PortSpec) NftString() string {
 	if p.IsRange {
@@ -136,6 +146,16 @@ func (i *ICMPSpec) UnmarshalYAML(value *yaml.Node) error {
 	}
 	i.Name = s
 	return nil
+}
+
+// MarshalYAML serialises back to the canonical form accepted by UnmarshalYAML:
+// an integer for a numeric type code, or a string for a named type.
+// Without this, yaml.Marshal emits the struct fields and the round-trip fails.
+func (i ICMPSpec) MarshalYAML() (any, error) {
+	if i.IsNum {
+		return i.Num, nil
+	}
+	return i.Name, nil
 }
 
 // NftString returns the nft-ready type token.
