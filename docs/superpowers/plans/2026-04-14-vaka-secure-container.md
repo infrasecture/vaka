@@ -4,7 +4,7 @@
 
 **Goal:** Build `vaka-init` (container init binary) + `vaka` (host CLI) that enforce nftables egress firewall rules inside Docker containers running AI agentic harnesses, with zero changes to the original docker-compose.yaml.
 
-**Architecture:** `vaka-init` is a static Go binary in harness images that reads a per-service `ServicePolicy` from a Docker secret, applies nftables rules atomically via `nft -f /dev/stdin`, drops Linux capabilities, optionally changes UID/GID, then `execve`s the harness. `vaka` is a host CLI that parses `vaka.yaml`, validates it strictly, generates a compose override piped via stdin, injects policy as env-var-backed Docker secrets, rewrites service entrypoints to `vaka-init`, and proxies `docker compose up`. The binaries communicate only through the Docker secrets mechanism — no temp files, no disk artifacts.
+**Architecture:** `vaka-init` is a static Go binary in harness images that reads a per-service `ServicePolicy` from a Docker secret, applies nftables rules atomically via `nft -f /dev/stdin`, drops Linux capabilities, optionally changes UID/GID, then `execve`s the harness. `vaka` is a host CLI that parses `vaka.yaml`, validates it strictly, generates a compose override piped via stdin, injects policy as env-var-backed Docker secrets, rewrites service entrypoints to `vaka-init`, and proxies `docker compose up`/`run`. The binaries communicate only through the Docker secrets mechanism — no temp files, no disk artifacts.
 
 **Tech Stack:** Go 1.23, `gopkg.in/yaml.v3`, `golang.org/x/sys/unix`, `github.com/syndtr/gocapability/capability`, `github.com/docker/docker/client`, `github.com/spf13/cobra`, Go `text/template` + `embed.FS`
 
@@ -1038,7 +1038,7 @@ package nft
 // formats them.
 type RulesetData struct {
 	BlockMetadata  bool
-	MetadataRanges []string // e.g. "ip  daddr 169.254.0.0/16"
+	MetadataRanges []string // e.g. "ip  daddr 169.254.169.254/32"
 	DropRules      []string
 	RejectRules    []string
 	AcceptRules    []string
@@ -1236,9 +1236,10 @@ func TestGenerateBlockMetadata(t *testing.T) {
 		t.Fatalf("Generate: %v", err)
 	}
 	for _, want := range []string{
-		"ip  daddr 169.254.0.0/16 drop",
+		"ip  daddr 169.254.169.254/32 drop",
 		"ip  daddr 100.100.100.200/32 drop",
 		"ip6 daddr fd00:ec2::254/128 drop",
+		"ip6 daddr fd20:ce::254/128 drop",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("block_metadata: expected %q in output\ngot:\n%s", want, out)
@@ -1376,9 +1377,10 @@ var tmpl = template.Must(template.New("egress").Parse(egressTmpl))
 
 // metadataRanges are the cloud instance metadata endpoints to block.
 var metadataRanges = []string{
-	"ip  daddr 169.254.0.0/16",
+	"ip  daddr 169.254.169.254/32",
 	"ip  daddr 100.100.100.200/32",
 	"ip6 daddr fd00:ec2::254/128",
+	"ip6 daddr fd20:ce::254/128",
 }
 
 // Generate renders the nft ruleset for e.
@@ -3637,7 +3639,7 @@ git commit -m "feat(docker): emsi/vaka-init multi-stage Dockerfile with scratch 
 | `vaka validate` per-service summary | Task 10 |
 | `vaka show` unresolved hostname comments | Tasks 6, 10 |
 | `vaka up` / `vaka run` Docker SDK entrypoint lookup | Task 11 |
-| `vaka up` image-not-local error | Task 11 |
+| `vaka up` / `vaka run` image-not-local error | Task 11 |
 | Delta-based `dropCaps` auto-computed | Task 11 |
 | Explicit `dropCaps` in vaka.yaml overrides delta | Task 11 |
 | Override piped via `docker compose -f -` (last `-f` wins) | Task 11 |
