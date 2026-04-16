@@ -191,7 +191,7 @@ func dropCaps(caps []string) error {
 func parseCaps(names []string) ([]capability.Cap, error) {
 	var result []capability.Cap
 	for _, name := range names {
-		normalized := "cap_" + strings.ToLower(strings.TrimPrefix(strings.ToUpper(name), "CAP_"))
+		normalized := strings.ToLower(strings.TrimPrefix(strings.ToUpper(name), "CAP_"))
 		found := false
 		for c := capability.Cap(0); c <= capability.CAP_LAST_CAP; c++ {
 			if c.String() == normalized {

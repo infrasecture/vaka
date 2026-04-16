@@ -109,3 +109,37 @@ func TestReadPolicy_missingFile(t *testing.T) {
 		t.Fatal("expected error for missing file, got nil")
 	}
 }
+
+func TestParseCaps_knownNames(t *testing.T) {
+	// parseCaps must resolve both short-form and CAP_-prefixed names.
+	// The gocapability library returns names without the cap_ prefix (e.g.
+	// "net_admin"), so the normalization must strip it before comparing.
+	tests := []struct {
+		input string
+	}{
+		{"NET_ADMIN"},
+		{"net_admin"},
+		{"CAP_NET_ADMIN"},
+		{"cap_net_admin"},
+		{"NET_RAW"},
+		{"SETPCAP"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.input, func(t *testing.T) {
+			caps, err := parseCaps([]string{tc.input})
+			if err != nil {
+				t.Errorf("parseCaps(%q) = error %v, want success", tc.input, err)
+			}
+			if len(caps) != 1 {
+				t.Errorf("parseCaps(%q) returned %d caps, want 1", tc.input, len(caps))
+			}
+		})
+	}
+}
+
+func TestParseCaps_unknownName(t *testing.T) {
+	_, err := parseCaps([]string{"NOT_A_CAP"})
+	if err == nil {
+		t.Error("parseCaps(NOT_A_CAP) expected error, got nil")
+	}
+}
