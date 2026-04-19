@@ -4,7 +4,7 @@
 
 **Goal:** Automatically inject `vaka-init` and `nft` binaries into managed containers via a `__vaka-init` container, so users no longer need to bake them into their images.
 
-**Architecture:** vaka injects a `__vaka-init` container into the compose override; managed services mount it via `volumes_from` with `depends_on: service_completed_successfully`. A `vakaVersion` field is injected into every generated policy YAML and validated by vaka-init before touching nftables. `vaka down` is intercepted (not a passthrough) to include the `__vaka-init` container in teardown.
+**Architecture:** vaka intercepts compose commands along three paths. *Full path* (`up`, `run`, `create`): load vaka.yaml, build a policy override with modified entrypoint/caps/secrets plus `__vaka-init` container injection, pipe via `-f -`. *Lifecycle path* (`down`, `stop`, `kill`, `rm`): inject a minimal override declaring the `__vaka-init` container so compose includes it in teardown (passthrough when `--vaka-init-present`). *Passthrough*: everything else forwarded unchanged. A shared `execDockerCompose` helper conditionally adds `-f -` only when an override is present, making the passthrough path correct by construction. A `vakaVersion` field is injected into every generated policy YAML and validated by vaka-init before touching nftables.
 
 **Tech Stack:** Go 1.25, `github.com/docker/docker/client`, `gopkg.in/yaml.v3`, Docker Compose v2, scratch container image.
 
@@ -23,8 +23,9 @@
 | `pkg/compose/override_test.go` | Update for new signature; add `__vaka-init` container/opt-out/path tests |
 | `cmd/vaka/inject.go` | Add `--vaka-init-present` boolean flag extraction |
 | `cmd/vaka/images.go` | New: `ImageEnsurer` interface + `dockerImageEnsurer` |
-| `cmd/vaka/up.go` → `cmd/vaka/intercept.go` | Rename; integrate ensurer; populate `VakaVersion`; add `runDown`; update label detection |
-| `cmd/vaka/main.go` | Add `"down"` case; pass `vakaInitPresent` to handlers; add cobra stub for `down` |
+| `cmd/vaka/up.go` → `cmd/vaka/intercept.go` | Rename; `classifySubcmd`; `execDockerCompose` shared helper; `runFull` (was `runInjection`); `runLifecycle` (down/stop/kill/rm); `lifecycleOverrideYAML` helper; populate `VakaVersion`; label detection |
+| `cmd/vaka/intercept_test.go` | New: `TestClassifySubcmd`; `TestLifecycleOverrideYAMLPassthrough`; `TestLifecycleOverrideYAMLInjectsContainer` |
+| `cmd/vaka/main.go` | Use `classifySubcmd` dispatch; add cobra stubs for `create`, `down`, `stop`, `kill`, `rm` |
 | `cmd/vaka-init/main.go` | `nftBin` path; no-args exits 0; `checkVersion`; validate `vakaVersion` before proceeding; rename `vaka.dev/v1alpha1` |
 | `cmd/vaka-init/main_test.go` | Rename apiVersion; add `checkVersion` tests |
 | `docker/init/Dockerfile` | `COPY` paths → `/opt/vaka/sbin/`; add `VOLUME /opt/vaka` |
@@ -983,14 +984,15 @@ git commit -m "feat(vaka): add ImageEnsurer interface for testable Docker image 
 
 ---
 
-### Task 7: intercept.go — rename, flag, ensurer, vakaVersion, runDown
+### Task 7: intercept.go — rename, three-path dispatch, shared execDockerCompose
 
 **Files:**
 - Rename: `cmd/vaka/up.go` → `cmd/vaka/intercept.go`
 - Modify: `cmd/vaka/inject.go` (add boolean flag support)
-- Modify: `cmd/vaka/main.go` (add "down" case, pass vakaInitPresent)
+- Create: `cmd/vaka/intercept_test.go`
+- Modify: `cmd/vaka/main.go` (classifySubcmd dispatch; cobra stubs for all intercepted commands)
 
-This task wires everything together: renames the file, adds `--vaka-init-present` boolean flag parsing, detects per-service opt-out labels, calls the image ensurer, populates `VakaVersion` on sliced policy, passes `imageRef` to `BuildOverride`, and adds `runDown`.
+Three compose intercept paths share a single `execDockerCompose` execution helper. The helper conditionally adds `-f -` only when an override is non-empty, so the passthrough path is correct by construction — it never injects `-f -` when no override YAML was produced.
 
 - [ ] **Step 1: Rename up.go → intercept.go**
 
@@ -1036,7 +1038,78 @@ func extractVakaFlags(argv []string) (flags map[string]string, rest []string) {
 }
 ```
 
-- [ ] **Step 3: Update runInjection in intercept.go**
+- [ ] **Step 3: Write failing tests**
+
+Create `cmd/vaka/intercept_test.go`:
+
+```go
+// cmd/vaka/intercept_test.go
+package main
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestClassifySubcmd(t *testing.T) {
+	tests := []struct {
+		subcmd string
+		want   subcmdPath
+	}{
+		{"up", pathFull},
+		{"run", pathFull},
+		{"create", pathFull},
+		{"down", pathLifecycle},
+		{"stop", pathLifecycle},
+		{"kill", pathLifecycle},
+		{"rm", pathLifecycle},
+		{"validate", pathCobra},
+		{"show", pathCobra},
+		{"version", pathCobra},
+		{"", pathCobra},
+		{"logs", pathPassthrough},
+		{"ps", pathPassthrough},
+		{"exec", pathPassthrough},
+		{"pull", pathPassthrough},
+	}
+	for _, tc := range tests {
+		if got := classifySubcmd(tc.subcmd); got != tc.want {
+			t.Errorf("classifySubcmd(%q) = %v, want %v", tc.subcmd, got, tc.want)
+		}
+	}
+}
+
+func TestLifecycleOverrideYAMLPassthrough(t *testing.T) {
+	yaml, err := lifecycleOverrideYAML(true, "emsi/vaka-init:v0.1.0")
+	if err != nil {
+		t.Fatalf("passthrough: unexpected error: %v", err)
+	}
+	if yaml != "" {
+		t.Errorf("passthrough: expected empty string, got:\n%s", yaml)
+	}
+}
+
+func TestLifecycleOverrideYAMLInjectsContainer(t *testing.T) {
+	yaml, err := lifecycleOverrideYAML(false, "emsi/vaka-init:v0.1.0")
+	if err != nil {
+		t.Fatalf("injection: unexpected error: %v", err)
+	}
+	if !strings.Contains(yaml, "__vaka-init") {
+		t.Errorf("injection: expected __vaka-init in YAML, got:\n%s", yaml)
+	}
+	if !strings.Contains(yaml, "emsi/vaka-init:v0.1.0") {
+		t.Errorf("injection: expected image ref in YAML, got:\n%s", yaml)
+	}
+}
+```
+
+Run — expected FAIL (compile error: `subcmdPath`, `classifySubcmd`, `lifecycleOverrideYAML` undefined):
+
+```bash
+docker run --rm -v "$(pwd)":/src -w /src golang:1.25-alpine go test ./cmd/vaka/... -v 2>&1
+```
+
+- [ ] **Step 4: Replace intercept.go with new architecture**
 
 Replace the full content of `cmd/vaka/intercept.go` with:
 
@@ -1062,8 +1135,6 @@ import (
 const vakaInitLabel = "agent.vaka.init"
 const vakaInitBaseImage = "emsi/vaka-init"
 
-// defaultDockerCaps is the set of capabilities present in a default Docker
-// container (no cap_drop, no cap_add). NET_ADMIN is notably absent.
 var defaultDockerCaps = map[string]bool{
 	"CAP_CHOWN": true, "CAP_DAC_OVERRIDE": true, "CAP_FOWNER": true,
 	"CAP_FSETID": true, "CAP_KILL": true, "CAP_SETGID": true,
@@ -1072,16 +1143,68 @@ var defaultDockerCaps = map[string]bool{
 	"CAP_AUDIT_WRITE": true, "CAP_SETFCAP": true,
 }
 
-// runInjection is the injection path for "up" and "run".
-func runInjection(vakaFile string, args []string, vakaInitPresent bool) error {
+// subcmdPath classifies how a compose subcommand is handled.
+type subcmdPath int
+
+const (
+	pathCobra       subcmdPath = iota // validate, show, version — cobra commands
+	pathFull                          // up, run, create — full policy + __vaka-init injection
+	pathLifecycle                     // down, stop, kill, rm — __vaka-init container only
+	pathPassthrough                   // all others — forwarded unchanged to docker compose
+)
+
+func classifySubcmd(subcmd string) subcmdPath {
+	switch subcmd {
+	case "validate", "show", "version", "":
+		return pathCobra
+	case "up", "run", "create":
+		return pathFull
+	case "down", "stop", "kill", "rm":
+		return pathLifecycle
+	default:
+		return pathPassthrough
+	}
+}
+
+// execDockerCompose executes docker compose with the given args.
+// When overrideYAML is non-empty it is injected via -f - (with default compose
+// files also passed via -f so compose merges them correctly).
+// extraEnv, when non-nil, is appended to the inherited environment.
+func execDockerCompose(args []string, overrideYAML string, extraEnv []string) error {
+	var dockerArgs []string
+	if overrideYAML != "" {
+		defaults := []string{}
+		if len(allFileFlags(args)) == 0 {
+			defaults = discoverComposeFiles(".")
+		}
+		dockerArgs = injectStdinOverride(append([]string{"compose"}, args...), defaults)
+	} else {
+		dockerArgs = append([]string{"compose"}, args...)
+	}
+	c := exec.Command("docker", dockerArgs...)
+	if overrideYAML != "" {
+		c.Stdin = strings.NewReader(overrideYAML)
+	} else {
+		c.Stdin = os.Stdin
+	}
+	c.Stdout = os.Stdout
+	c.Stderr = os.Stderr
+	if extraEnv != nil {
+		c.Env = append(os.Environ(), extraEnv...)
+	}
+	return c.Run()
+}
+
+// runFull handles full-override commands: up, run, create.
+// It loads and validates vaka.yaml, ensures the __vaka-init image when needed,
+// builds the full compose override, and delegates to execDockerCompose.
+func runFull(vakaFile string, args []string, vakaInitPresent bool) error {
 	composeFiles := allFileFlags(args)
-	var defaults []string
 	if len(composeFiles) == 0 {
-		defaults = discoverComposeFiles(".")
-		if len(defaults) == 0 {
+		composeFiles = discoverComposeFiles(".")
+		if len(composeFiles) == 0 {
 			return fmt.Errorf("no compose configuration file found in current directory")
 		}
-		composeFiles = defaults
 	}
 
 	p, project, err := loadAndValidate(vakaFile, composeFiles)
@@ -1090,7 +1213,6 @@ func runInjection(vakaFile string, args []string, vakaInitPresent bool) error {
 	}
 
 	ctx := context.Background()
-
 	dockerClient, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
 		return fmt.Errorf("docker client: %w", err)
@@ -1098,9 +1220,8 @@ func runInjection(vakaFile string, args []string, vakaInitPresent bool) error {
 	defer dockerClient.Close()
 
 	var entries []compose.ServiceEntry
-	envVars := os.Environ()
+	var extraEnv []string
 
-	// Build entries first so OptOut labels are known before deciding to pull.
 	for svcName, svc := range p.Services {
 		composeSvc, ok := project.Services[svcName]
 		if !ok {
@@ -1133,7 +1254,7 @@ func runInjection(vakaFile string, args []string, vakaInitPresent bool) error {
 		}
 
 		envKey := "VAKA_" + strings.ToUpper(strings.ReplaceAll(svcName, "-", "_")) + "_CONF"
-		envVars = append(envVars, envKey+"="+base64.StdEncoding.EncodeToString(raw))
+		extraEnv = append(extraEnv, envKey+"="+base64.StdEncoding.EncodeToString(raw))
 
 		entries = append(entries, compose.ServiceEntry{
 			Name:       svcName,
@@ -1145,8 +1266,7 @@ func runInjection(vakaFile string, args []string, vakaInitPresent bool) error {
 		})
 	}
 
-	// Pull only when injection is actually needed: flag not set AND at least one
-	// service lacks the opt-out label. Mirrors the BuildOverride anyNeedsInjection check.
+	// Pull __vaka-init image only when injection is actually needed.
 	needsInjection := false
 	for _, e := range entries {
 		if !e.OptOut {
@@ -1157,8 +1277,7 @@ func runInjection(vakaFile string, args []string, vakaInitPresent bool) error {
 	vakaInitImageRef := ""
 	if !vakaInitPresent && needsInjection {
 		vakaInitImageRef = vakaInitBaseImage + ":" + version
-		ensurer := newDockerImageEnsurer(dockerClient)
-		if err := ensurer.EnsureImage(ctx, vakaInitImageRef); err != nil {
+		if err := newDockerImageEnsurer(dockerClient).EnsureImage(ctx, vakaInitImageRef); err != nil {
 			return err
 		}
 	}
@@ -1168,48 +1287,27 @@ func runInjection(vakaFile string, args []string, vakaInitPresent bool) error {
 		return fmt.Errorf("build override: %w", err)
 	}
 
-	return execDockerCompose(args, defaults, overrideYAML, envVars)
+	return execDockerCompose(args, overrideYAML, extraEnv)
 }
 
-// runDown intercepts "vaka down" to inject a minimal override containing the
-// __vaka-init container so Docker Compose includes it in teardown.
-// When vakaInitPresent is true, no __vaka-init container was created on up — pure passthrough.
-func runDown(args []string, vakaInitPresent bool) error {
+// lifecycleOverrideYAML returns the minimal compose override YAML declaring the
+// __vaka-init container so lifecycle commands (down/stop/kill/rm) include it in
+// their operation. Returns "" when vakaInitPresent is true; execDockerCompose
+// then runs as a pure passthrough without injecting -f -.
+func lifecycleOverrideYAML(vakaInitPresent bool, imageRef string) (string, error) {
 	if vakaInitPresent {
-		c := exec.Command("docker", append([]string{"compose"}, args...)...)
-		c.Stdin = os.Stdin
-		c.Stdout = os.Stdout
-		c.Stderr = os.Stderr
-		return c.Run()
+		return "", nil
 	}
+	return compose.BuildVakaInitOnlyOverride(imageRef)
+}
 
-	composeFiles := allFileFlags(args)
-	defaults := []string{}
-	if len(composeFiles) == 0 {
-		defaults = discoverComposeFiles(".")
-	}
-
-	vakaInitImageRef := vakaInitBaseImage + ":" + version
-	overrideYAML, err := compose.BuildVakaInitOnlyOverride(vakaInitImageRef)
+// runLifecycle handles lifecycle commands: down, stop, kill, rm.
+func runLifecycle(args []string, vakaInitPresent bool) error {
+	overrideYAML, err := lifecycleOverrideYAML(vakaInitPresent, vakaInitBaseImage+":"+version)
 	if err != nil {
 		return fmt.Errorf("build vaka-init container override: %w", err)
 	}
-
-	return execDockerCompose(args, defaults, overrideYAML, nil)
-}
-
-// execDockerCompose runs docker compose with overrideYAML injected via stdin.
-// extraEnv is appended to the current process environment; pass nil to inherit unchanged.
-func execDockerCompose(args []string, defaults []string, overrideYAML string, extraEnv []string) error {
-	dockerArgs := injectStdinOverride(append([]string{"compose"}, args...), defaults)
-	c := exec.Command("docker", dockerArgs...)
-	c.Stdin = strings.NewReader(overrideYAML)
-	c.Stdout = os.Stdout
-	c.Stderr = os.Stderr
-	if extraEnv != nil {
-		c.Env = extraEnv
-	}
-	return c.Run()
+	return execDockerCompose(args, overrideYAML, nil)
 }
 
 // resolveEntrypoint returns the effective entrypoint and command for a service.
@@ -1252,7 +1350,14 @@ func computeCapDelta(svc composetypes.ServiceConfig) []string {
 }
 ```
 
-- [ ] **Step 4: Update main.go — add "down" case and pass vakaInitPresent**
+- [ ] **Step 5: Run tests — expect all pass**
+
+```bash
+docker run --rm -v "$(pwd)":/src -w /src golang:1.25-alpine go test ./pkg/... ./cmd/... 2>&1
+```
+Expected: all `ok`.
+
+- [ ] **Step 6: Update main.go — classifySubcmd dispatch, cobra stubs**
 
 Replace `cmd/vaka/main.go` with:
 
@@ -1298,8 +1403,36 @@ func main() {
 			Run:                func(*cobra.Command, []string) {},
 		},
 		&cobra.Command{
+			Use:                "create [compose-flags...]",
+			Short:              "Validate, inject vaka policy, and proxy to docker compose create",
+			Long:               "Use --vaka-init-present to skip __vaka-init container injection (binaries baked into image).",
+			DisableFlagParsing: true,
+			Run:                func(*cobra.Command, []string) {},
+		},
+		&cobra.Command{
 			Use:                "down [compose-flags...]",
 			Short:              "Tear down the stack including the __vaka-init container",
+			Long:               "Use --vaka-init-present if the stack was started with that flag.",
+			DisableFlagParsing: true,
+			Run:                func(*cobra.Command, []string) {},
+		},
+		&cobra.Command{
+			Use:                "stop [compose-flags...]",
+			Short:              "Stop services including the __vaka-init container",
+			Long:               "Use --vaka-init-present if the stack was started with that flag.",
+			DisableFlagParsing: true,
+			Run:                func(*cobra.Command, []string) {},
+		},
+		&cobra.Command{
+			Use:                "kill [compose-flags...]",
+			Short:              "Kill services including the __vaka-init container",
+			Long:               "Use --vaka-init-present if the stack was started with that flag.",
+			DisableFlagParsing: true,
+			Run:                func(*cobra.Command, []string) {},
+		},
+		&cobra.Command{
+			Use:                "rm [compose-flags...]",
+			Short:              "Remove stopped containers including the __vaka-init container",
 			Long:               "Use --vaka-init-present if the stack was started with that flag.",
 			DisableFlagParsing: true,
 			Run:                func(*cobra.Command, []string) {},
@@ -1323,31 +1456,27 @@ func main() {
 
 	subcmd := findSubcmd(rest)
 
-	switch subcmd {
-	case "validate", "show", "version", "":
+	switch classifySubcmd(subcmd) {
+	case pathCobra:
 		rootCmd.SetArgs(rest)
 		if err := rootCmd.Execute(); err != nil {
 			os.Exit(1)
 		}
 
-	case "up", "run":
-		if err := runInjection(vakaFile, rest, vakaInitPresent); err != nil {
+	case pathFull:
+		if err := runFull(vakaFile, rest, vakaInitPresent); err != nil {
 			fmt.Fprintln(os.Stderr, "vaka:", err)
 			os.Exit(exitCode(err))
 		}
 
-	case "down":
-		if err := runDown(rest, vakaInitPresent); err != nil {
+	case pathLifecycle:
+		if err := runLifecycle(rest, vakaInitPresent); err != nil {
 			fmt.Fprintln(os.Stderr, "vaka:", err)
 			os.Exit(exitCode(err))
 		}
 
-	default:
-		c := exec.Command("docker", append([]string{"compose"}, rest...)...)
-		c.Stdin = os.Stdin
-		c.Stdout = os.Stdout
-		c.Stderr = os.Stderr
-		if err := c.Run(); err != nil {
+	default: // pathPassthrough
+		if err := execDockerCompose(rest, "", nil); err != nil {
 			os.Exit(exitCode(err))
 		}
 	}
@@ -1365,93 +1494,18 @@ func exitCode(err error) int {
 }
 ```
 
-- [ ] **Step 5: Add runDown tests**
-
-`runDown` has two testable paths: passthrough (when `vakaInitPresent=true`) and YAML injection (when false). Extract a pure helper so the YAML-building logic can be tested without exec:
-
-In `cmd/vaka/intercept.go`, add above `runDown`:
-```go
-// vakaInitDownOverride returns the compose override YAML for vaka down, or ""
-// when vakaInitPresent is true (passthrough — no __vaka-init container was created).
-func vakaInitDownOverride(vakaInitPresent bool, imageRef string) (string, error) {
-	if vakaInitPresent {
-		return "", nil
-	}
-	return compose.BuildVakaInitOnlyOverride(imageRef)
-}
-```
-
-Update `runDown` to call this helper:
-```go
-func runDown(args []string, vakaInitPresent bool) error {
-	yaml, err := vakaInitDownOverride(vakaInitPresent, vakaInitBaseImage+":"+version)
-	if err != nil {
-		return fmt.Errorf("build vaka-init container override: %w", err)
-	}
-	composeFiles := allFileFlags(args)
-	defaults := []string{}
-	if len(composeFiles) == 0 {
-		defaults = discoverComposeFiles(".")
-	}
-	dockerArgs := injectStdinOverride(append([]string{"compose"}, args...), defaults)
-	c := exec.Command("docker", dockerArgs...)
-	if yaml != "" {
-		c.Stdin = strings.NewReader(yaml)
-	} else {
-		c.Stdin = os.Stdin
-	}
-	c.Stdout = os.Stdout
-	c.Stderr = os.Stderr
-	return c.Run()
-}
-```
-
-Create `cmd/vaka/intercept_test.go`:
-```go
-// cmd/vaka/intercept_test.go
-package main
-
-import (
-	"strings"
-	"testing"
-)
-
-func TestVakaInitDownOverridePassthrough(t *testing.T) {
-	yaml, err := vakaInitDownOverride(true, "emsi/vaka-init:v0.1.0")
-	if err != nil {
-		t.Fatalf("passthrough: unexpected error: %v", err)
-	}
-	if yaml != "" {
-		t.Errorf("passthrough: expected empty YAML, got:\n%s", yaml)
-	}
-}
-
-func TestVakaInitDownOverrideInjectsContainer(t *testing.T) {
-	yaml, err := vakaInitDownOverride(false, "emsi/vaka-init:v0.1.0")
-	if err != nil {
-		t.Fatalf("injection: unexpected error: %v", err)
-	}
-	if !strings.Contains(yaml, "__vaka-init") {
-		t.Errorf("injection: expected __vaka-init in YAML, got:\n%s", yaml)
-	}
-	if !strings.Contains(yaml, "emsi/vaka-init:v0.1.0") {
-		t.Errorf("injection: expected image ref in YAML, got:\n%s", yaml)
-	}
-}
-```
-
-- [ ] **Step 6: Run all tests — expect all pass**
+- [ ] **Step 7: Run all tests — expect all pass**
 
 ```bash
 docker run --rm -v "$(pwd)":/src -w /src golang:1.25-alpine go test ./pkg/... ./cmd/... 2>&1
 ```
 Expected: all `ok`.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add cmd/vaka/intercept.go cmd/vaka/intercept_test.go cmd/vaka/inject.go cmd/vaka/main.go
-git commit -m "feat(vaka): rename up.go→intercept.go; add __vaka-init container injection, --vaka-init-present, vaka down interception"
+git commit -m "feat(vaka): rename up.go→intercept.go; three-path dispatch (full/lifecycle/passthrough); add create/stop/kill/rm interception"
 ```
 
 ---
@@ -1616,6 +1670,9 @@ grep -rn "/usr/local/sbin" . --include="*.go"
 
 # __vaka-init container name consistent
 grep -rn "__vaka-init\|vaka-init:ro\|service_completed_successfully" pkg/compose/ cmd/vaka/
+
+# three-path dispatch wired
+grep -n "classifySubcmd\|pathFull\|pathLifecycle\|pathPassthrough" cmd/vaka/intercept.go cmd/vaka/main.go
 
 # vakaVersion wired in CLI
 grep -n "VakaVersion" cmd/vaka/intercept.go pkg/policy/types.go
