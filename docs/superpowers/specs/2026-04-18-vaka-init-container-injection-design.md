@@ -218,8 +218,8 @@ Affected locations: `validate.go`, all test fixtures, README, spec documents.
 | `pkg/compose/override.go` | Add `__vaka-init` container; `volumes_from`; `depends_on`; `imageRef string` parameter; `OptOut bool` on `ServiceEntry`; label detection; entrypoint path; add `BuildVakaInitOnlyOverride` |
 | `pkg/compose/override_test.go` | Full `__vaka-init` container injection tests; opt-out tests; mixed-stack test |
 | `cmd/vaka/inject.go` | Add `vakaFlagsBool` map; update `extractVakaFlags` for boolean flags; `--vaka-init-present` support |
-| `cmd/vaka/images.go` | New: `ImageEnsurer` interface + `dockerImageEnsurer` using Docker Go client |
-| `cmd/vaka/images_test.go` | New: `fakeInspector`/`fakePuller` fakes for narrow `imageInspector`/`imagePuller` interfaces; tests call `ensureImage` directly to verify inspect-present, inspect-notfound+pull, and pull-fail paths |
+| `cmd/vaka/images.go` | New: `ImageEnsurer` interface; `dockerClient` narrow interface; `dockerImageEnsurer` holds `dockerClient` (not `*client.Client`); `NewDockerImageEnsurer()` wires real client |
+| `cmd/vaka/images_test.go` | New: `fakeDockerClient` stub implementing `dockerClient`; tests instantiate `dockerImageEnsurer` directly and call `EnsureImage` to verify inspect-present, inspect-notfound+pull, and pull-fail paths |
 | `cmd/vaka/up.go` → `cmd/vaka/intercept.go` | Rename; `classifySubcmd` (full/lifecycle/passthrough/cobra); `execDockerCompose` shared helper (conditionally injects `-f -`); `runFull` handles `up`/`run`/`create`; `runLifecycle` + `lifecycleOverrideYAML` handle `down`/`stop`/`kill`/`rm` |
 | `cmd/vaka/intercept_test.go` | New: `TestClassifySubcmd`; `TestLifecycleOverrideYAMLPassthrough`; `TestLifecycleOverrideYAMLInjectsContainer`; `TestExtractVakaFlagsBool` |
 | `cmd/vaka/main.go` | Use `classifySubcmd` dispatch; add cobra stubs for `create`, `down`, `stop`, `kill`, `rm` |
