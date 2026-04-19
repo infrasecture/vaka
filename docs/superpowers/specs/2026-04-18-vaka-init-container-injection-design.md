@@ -75,7 +75,7 @@ services:
 
 ### Teardown
 
-`vaka down` intercepts the `down` command (it does not fall through to the passthrough path) and injects a minimal override containing only the `__vaka-init` service definition. This tells Docker Compose the service exists so it is included in teardown. No policy parsing or secret injection is needed for `down`.
+The lifecycle commands `down`, `stop`, `kill`, and `rm` are all intercepted (not passthrough). vaka injects a minimal override containing only the `__vaka-init` service definition. This tells Docker Compose the service exists so it is included in the operation. No policy parsing or secret injection is needed for these commands.
 
 ```yaml
 services:
@@ -85,7 +85,7 @@ services:
     restart: "no"
 ```
 
-When `--vaka-init-present` is passed to `vaka down`, no override is injected (no `__vaka-init` container was created on `up`).
+When `--vaka-init-present` is passed to any lifecycle command, no override is injected (no `__vaka-init` container was created on `up`).
 
 ---
 
@@ -216,7 +216,8 @@ Affected locations: `validate.go`, all test fixtures, README, spec documents.
 | `pkg/policy/marshal_test.go` | Update `apiVersion` in `roundTripInput` |
 | `pkg/compose/override.go` | Add `__vaka-init` container; `volumes_from`; `depends_on`; `injectVakaInit bool` parameter; label detection; entrypoint path |
 | `pkg/compose/override_test.go` | Full `__vaka-init` container injection tests; opt-out tests; mixed-stack test |
-| `cmd/vaka/up.go` → `cmd/vaka/intercept.go` | Rename; add `--vaka-init-present` flag; Docker Go client image check/pull; `up`/`run` route through `runInjection`; `down` routes through `runDown`; shared `execDockerCompose` helper eliminates duplicated exec plumbing |
+| `cmd/vaka/up.go` → `cmd/vaka/intercept.go` | Rename; `classifySubcmd` (full/lifecycle/passthrough/cobra); `execDockerCompose` shared helper (conditionally injects `-f -`); `runFull` handles `up`/`run`/`create`; `runLifecycle` + `lifecycleOverrideYAML` handle `down`/`stop`/`kill`/`rm`; add `--vaka-init-present` flag; Docker Go client image check/pull |
+| `cmd/vaka/intercept_test.go` | New: `TestClassifySubcmd`; `TestLifecycleOverrideYAMLPassthrough`; `TestLifecycleOverrideYAMLInjectsContainer` |
 | `cmd/vaka-init/main.go` | `nftBin` const → `/opt/vaka/sbin/nft`; read and validate `vakaVersion`; no-args case exits 0 (prints usage) instead of fatal |
 | `README.md` | Update paths, `apiVersion`, baked-in instructions, opening claim |
 | `docs/superpowers/specs/2026-04-14-vaka-secure-container-design.md` | Update paths and `apiVersion` |
@@ -245,7 +246,17 @@ Affected locations: `validate.go`, all test fixtures, README, spec documents.
 - `vakaVersion` git hash mismatch → fatal
 - `vakaVersion` patch-only difference → accepted
 
-**Docker Go client:** behind interface; unit-testable via stub (image present / absent / pull failure) without live Docker daemon.
+**`cmd/vaka/intercept_test.go`:**
+- `classifySubcmd`: up/run/create → pathFull; down/stop/kill/rm → pathLifecycle; validate/show/version → pathCobra; logs/ps/exec → pathPassthrough
+- `lifecycleOverrideYAML(true, …)` → returns `""` (passthrough)
+- `lifecycleOverrideYAML(false, …)` → returns YAML containing `__vaka-init`
+
+**`cmd/vaka/images_test.go`:**
+- Stub `ImageEnsurer`: image present → no pull called
+- Stub `ImageEnsurer`: image absent, pull succeeds → pull called once
+- Stub `ImageEnsurer`: image absent, pull fails → error returned
+
+**Docker Go client:** behind `ImageEnsurer` interface; unit-testable via stub without live Docker daemon.
 
 ---
 

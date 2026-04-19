@@ -994,6 +994,8 @@ git commit -m "feat(vaka): add ImageEnsurer interface for testable Docker image 
 
 Three compose intercept paths share a single `execDockerCompose` execution helper. The helper conditionally adds `-f -` only when an override is non-empty, so the passthrough path is correct by construction — it never injects `-f -` when no override YAML was produced.
 
+**Pre-existing helpers from `up.go`:** The rename in Step 1 carries over `allFileFlags`, `discoverComposeFiles`, `injectStdinOverride`, `loadAndValidate`, and `findSubcmd` unchanged. These are already implemented in the current `up.go`; do not rewrite them.
+
 - [ ] **Step 1: Rename up.go → intercept.go**
 
 ```bash
