@@ -377,11 +377,11 @@ fi
 if [[ -n "${verify_arch}" ]]; then
     verify_tag="${INIT_IMAGE}:${VERSION}-${verify_arch}"
     echo "==> Verifying ${verify_tag}..."
-    cid="$(docker create --platform "linux/${verify_arch}" "${verify_tag}" /opt/vaka/bin/vaka-init)"
+    cid="$(docker create --platform "linux/${verify_arch}" "${verify_tag}" /opt/vaka/sbin/vaka-init)"
     cleanup_cid() { docker rm -f -- "${cid}" >/dev/null 2>&1 || true; }
     trap cleanup_cid EXIT
 
-    for expected in opt/vaka/bin/nft opt/vaka/bin/vaka-init; do
+    for expected in opt/vaka/sbin/nft opt/vaka/sbin/vaka-init; do
         printf '    /%-39s' "${expected}"
         # docker export produces tar entries with an optional './' prefix; strip it
         # before matching so both './opt/...' and 'opt/...' formats are handled.
