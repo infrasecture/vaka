@@ -214,12 +214,12 @@ Affected locations: `validate.go`, all test fixtures, README, spec documents.
 | `pkg/policy/validate.go` | Error if `vakaVersion` present in user YAML; update `apiVersion` string |
 | `pkg/policy/validate_test.go` | Update `apiVersion` fixtures; add `vakaVersion` error test |
 | `pkg/policy/marshal_test.go` | Update `apiVersion` in `roundTripInput` |
-| `pkg/policy/parse_test.go` | Update `apiVersion` fixtures; add `vakaVersion` rejection test |
+| `pkg/policy/parse_test.go` | Mass rename `apiVersion` fixtures |
 | `pkg/compose/override.go` | Add `__vaka-init` container; `volumes_from`; `depends_on`; `imageRef string` parameter; `OptOut bool` on `ServiceEntry`; label detection; entrypoint path; add `BuildVakaInitOnlyOverride` |
 | `pkg/compose/override_test.go` | Full `__vaka-init` container injection tests; opt-out tests; mixed-stack test |
 | `cmd/vaka/inject.go` | Add `vakaFlagsBool` map; update `extractVakaFlags` for boolean flags; `--vaka-init-present` support |
 | `cmd/vaka/images.go` | New: `ImageEnsurer` interface + `dockerImageEnsurer` using Docker Go client |
-| `cmd/vaka/images_test.go` | New: stub `ImageEnsurer`; tests for present/absent/pull-fail paths |
+| `cmd/vaka/images_test.go` | New: `fakeInspector`/`fakePuller` fakes for narrow `imageInspector`/`imagePuller` interfaces; tests call `ensureImage` directly to verify inspect-present, inspect-notfound+pull, and pull-fail paths |
 | `cmd/vaka/up.go` → `cmd/vaka/intercept.go` | Rename; `classifySubcmd` (full/lifecycle/passthrough/cobra); `execDockerCompose` shared helper (conditionally injects `-f -`); `runFull` handles `up`/`run`/`create`; `runLifecycle` + `lifecycleOverrideYAML` handle `down`/`stop`/`kill`/`rm` |
 | `cmd/vaka/intercept_test.go` | New: `TestClassifySubcmd`; `TestLifecycleOverrideYAMLPassthrough`; `TestLifecycleOverrideYAMLInjectsContainer`; `TestExtractVakaFlagsBool` |
 | `cmd/vaka/main.go` | Use `classifySubcmd` dispatch; add cobra stubs for `create`, `down`, `stop`, `kill`, `rm` |
