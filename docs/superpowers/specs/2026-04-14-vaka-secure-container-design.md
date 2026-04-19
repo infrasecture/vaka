@@ -81,7 +81,7 @@ Kubernetes-style resource manifest. `apiVersion` and `kind` provide a versioned 
 **File:** `vaka.yaml` (host-side, all services)
 
 ```yaml
-apiVersion: vaka.dev/v1alpha1
+apiVersion: agent.vaka/v1alpha1
 kind: ServicePolicy
 
 services:
@@ -128,7 +128,7 @@ services:
 The `vaka` CLI slices out exactly one service and serialises it. `vaka-init` reads whichever single service it finds — it does not need to know its own name:
 
 ```yaml
-apiVersion: vaka.dev/v1alpha1
+apiVersion: agent.vaka/v1alpha1
 kind: ServicePolicy
 
 services:
@@ -251,7 +251,7 @@ When `proto: icmp` or `proto: icmpv6` is specified, only that family is targeted
 
 | Field | Type | Values | Required |
 |---|---|---|---|
-| `apiVersion` | string | `vaka.dev/v1alpha1` | yes |
+| `apiVersion` | string | `agent.vaka/v1alpha1` | yes |
 | `kind` | string | `ServicePolicy` | yes |
 | `services.<name>.network.egress.defaultAction` | string | `accept`, `reject`, `drop`; default `reject` if omitted | no |
 | `services.<name>.network.egress.with_tcp_reset` | bool | TCP RST for reject; only valid with `defaultAction: reject`; default `true` | no |
@@ -282,7 +282,7 @@ When `proto: icmp` or `proto: icmpv6` is specified, only that family is targeted
 ```
 1. Read /run/secrets/vaka.yaml
    Parse strictly — exactly one service entry must be present.
-   Schema version must be vaka.dev/v1alpha1.
+   Schema version must be agent.vaka/v1alpha1.
 
 2. Resolve dynamic values:
    a. dns: {}  → parse /etc/resolv.conf, extract nameserver entries
@@ -586,7 +586,7 @@ Validation runs before any docker interaction. A single validation failure print
 | Check | Detail |
 |---|---|
 | YAML parseable | `yaml.v3` strict decode into typed structs — unknown fields rejected with field path |
-| `apiVersion` | Must be exactly `vaka.dev/v1alpha1` |
+| `apiVersion` | Must be exactly `agent.vaka/v1alpha1` |
 | `kind` | Must be exactly `ServicePolicy` |
 | Service name | Valid DNS label; must exist in `docker-compose.yaml` |
 | `defaultAction` | One of: `accept`, `reject`, `drop`. Defaults to `reject` if omitted. `vaka` CLI emits a prominent warning when `accept` is used: "WARNING: service <name> uses defaultAction: accept — all unmatched egress traffic is allowed." |
@@ -645,8 +645,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" \
     -o /out/vaka-init ./cmd/vaka-init
 
 FROM scratch
-COPY --from=nft     /opt/nftables/bin/nft   /opt/vaka/bin/nft
-COPY --from=builder /out/vaka-init          /opt/vaka/bin/vaka-init
+COPY --from=nft     /opt/nftables/bin/nft   /opt/vaka/sbin/nft
+COPY --from=builder /out/vaka-init          /opt/vaka/sbin/vaka-init
 ```
 
 ### Including vaka-init in a harness image
@@ -658,8 +658,8 @@ FROM emsi/vaka-init:latest AS vaka
 
 FROM ubuntu:24.04
 # ... harness setup ...
-COPY --from=vaka /opt/vaka/bin/vaka-init /usr/local/sbin/vaka-init
-COPY --from=vaka /opt/vaka/bin/nft       /usr/local/sbin/nft
+COPY --from=vaka /opt/vaka/sbin/vaka-init /opt/vaka/sbin/vaka-init
+COPY --from=vaka /opt/vaka/sbin/nft       /opt/vaka/sbin/nft
 ```
 
 The `ENTRYPOINT` in the image remains the harness's own entry point. The `vaka` CLI injects `vaka-init` transparently at `vaka up`/`vaka run` time by rewriting `entrypoint:` and `command:` in the compose override. No changes to the harness image `ENTRYPOINT` are required or expected. The container carries only two vaka binaries; no other vaka code runs inside the container.

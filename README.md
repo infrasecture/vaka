@@ -130,55 +130,12 @@ sudo mv vaka /usr/local/bin/vaka
 
 Or build from the repository: see [Building and releasing](#building-and-releasing).
 
-### Add vaka-init to your container image
+### Write a `vaka.yaml`
 
-`vaka-init` and `nft` are distributed together as a single Docker image (`emsi/vaka-init`). Both binaries are fully static and run on any Linux base including Alpine, Ubuntu, Debian, Fedora, and scratch.
-
-**Option A: copy into your image at build time (recommended)**
-
-```dockerfile
-FROM emsi/vaka-init:0.1.0 AS vaka
-
-FROM ubuntu:24.04
-# ... rest of your image ...
-COPY --from=vaka /opt/vaka/bin/vaka-init /usr/local/sbin/vaka-init
-COPY --from=vaka /opt/vaka/bin/nft       /usr/local/sbin/nft
-```
-
-**Option B: bind-mount from the host at runtime**
-
-Use this when you cannot modify the image, such as with vendor-supplied or third-party containers.
-
-First, extract the binaries from the image to your current directory:
-
-```bash
-id=$(docker create emsi/vaka-init:0.1.0)
-docker cp "$id:/opt/vaka/bin/vaka-init" ./
-docker cp "$id:/opt/vaka/bin/nft"       ./
-docker rm "$id"
-```
-
-Then bind-mount them in your `docker-compose.yaml`:
+Place a `vaka.yaml` next to your `docker-compose.yaml`. Each key under `services` must match a service name in your compose file. A minimal example:
 
 ```yaml
-services:
-  myapp:
-    image: vendor/myapp:latest
-    volumes:
-      - ./vaka-init:/usr/local/sbin/vaka-init:ro
-      - ./nft:/usr/local/sbin/nft:ro
-```
-
----
-
-## Usage
-
-### Write a vaka.yaml
-
-Create `vaka.yaml` in the same directory as `docker-compose.yaml`. Each key under `services` must match a service name in your compose file.
-
-```yaml
-apiVersion: vaka.dev/v1alpha1
+apiVersion: agent.vaka/v1alpha1
 kind: ServicePolicy
 services:
   llm-gateway:
@@ -187,20 +144,59 @@ services:
         defaultAction: reject
         block_metadata: drop
         accept:
-          - dns: {}                        # allow DNS to resolv.conf servers
+          - dns: {}
           - proto: tcp
-            to: [api.openai.com]
+            to: [api.openai.com, api.anthropic.com]
             ports: [443]
-          - proto: tcp
-            to: [api.anthropic.com]
-            ports: [443]
-    runtime:
-      runAs:
-        uid: 1000
-        gid: 1000
 ```
 
-### Run
+### Run `vaka up`
+
+```bash
+vaka up
+```
+
+That's it. No Dockerfile changes, no `COPY` steps, no manual binary installation. On the first `vaka up` vaka starts a short-lived helper container (`__vaka-init`) built from `emsi/vaka-init:<version>`, which populates a shared named volume with the `vaka-init` and `nft` binaries. Each of your service containers mounts that volume read-only at `/opt/vaka/sbin/` and runs `vaka-init` as its entrypoint — your images are not modified.
+
+The full schema for `vaka.yaml` is in [Configuration reference](#configuration-reference).
+
+### Air-gapped / opt-out
+
+If your environment cannot pull `emsi/vaka-init` from the internet, bake the binaries into your image at build time and pass `--vaka-init-present` to skip automatic injection:
+
+```dockerfile
+FROM emsi/vaka-init:v0.1.2 AS vaka
+FROM ubuntu:24.04
+# ... rest of your image ...
+COPY --from=vaka /opt/vaka/sbin/vaka-init /opt/vaka/sbin/vaka-init
+COPY --from=vaka /opt/vaka/sbin/nft       /opt/vaka/sbin/nft
+```
+
+Then run with:
+
+```bash
+vaka up   --vaka-init-present
+vaka down --vaka-init-present
+```
+
+The `--vaka-init-present` flag must be passed to every lifecycle command (`up`, `down`, `stop`, `kill`, `rm`, `run`) for the whole stack.
+
+Per-service opt-out via `docker-compose.yaml` label — useful when some services have the binaries baked in and others rely on injection:
+
+```yaml
+services:
+  myapp:
+    labels:
+      agent.vaka.init: present
+```
+
+Services carrying this label skip the volume mount and use the baked-in `/opt/vaka/sbin/vaka-init` directly; services without it use the injected binaries as normal.
+
+---
+
+## Usage
+
+### Start the stack
 
 Use `vaka up` wherever you would use `docker compose up`. All compose flags are passed through:
 
@@ -210,12 +206,32 @@ vaka up --build -d    # build images first, then start detached
 vaka run llm-gateway bash    # policy is enforced for run too
 ```
 
+On first start, vaka brings up a short-lived `__vaka-init` helper container that publishes the `vaka-init` and `nft` binaries into a named volume shared with every policy-enforced service. Your images are unchanged.
+
+### Tear the stack down
+
+```bash
+vaka down               # stop and remove all containers + the __vaka-init helper
+vaka down --volumes     # also remove the binary-injection volume
+vaka stop               # stop without removing
+vaka kill               # SIGKILL
+vaka rm                 # remove stopped containers
+```
+
+`vaka down`, `vaka stop`, `vaka kill`, and `vaka rm` tear down the full stack — including the `__vaka-init` helper container that injected the binaries. If you started the stack with `--vaka-init-present` (see [Air-gapped / opt-out](#air-gapped--opt-out)), pass the same flag on teardown:
+
+```bash
+vaka up   --vaka-init-present
+vaka down --vaka-init-present
+```
+
+### Passthrough commands
+
 Commands that do not need policy injection are forwarded to `docker compose` verbatim:
 
 ```bash
 vaka logs -f llm-gateway
 vaka exec llm-gateway bash
-vaka down --volumes
 vaka ps
 ```
 
@@ -250,7 +266,7 @@ Prints the nft ruleset that would be loaded inside the container. Hostnames are 
 ### Full schema
 
 ```yaml
-apiVersion: vaka.dev/v1alpha1
+apiVersion: agent.vaka/v1alpha1
 kind: ServicePolicy
 services:
   <service-name>:
@@ -407,19 +423,34 @@ Switches UID and GID before execve-ing the application. `setresgid` is called be
 
 ### `vaka up`
 
-Validates `vaka.yaml`, generates a compose override in memory, and starts the stack with the override piped via stdin. All `docker compose up` flags are passed through.
+Validates `vaka.yaml`, generates a compose override in memory, and starts the stack with the override piped via stdin. By default the override adds a `__vaka-init` helper container that publishes the `vaka-init` and `nft` binaries into a named volume shared read-only with each policy-enforced service. All `docker compose up` flags are passed through.
 
 ```
-vaka [--vaka-file vaka.yaml] up [compose-flags...]
+vaka [--vaka-file vaka.yaml] up [--vaka-init-present] [compose-flags...]
 ```
+
+Pass `--vaka-init-present` to skip the injection helper when the binaries are already baked into your image (see [Air-gapped / opt-out](#air-gapped--opt-out)).
 
 ### `vaka run`
 
 Same injection path as `up` but for `docker compose run`.
 
 ```
-vaka [--vaka-file vaka.yaml] run [compose-flags...] <service> [command...]
+vaka [--vaka-file vaka.yaml] run [--vaka-init-present] [compose-flags...] <service> [command...]
 ```
+
+### `vaka down` / `vaka stop` / `vaka kill` / `vaka rm`
+
+Tear down the full stack including the `__vaka-init` helper container. If the stack was started with `--vaka-init-present`, the same flag must be passed here so vaka knows not to expect the helper.
+
+```
+vaka [--vaka-file vaka.yaml] down [--vaka-init-present] [compose-flags...]
+vaka [--vaka-file vaka.yaml] stop [--vaka-init-present] [compose-flags...]
+vaka [--vaka-file vaka.yaml] kill [--vaka-init-present] [compose-flags...]
+vaka [--vaka-file vaka.yaml] rm   [--vaka-init-present] [compose-flags...]
+```
+
+`vaka down --volumes` additionally removes the named volume used for binary injection.
 
 ### `vaka validate`
 
@@ -452,7 +483,7 @@ Any subcommand not listed above is forwarded verbatim to `docker compose`:
 ```bash
 vaka logs -f llm-gateway       # docker compose logs -f llm-gateway
 vaka exec llm-gateway bash     # docker compose exec llm-gateway bash
-vaka down --volumes            # docker compose down --volumes
+vaka ps                        # docker compose ps
 ```
 
 ### Global flags
@@ -460,6 +491,7 @@ vaka down --volumes            # docker compose down --volumes
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--vaka-file` | `vaka.yaml` | Path to the vaka policy file |
+| `--vaka-init-present` | off | Skip automatic injection of `vaka-init` / `nft`; assume they are already present at `/opt/vaka/sbin/` inside each service image. |
 
 All Docker Compose global flags (`-f`, `-p`, `--profile`, `--env-file`, `--project-directory`, `--context` and others) are passed through unchanged.
 
