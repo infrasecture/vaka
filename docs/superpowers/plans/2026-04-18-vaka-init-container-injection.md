@@ -1673,18 +1673,31 @@ COPY nft       /opt/vaka/sbin/nft
 VOLUME /opt/vaka
 ```
 
-- [ ] **Step 2: Run tests — expect all pass**
+- [ ] **Step 2: Update build.sh verification paths**
+
+`build.sh` Phase 5 verifies the built image contains the expected binary paths. After moving from `bin` to `sbin` in the Dockerfile, the verification loop must also change.
+
+In `build.sh`, find the verification loop (around line 384):
+```bash
+for expected in opt/vaka/bin/nft opt/vaka/bin/vaka-init; do
+```
+Replace with:
+```bash
+for expected in opt/vaka/sbin/nft opt/vaka/sbin/vaka-init; do
+```
+
+- [ ] **Step 3: Run tests — expect all pass**
 
 ```bash
 docker run --rm -v "$(pwd)":/src -w /src golang:1.25-alpine go test ./pkg/... ./cmd/... 2>&1
 ```
 Expected: all `ok`.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add docker/init/Dockerfile
-git commit -m "feat(dockerfile): move binaries to /opt/vaka/sbin; add VOLUME /opt/vaka"
+git add docker/init/Dockerfile build.sh
+git commit -m "feat(dockerfile): move binaries to /opt/vaka/sbin; add VOLUME /opt/vaka; fix build.sh verify paths"
 ```
 
 ---
