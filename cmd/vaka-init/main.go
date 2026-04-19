@@ -24,11 +24,12 @@ import (
 var version = "dev"
 
 const secretPath = "/run/secrets/vaka.yaml"
-const nftBin = "/usr/local/sbin/nft"
+const nftBin = "/opt/vaka/sbin/nft"
 
 func main() {
 	if len(os.Args) < 2 || os.Args[1] != "--" {
-		fatal("usage: vaka-init -- <entrypoint> [args...]")
+		fmt.Fprintln(os.Stderr, "vaka-init: usage: vaka-init -- <entrypoint> [args...]")
+		os.Exit(0)
 	}
 	harness := os.Args[2:]
 	if len(harness) == 0 {

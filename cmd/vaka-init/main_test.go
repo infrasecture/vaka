@@ -6,6 +6,7 @@ package main
 import (
 	"encoding/base64"
 	"os"
+	"os/exec"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -141,5 +142,20 @@ func TestParseCaps_unknownName(t *testing.T) {
 	_, err := parseCaps([]string{"NOT_A_CAP"})
 	if err == nil {
 		t.Error("parseCaps(NOT_A_CAP) expected error, got nil")
+	}
+}
+
+func TestNoArgExitsZero(t *testing.T) {
+	// Subprocess trick: re-run this test binary as vaka-init with no "--".
+	// When BE_VAKA_INIT=1 the subprocess calls main(); os.Args has no "--",
+	// so main() hits fmt.Fprintln + os.Exit(0). Parent asserts exit code 0.
+	if os.Getenv("BE_VAKA_INIT") == "1" {
+		main()
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=TestNoArgExitsZero")
+	cmd.Env = append(os.Environ(), "BE_VAKA_INIT=1")
+	if err := cmd.Run(); err != nil {
+		t.Errorf("vaka-init with no args: expected exit 0, got: %v", err)
 	}
 }
