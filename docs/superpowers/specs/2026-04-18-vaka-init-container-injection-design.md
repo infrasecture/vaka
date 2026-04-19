@@ -128,11 +128,15 @@ COPY --from=vaka /opt/vaka/sbin/nft       /opt/vaka/sbin/nft
 
 ---
 
-## 7. Docker Go client — image check and pull
+## 7. Docker Go client — entrypoint resolution and image check/pull
 
-Injection is considered active only after all per-service opt-out labels have been evaluated. The image check and pull are skipped entirely when `--vaka-init-present` is set **or** when every managed service carries the `agent.vaka.init: present` label — the same guarantee in both cases.
+The Docker Go client (`github.com/docker/docker/client`) is used for two operations, both via the `DockerServices` interface:
 
-When injection is active, before invoking `docker compose`, vaka uses the Docker Go client (`github.com/docker/docker/client`) to verify the correct image is present locally:
+**Entrypoint resolution** (`ResolveEntrypoint`): for each managed service, if the compose file declares neither `entrypoint` nor `command`, vaka inspects the service image to obtain the Dockerfile defaults. This happens unconditionally for every service in the policy.
+
+**Image check and pull** (`EnsureImage`): injection is considered active only after all per-service opt-out labels have been evaluated. The check and pull are skipped entirely when `--vaka-init-present` is set **or** when every managed service carries the `agent.vaka.init: present` label — the same guarantee in both cases.
+
+When injection is active, before invoking `docker compose`, vaka verifies the correct image is present locally:
 
 ```
 ImageInspect("emsi/vaka-init:<vaka-version>")
@@ -144,13 +148,13 @@ ImageInspect("emsi/vaka-init:<vaka-version>")
            or use --vaka-init-present if binaries are baked into the image"
 ```
 
-The implementation therefore evaluates per-service labels first (building the `entries` list), then decides whether to pull, then calls `BuildOverride`.
+The implementation therefore evaluates per-service labels first (building the `entries` list), resolves entrypoints, then decides whether to pull, then calls `BuildOverride`.
 
-The client is initialised via `client.NewClientWithOpts(client.FromEnv)`, respecting `DOCKER_HOST`, TLS settings, and the active Docker context.
+A single client is created via `client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())`, respecting `DOCKER_HOST`, TLS settings, and the active Docker context. It is reused for both operations.
 
 Pull progress is streamed to stderr.
 
-The image checker is behind an interface for unit testability without a live Docker daemon.
+`DockerServices` is the interface covering both operations; `*client.Client` satisfies the underlying `dockerClient` narrow interface. Unit tests inject a `fakeDockerClient` stub without a live daemon.
 
 ---
 

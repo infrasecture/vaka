@@ -25,7 +25,7 @@
 | `cmd/vaka/images.go` | New: `DockerServices` interface (`EnsureImage` + `ResolveEntrypoint`); `dockerClient` narrow interface for testability; `dockerServices` struct; `NewDockerServices()` wires real client once |
 | `cmd/vaka/images_test.go` | New: `fakeDockerClient` stub; `dockerServices` unit tests for `EnsureImage` (present/absent/pull-fail) and `ResolveEntrypoint` (compose-declared/inspect/not-found) |
 | `cmd/vaka/up.go` → `cmd/vaka/intercept.go` | Rename; `classifySubcmd`; `execDockerCompose` shared helper; `runFull` (was `runInjection`); `runLifecycle` (down/stop/kill/rm); `lifecycleOverrideYAML` helper; populate `VakaVersion`; label detection |
-| `cmd/vaka/intercept_test.go` | New: `TestClassifySubcmd`; `TestLifecycleOverrideYAMLPassthrough`; `TestLifecycleOverrideYAMLInjectsContainer` |
+| `cmd/vaka/intercept_test.go` | New: `TestClassifySubcmd`; `TestLifecycleOverrideYAMLPassthrough`; `TestLifecycleOverrideYAMLInjectsContainer`; `TestExtractVakaFlagsBool` |
 | `cmd/vaka/main.go` | Use `classifySubcmd` dispatch; add cobra stubs for `create`, `down`, `stop`, `kill`, `rm` |
 | `cmd/vaka-init/main.go` | `nftBin` path; no-args exits 0; `checkVersion`; validate `vakaVersion` before proceeding; rename `vaka.dev/v1alpha1` |
 | `cmd/vaka-init/main_test.go` | Rename apiVersion; add `checkVersion` tests |
