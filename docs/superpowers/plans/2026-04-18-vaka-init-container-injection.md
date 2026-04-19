@@ -23,6 +23,7 @@
 | `pkg/compose/override_test.go` | Update for new signature; add `__vaka-init` container/opt-out/path tests |
 | `cmd/vaka/inject.go` | Add `--vaka-init-present` boolean flag extraction |
 | `cmd/vaka/images.go` | New: `ImageEnsurer` interface + `dockerImageEnsurer` |
+| `cmd/vaka/images_test.go` | New: stub `ImageEnsurer`; tests for present/absent/pull-fail paths |
 | `cmd/vaka/up.go` → `cmd/vaka/intercept.go` | Rename; `classifySubcmd`; `execDockerCompose` shared helper; `runFull` (was `runInjection`); `runLifecycle` (down/stop/kill/rm); `lifecycleOverrideYAML` helper; populate `VakaVersion`; label detection |
 | `cmd/vaka/intercept_test.go` | New: `TestClassifySubcmd`; `TestLifecycleOverrideYAMLPassthrough`; `TestLifecycleOverrideYAMLInjectsContainer` |
 | `cmd/vaka/main.go` | Use `classifySubcmd` dispatch; add cobra stubs for `create`, `down`, `stop`, `kill`, `rm` |
@@ -1103,6 +1104,18 @@ func TestLifecycleOverrideYAMLInjectsContainer(t *testing.T) {
 		t.Errorf("injection: expected image ref in YAML, got:\n%s", yaml)
 	}
 }
+
+func TestExtractVakaFlagsBool(t *testing.T) {
+	// --vaka-init-present is a boolean flag: no value token consumed.
+	flags, rest := extractVakaFlags([]string{"up", "--vaka-init-present", "--remove-orphans"})
+	if flags["--vaka-init-present"] != "true" {
+		t.Errorf("expected --vaka-init-present=true, got %q", flags["--vaka-init-present"])
+	}
+	want := []string{"up", "--remove-orphans"}
+	if strings.Join(rest, " ") != strings.Join(want, " ") {
+		t.Errorf("rest = %v, want %v", rest, want)
+	}
+}
 ```
 
 Run — expected FAIL (compile error: `subcmdPath`, `classifySubcmd`, `lifecycleOverrideYAML` undefined):
@@ -1585,7 +1598,7 @@ sed -i \
 
 - [ ] **Step 2: Confirm the opening claim is now accurate**
 
-Find the sentence that lists what vaka works without. It must include "without changing your container images" as a true, unconditional statement (not qualified by "if you use the sidecar"). Verify it reads as a top-level claim, not buried in a conditional.
+Find the sentence that lists what vaka works without. It must include "without changing your container images" as a true, unconditional statement. Verify it reads as a top-level claim, not buried in a conditional.
 
 - [ ] **Step 3: Rewrite the "Installation / Getting started" onboarding section**
 

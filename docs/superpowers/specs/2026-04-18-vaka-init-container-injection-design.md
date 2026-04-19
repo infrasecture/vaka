@@ -214,11 +214,17 @@ Affected locations: `validate.go`, all test fixtures, README, spec documents.
 | `pkg/policy/validate.go` | Error if `vakaVersion` present in user YAML; update `apiVersion` string |
 | `pkg/policy/validate_test.go` | Update `apiVersion` fixtures; add `vakaVersion` error test |
 | `pkg/policy/marshal_test.go` | Update `apiVersion` in `roundTripInput` |
-| `pkg/compose/override.go` | Add `__vaka-init` container; `volumes_from`; `depends_on`; `injectVakaInit bool` parameter; label detection; entrypoint path |
+| `pkg/policy/parse_test.go` | Update `apiVersion` fixtures; add `vakaVersion` rejection test |
+| `pkg/compose/override.go` | Add `__vaka-init` container; `volumes_from`; `depends_on`; `imageRef string` parameter; `OptOut bool` on `ServiceEntry`; label detection; entrypoint path; add `BuildVakaInitOnlyOverride` |
 | `pkg/compose/override_test.go` | Full `__vaka-init` container injection tests; opt-out tests; mixed-stack test |
-| `cmd/vaka/up.go` → `cmd/vaka/intercept.go` | Rename; `classifySubcmd` (full/lifecycle/passthrough/cobra); `execDockerCompose` shared helper (conditionally injects `-f -`); `runFull` handles `up`/`run`/`create`; `runLifecycle` + `lifecycleOverrideYAML` handle `down`/`stop`/`kill`/`rm`; add `--vaka-init-present` flag; Docker Go client image check/pull |
-| `cmd/vaka/intercept_test.go` | New: `TestClassifySubcmd`; `TestLifecycleOverrideYAMLPassthrough`; `TestLifecycleOverrideYAMLInjectsContainer` |
+| `cmd/vaka/inject.go` | Add `vakaFlagsBool` map; update `extractVakaFlags` for boolean flags; `--vaka-init-present` support |
+| `cmd/vaka/images.go` | New: `ImageEnsurer` interface + `dockerImageEnsurer` using Docker Go client |
+| `cmd/vaka/images_test.go` | New: stub `ImageEnsurer`; tests for present/absent/pull-fail paths |
+| `cmd/vaka/up.go` → `cmd/vaka/intercept.go` | Rename; `classifySubcmd` (full/lifecycle/passthrough/cobra); `execDockerCompose` shared helper (conditionally injects `-f -`); `runFull` handles `up`/`run`/`create`; `runLifecycle` + `lifecycleOverrideYAML` handle `down`/`stop`/`kill`/`rm` |
+| `cmd/vaka/intercept_test.go` | New: `TestClassifySubcmd`; `TestLifecycleOverrideYAMLPassthrough`; `TestLifecycleOverrideYAMLInjectsContainer`; `TestExtractVakaFlagsBool` |
+| `cmd/vaka/main.go` | Use `classifySubcmd` dispatch; add cobra stubs for `create`, `down`, `stop`, `kill`, `rm` |
 | `cmd/vaka-init/main.go` | `nftBin` const → `/opt/vaka/sbin/nft`; read and validate `vakaVersion`; no-args case exits 0 (prints usage) instead of fatal |
+| `cmd/vaka-init/main_test.go` | Rename `apiVersion`; add `checkVersion` tests |
 | `README.md` | Update paths, `apiVersion`, baked-in instructions, opening claim |
 | `docs/superpowers/specs/2026-04-14-vaka-secure-container-design.md` | Update paths and `apiVersion` |
 
