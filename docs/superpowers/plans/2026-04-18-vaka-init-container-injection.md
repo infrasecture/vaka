@@ -91,14 +91,42 @@ sed -i 's|vaka\.dev/v1alpha1|agent.vaka/v1alpha1|g' \
   cmd/vaka-init/main_test.go
 ```
 
-- [ ] **Step 4: Run tests — expect all pass**
+- [ ] **Step 4: Add explicit rejection test for old apiVersion**
+
+Add to `pkg/policy/validate_test.go`:
+```go
+func TestValidateRejectsOldAPIVersion(t *testing.T) {
+	p := mustParse(t, `
+apiVersion: vaka.dev/v1alpha1
+kind: ServicePolicy
+services:
+  s: {}
+`)
+	errs := policy.Validate(p, nil)
+	if len(errs) == 0 {
+		t.Fatal("expected error for old apiVersion vaka.dev/v1alpha1, got none")
+	}
+	found := false
+	for _, e := range errs {
+		if strings.Contains(e.Error(), "apiVersion") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected error mentioning apiVersion, got: %v", errs)
+	}
+}
+```
+
+- [ ] **Step 5: Run tests — expect all pass**
 
 ```bash
 docker run --rm -v "$(pwd)":/src -w /src golang:1.25-alpine go test ./pkg/... ./cmd/... 2>&1
 ```
 Expected: all `ok`.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add pkg/policy/validate.go cmd/vaka-init/main.go \
@@ -810,7 +838,7 @@ func anyNeedsInjection(entries []ServiceEntry) bool {
 ```bash
 docker run --rm -v "$(pwd)":/src -w /src golang:1.25-alpine go test ./pkg/... ./cmd/... 2>&1
 ```
-Expected: all `ok`. (Note: `cmd/vaka` will fail to compile because `BuildOverride` call in `up.go` has wrong signature — fix in Task 8.)
+Expected: all `ok`. (Note: `cmd/vaka` will fail to compile because `BuildOverride` call in `up.go` has wrong signature — fix in Task 7.)
 
 If `cmd/vaka` compile fails, verify only that `pkg/...` passes for now:
 ```bash
@@ -1140,14 +1168,7 @@ func runInjection(vakaFile string, args []string, vakaInitPresent bool) error {
 		return fmt.Errorf("build override: %w", err)
 	}
 
-	dockerArgs := injectStdinOverride(append([]string{"compose"}, args...), defaults)
-
-	c := exec.Command("docker", dockerArgs...)
-	c.Stdin = strings.NewReader(overrideYAML)
-	c.Stdout = os.Stdout
-	c.Stderr = os.Stderr
-	c.Env = envVars
-	return c.Run()
+	return execDockerCompose(args, defaults, overrideYAML, envVars)
 }
 
 // runDown intercepts "vaka down" to inject a minimal override containing the
@@ -1174,11 +1195,20 @@ func runDown(args []string, vakaInitPresent bool) error {
 		return fmt.Errorf("build vaka-init container override: %w", err)
 	}
 
+	return execDockerCompose(args, defaults, overrideYAML, nil)
+}
+
+// execDockerCompose runs docker compose with overrideYAML injected via stdin.
+// extraEnv is appended to the current process environment; pass nil to inherit unchanged.
+func execDockerCompose(args []string, defaults []string, overrideYAML string, extraEnv []string) error {
 	dockerArgs := injectStdinOverride(append([]string{"compose"}, args...), defaults)
 	c := exec.Command("docker", dockerArgs...)
 	c.Stdin = strings.NewReader(overrideYAML)
 	c.Stdout = os.Stdout
 	c.Stderr = os.Stderr
+	if extraEnv != nil {
+		c.Env = extraEnv
+	}
 	return c.Run()
 }
 

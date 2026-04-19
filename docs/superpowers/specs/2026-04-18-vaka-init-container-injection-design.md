@@ -216,7 +216,7 @@ Affected locations: `validate.go`, all test fixtures, README, spec documents.
 | `pkg/policy/marshal_test.go` | Update `apiVersion` in `roundTripInput` |
 | `pkg/compose/override.go` | Add `__vaka-init` container; `volumes_from`; `depends_on`; `injectVakaInit bool` parameter; label detection; entrypoint path |
 | `pkg/compose/override_test.go` | Full `__vaka-init` container injection tests; opt-out tests; mixed-stack test |
-| `cmd/vaka/up.go` → `cmd/vaka/intercept.go` | Rename; add `--vaka-init-present` flag; Docker Go client image check/pull; intercept `down` for `__vaka-init` container teardown — `up`, `run`, and `down` all route through `runInjection` here |
+| `cmd/vaka/up.go` → `cmd/vaka/intercept.go` | Rename; add `--vaka-init-present` flag; Docker Go client image check/pull; `up`/`run` route through `runInjection`; `down` routes through `runDown`; shared `execDockerCompose` helper eliminates duplicated exec plumbing |
 | `cmd/vaka-init/main.go` | `nftBin` const → `/opt/vaka/sbin/nft`; read and validate `vakaVersion`; no-args case exits 0 (prints usage) instead of fatal |
 | `README.md` | Update paths, `apiVersion`, baked-in instructions, opening claim |
 | `docs/superpowers/specs/2026-04-14-vaka-secure-container-design.md` | Update paths and `apiVersion` |
