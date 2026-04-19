@@ -22,8 +22,8 @@
 | `pkg/compose/override.go` | Add `OptOut bool` to `ServiceEntry`; update `BuildOverride` signature; add `__vaka-init` container; `volumes_from`/`depends_on`; path `→ /opt/vaka/sbin/vaka-init`; add `BuildVakaInitOnlyOverride` |
 | `pkg/compose/override_test.go` | Update for new signature; add `__vaka-init` container/opt-out/path tests |
 | `cmd/vaka/inject.go` | Add `--vaka-init-present` boolean flag extraction |
-| `cmd/vaka/images.go` | New: `ImageEnsurer` interface; `dockerClient` narrow interface; `dockerImageEnsurer` holds `dockerClient`; `NewDockerImageEnsurer()` wires real client |
-| `cmd/vaka/images_test.go` | New: `fakeDockerClient` stub; tests instantiate `dockerImageEnsurer` directly for present/absent/pull-fail paths |
+| `cmd/vaka/images.go` | New: `DockerServices` interface (`EnsureImage` + `ResolveEntrypoint`); `dockerClient` narrow interface for testability; `dockerServices` struct; `NewDockerServices()` wires real client once |
+| `cmd/vaka/images_test.go` | New: `fakeDockerClient` stub; `dockerServices` unit tests for `EnsureImage` (present/absent/pull-fail) and `ResolveEntrypoint` (compose-declared/inspect/not-found) |
 | `cmd/vaka/up.go` → `cmd/vaka/intercept.go` | Rename; `classifySubcmd`; `execDockerCompose` shared helper; `runFull` (was `runInjection`); `runLifecycle` (down/stop/kill/rm); `lifecycleOverrideYAML` helper; populate `VakaVersion`; label detection |
 | `cmd/vaka/intercept_test.go` | New: `TestClassifySubcmd`; `TestLifecycleOverrideYAMLPassthrough`; `TestLifecycleOverrideYAMLInjectsContainer` |
 | `cmd/vaka/main.go` | Use `classifySubcmd` dispatch; add cobra stubs for `create`, `down`, `stop`, `kill`, `rm` |
@@ -856,13 +856,13 @@ git commit -m "feat(compose): vaka-init container injection in BuildOverride; ad
 
 ---
 
-### Task 6: Docker image ensurer interface
+### Task 6: Docker services interface
 
 **Files:**
 - Create: `cmd/vaka/images.go`
 - Create: `cmd/vaka/images_test.go`
 
-The `ImageEnsurer` interface allows injecting a test double into `runFull`. `dockerImageEnsurer` holds a `dockerClient` interface (not `*client.Client`), so tests can instantiate `dockerImageEnsurer` directly with a stub and call `EnsureImage` — exercising the real inspect-then-pull conditional and error-wrapping without a live daemon.
+All Docker daemon interactions — image inspection for entrypoint resolution and image check/pull for `__vaka-init` — live in `images.go` behind a single `DockerServices` interface. `runFull` calls `NewDockerServices()` once; a single `*client.Client` is used for both operations. `dockerClient` is a narrow internal interface enabling test doubles without a live daemon; `*client.Client` satisfies it automatically.
 
 - [ ] **Step 1: Create cmd/vaka/images.go**
 
@@ -876,40 +876,49 @@ import (
 	"io"
 	"os"
 
+	composetypes "github.com/compose-spec/compose-go/v2/types"
 	dockerimage "github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/errdefs"
 )
 
-// ImageEnsurer checks whether an image is present locally and pulls it if not.
-type ImageEnsurer interface {
+// DockerServices is the interface for all Docker daemon interactions in vaka.
+// A single implementation is created per runFull invocation; a test double can
+// replace it entirely.
+type DockerServices interface {
+	// EnsureImage inspects ref locally and pulls it if absent.
 	EnsureImage(ctx context.Context, ref string) error
+	// ResolveEntrypoint returns the effective entrypoint and command for a
+	// compose service. If the service declares either field they are returned
+	// directly; otherwise the image is inspected to obtain defaults.
+	ResolveEntrypoint(ctx context.Context, svcName string, svc composetypes.ServiceConfig) ([]string, []string, error)
 }
 
-// dockerClient is a narrow interface over the Docker client operations used by
-// dockerImageEnsurer. *client.Client satisfies it; tests inject a stub.
+// dockerClient is a narrow interface over the Docker API operations used by
+// dockerServices. *client.Client satisfies it; tests inject a stub.
 type dockerClient interface {
 	ImageInspect(ctx context.Context, ref string) (dockerimage.InspectResponse, error)
 	ImagePull(ctx context.Context, ref string, opts dockerimage.PullOptions) (io.ReadCloser, error)
 }
 
-// dockerImageEnsurer is the production ImageEnsurer backed by the Docker daemon.
-type dockerImageEnsurer struct {
+// dockerServices is the production DockerServices backed by the Docker daemon.
+type dockerServices struct {
 	c dockerClient
 }
 
-// NewDockerImageEnsurer creates an ImageEnsurer using the Docker environment
-// (DOCKER_HOST, TLS settings, active context).
-func NewDockerImageEnsurer() (ImageEnsurer, error) {
+// NewDockerServices creates a DockerServices using the Docker environment
+// (DOCKER_HOST, TLS settings, active context). The underlying client is
+// created once and reused for all operations.
+func NewDockerServices() (DockerServices, error) {
 	c, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
 		return nil, fmt.Errorf("create Docker client: %w", err)
 	}
-	return &dockerImageEnsurer{c: c}, nil
+	return &dockerServices{c: c}, nil
 }
 
 // EnsureImage inspects ref locally; pulls it if absent.
-func (d *dockerImageEnsurer) EnsureImage(ctx context.Context, ref string) error {
+func (d *dockerServices) EnsureImage(ctx context.Context, ref string) error {
 	_, err := d.c.ImageInspect(ctx, ref)
 	if err == nil {
 		return nil
@@ -925,11 +934,36 @@ func (d *dockerImageEnsurer) EnsureImage(ctx context.Context, ref string) error 
 	_, err = io.Copy(os.Stderr, rc)
 	return err
 }
+
+// ResolveEntrypoint returns the effective entrypoint and command for svc.
+// If the compose service declares either field they are returned directly;
+// otherwise the image is inspected to obtain the Dockerfile defaults.
+func (d *dockerServices) ResolveEntrypoint(ctx context.Context, svcName string, svc composetypes.ServiceConfig) ([]string, []string, error) {
+	if len(svc.Entrypoint) > 0 || len(svc.Command) > 0 {
+		return svc.Entrypoint, svc.Command, nil
+	}
+	if svc.Image == "" {
+		return nil, nil, fmt.Errorf("service %s: no image and no entrypoint/command declared", svcName)
+	}
+	inspect, err := d.c.ImageInspect(ctx, svc.Image)
+	if err != nil {
+		if errdefs.IsNotFound(err) {
+			return nil, nil, fmt.Errorf(
+				"service %s: image %q not available locally and no entrypoint/command declared — pull first or add entrypoint:",
+				svcName, svc.Image)
+		}
+		return nil, nil, fmt.Errorf("service %s: inspect %q: %w", svcName, svc.Image, err)
+	}
+	if inspect.Config == nil {
+		return nil, nil, fmt.Errorf("service %s: image %q has no Config", svcName, svc.Image)
+	}
+	return inspect.Config.Entrypoint, inspect.Config.Cmd, nil
+}
 ```
 
 - [ ] **Step 2: Create cmd/vaka/images_test.go with fakes and unit tests**
 
-`fakeDockerClient` implements `dockerClient` and lets tests control both inspect and pull behaviour. Tests instantiate `dockerImageEnsurer{c: dc}` directly and call `EnsureImage` — exercising the real conditional, not-found detection, and error-wrapping in `images.go`.
+`fakeDockerClient` implements `dockerClient` and controls both inspect and pull behaviour. `inspectResult` is returned when `notFound == false`; leave it zero-value for `EnsureImage` tests (only the absence/presence matters) and populate `Config` for `ResolveEntrypoint` tests. Tests construct `dockerServices{c: dc}` directly — exercising the real logic without a live daemon.
 
 ```go
 // cmd/vaka/images_test.go
@@ -942,22 +976,26 @@ import (
 	"io"
 	"testing"
 
+	containertypes "github.com/docker/docker/api/types/container"
 	dockerimage "github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/errdefs"
+
+	composetypes "github.com/compose-spec/compose-go/v2/types"
 )
 
 // fakeDockerClient implements dockerClient for unit tests without a live daemon.
 type fakeDockerClient struct {
-	notFound   bool  // ImageInspect returns NotFound when true
-	pullErr    error // error to return from ImagePull; nil = success
-	pullCalled bool
+	notFound      bool                      // ImageInspect returns NotFound when true
+	inspectResult dockerimage.InspectResponse // returned when notFound == false
+	pullErr       error                     // error to return from ImagePull; nil = success
+	pullCalled    bool
 }
 
 func (f *fakeDockerClient) ImageInspect(_ context.Context, _ string) (dockerimage.InspectResponse, error) {
 	if f.notFound {
 		return dockerimage.InspectResponse{}, errdefs.NotFound(errors.New("not found"))
 	}
-	return dockerimage.InspectResponse{}, nil
+	return f.inspectResult, nil
 }
 
 func (f *fakeDockerClient) ImagePull(_ context.Context, _ string, _ dockerimage.PullOptions) (io.ReadCloser, error) {
@@ -968,9 +1006,11 @@ func (f *fakeDockerClient) ImagePull(_ context.Context, _ string, _ dockerimage.
 	return io.NopCloser(&bytes.Buffer{}), nil
 }
 
+// --- EnsureImage tests ---
+
 func TestEnsureImagePresent(t *testing.T) {
 	dc := &fakeDockerClient{notFound: false}
-	e := &dockerImageEnsurer{c: dc}
+	e := &dockerServices{c: dc}
 	if err := e.EnsureImage(context.Background(), "emsi/vaka-init:v0.1.0"); err != nil {
 		t.Fatalf("present: unexpected error: %v", err)
 	}
@@ -981,7 +1021,7 @@ func TestEnsureImagePresent(t *testing.T) {
 
 func TestEnsureImageAbsentPullSucceeds(t *testing.T) {
 	dc := &fakeDockerClient{notFound: true}
-	e := &dockerImageEnsurer{c: dc}
+	e := &dockerServices{c: dc}
 	if err := e.EnsureImage(context.Background(), "emsi/vaka-init:v0.1.0"); err != nil {
 		t.Fatalf("absent+pull succeeds: unexpected error: %v", err)
 	}
@@ -993,13 +1033,69 @@ func TestEnsureImageAbsentPullSucceeds(t *testing.T) {
 func TestEnsureImageAbsentPullFails(t *testing.T) {
 	pullErr := errors.New("network unreachable")
 	dc := &fakeDockerClient{notFound: true, pullErr: pullErr}
-	e := &dockerImageEnsurer{c: dc}
+	e := &dockerServices{c: dc}
 	err := e.EnsureImage(context.Background(), "emsi/vaka-init:v0.1.0")
 	if err == nil {
 		t.Fatal("pull fails: expected error, got nil")
 	}
 	if !errors.Is(err, pullErr) {
 		t.Errorf("pull fails: expected %v wrapped, got %v", pullErr, err)
+	}
+}
+
+// --- ResolveEntrypoint tests ---
+
+func TestResolveEntrypointFromCompose(t *testing.T) {
+	// Entrypoint declared in compose — no image inspect needed.
+	dc := &fakeDockerClient{}
+	ds := &dockerServices{c: dc}
+	svc := composetypes.ServiceConfig{
+		Entrypoint: []string{"/app"},
+		Command:    []string{"--flag"},
+	}
+	ep, cmd, err := ds.ResolveEntrypoint(context.Background(), "myapp", svc)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ep) != 1 || ep[0] != "/app" {
+		t.Errorf("entrypoint = %v, want [/app]", ep)
+	}
+	if len(cmd) != 1 || cmd[0] != "--flag" {
+		t.Errorf("command = %v, want [--flag]", cmd)
+	}
+}
+
+func TestResolveEntrypointFromInspect(t *testing.T) {
+	// No compose entrypoint — should inspect image and use Dockerfile defaults.
+	dc := &fakeDockerClient{
+		inspectResult: dockerimage.InspectResponse{
+			Config: &containertypes.Config{
+				Entrypoint: []string{"/docker-entrypoint.sh"},
+				Cmd:        []string{"nginx", "-g", "daemon off;"},
+			},
+		},
+	}
+	ds := &dockerServices{c: dc}
+	svc := composetypes.ServiceConfig{Image: "nginx:latest"}
+	ep, cmd, err := ds.ResolveEntrypoint(context.Background(), "web", svc)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ep) != 1 || ep[0] != "/docker-entrypoint.sh" {
+		t.Errorf("entrypoint = %v, want [/docker-entrypoint.sh]", ep)
+	}
+	if len(cmd) != 3 || cmd[0] != "nginx" {
+		t.Errorf("command = %v, want [nginx -g daemon off;]", cmd)
+	}
+}
+
+func TestResolveEntrypointImageNotFound(t *testing.T) {
+	dc := &fakeDockerClient{notFound: true}
+	ds := &dockerServices{c: dc}
+	svc := composetypes.ServiceConfig{Image: "myapp:latest"}
+	_, _, err := ds.ResolveEntrypoint(context.Background(), "myapp", svc)
+	if err == nil {
+		t.Fatal("expected error for missing image, got nil")
 	}
 }
 ```
@@ -1014,7 +1110,7 @@ docker run --rm -v "$(pwd)":/src -w /src golang:1.25-alpine go test ./pkg/... ./
 
 ```bash
 git add cmd/vaka/images.go cmd/vaka/images_test.go
-git commit -m "feat(vaka): add ImageEnsurer interface for testable Docker image check/pull"
+git commit -m "feat(vaka): add DockerServices interface consolidating image check/pull and entrypoint resolution"
 ```
 
 ---
@@ -1262,6 +1358,12 @@ func runFull(vakaFile string, args []string, vakaInitPresent bool) error {
 
 	ctx := context.Background()
 
+	// Create ONE Docker client for both entrypoint resolution and image ensuring.
+	ds, err := NewDockerServices()
+	if err != nil {
+		return err
+	}
+
 	var entries []compose.ServiceEntry
 	var extraEnv []string
 
@@ -1271,7 +1373,7 @@ func runFull(vakaFile string, args []string, vakaInitPresent bool) error {
 			return fmt.Errorf("service %q: not found in compose files %v", svcName, composeFiles)
 		}
 
-		entrypoint, cmd, err := resolveEntrypoint(ctx, dockerClient, svcName, composeSvc)
+		entrypoint, cmd, err := ds.ResolveEntrypoint(ctx, svcName, composeSvc)
 		if err != nil {
 			return err
 		}
@@ -1320,11 +1422,7 @@ func runFull(vakaFile string, args []string, vakaInitPresent bool) error {
 	vakaInitImageRef := ""
 	if !vakaInitPresent && needsInjection {
 		vakaInitImageRef = vakaInitBaseImage + ":" + version
-		ensurer, err := NewDockerImageEnsurer()
-		if err != nil {
-			return err
-		}
-		if err := ensurer.EnsureImage(ctx, vakaInitImageRef); err != nil {
+		if err := ds.EnsureImage(ctx, vakaInitImageRef); err != nil {
 			return err
 		}
 	}
@@ -1355,29 +1453,6 @@ func runLifecycle(args []string, vakaInitPresent bool) error {
 		return fmt.Errorf("build vaka-init container override: %w", err)
 	}
 	return execDockerCompose(args, overrideYAML, nil)
-}
-
-// resolveEntrypoint returns the effective entrypoint and command for a service.
-func resolveEntrypoint(ctx context.Context, dockerClient *client.Client, svcName string, svc composetypes.ServiceConfig) ([]string, []string, error) {
-	if len(svc.Entrypoint) > 0 || len(svc.Command) > 0 {
-		return svc.Entrypoint, svc.Command, nil
-	}
-	if svc.Image == "" {
-		return nil, nil, fmt.Errorf("service %s: no image and no entrypoint/command declared", svcName)
-	}
-	inspect, err := dockerClient.ImageInspect(ctx, svc.Image)
-	if err != nil {
-		if client.IsErrNotFound(err) {
-			return nil, nil, fmt.Errorf(
-				"service %s: image %q not available locally and no entrypoint/command declared — pull first or add entrypoint:",
-				svcName, svc.Image)
-		}
-		return nil, nil, fmt.Errorf("service %s: inspect %q: %w", svcName, svc.Image, err)
-	}
-	if inspect.Config == nil {
-		return nil, nil, fmt.Errorf("service %s: image %q has no Config", svcName, svc.Image)
-	}
-	return inspect.Config.Entrypoint, inspect.Config.Cmd, nil
 }
 
 // computeCapDelta returns capabilities vaka needs that are absent from Docker's
