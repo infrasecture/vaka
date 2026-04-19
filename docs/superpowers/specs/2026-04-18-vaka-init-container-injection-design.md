@@ -226,7 +226,7 @@ Affected locations: `validate.go`, all test fixtures, README, spec documents.
 ## 11. Testing strategy
 
 **`pkg/compose/override_test.go`:**
-- `__vaka-init` container emitted with correct image tag, `entrypoint: ["true"]`, `restart: "no"`
+- `__vaka-init` container emitted with correct image tag, `entrypoint: ["/opt/vaka/sbin/vaka-init"]`, `restart: "no"`
 - `depends_on: service_completed_successfully` on each managed service
 - `volumes_from: [__vaka-init:ro]` on each managed service
 - Entrypoint always `/opt/vaka/sbin/vaka-init`
