@@ -206,11 +206,36 @@ git commit -m "feat(policy): add VakaVersion field; reject user-supplied vakaVer
 
 Two independent changes: the `nftBin` constant path, and the no-args behavior (exits 0 so `service_completed_successfully` works when vaka-init is used as the `__vaka-init` container entrypoint with no arguments).
 
-- [ ] **Step 1: Write the failing test for no-args exit behavior**
+- [ ] **Step 1: Write the failing test for no-args exit-0 behavior**
 
-The existing test in `cmd/vaka-init/main_test.go` covers the normal path. Add a note in the test file but the behavior is best verified by reviewing the code change. The compile + existing tests catching regressions is sufficient here.
+Add to `cmd/vaka-init/main_test.go`:
+```go
+func TestNoArgExitsZero(t *testing.T) {
+	// Subprocess trick: re-run this test binary as vaka-init with no "--".
+	// When BE_VAKA_INIT=1 the subprocess calls main(); os.Args has no "--",
+	// so main() hits fmt.Fprintln + os.Exit(0). Parent asserts exit code 0.
+	if os.Getenv("BE_VAKA_INIT") == "1" {
+		main()
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=TestNoArgExitsZero")
+	cmd.Env = append(os.Environ(), "BE_VAKA_INIT=1")
+	if err := cmd.Run(); err != nil {
+		t.Errorf("vaka-init with no args: expected exit 0, got: %v", err)
+	}
+}
+```
 
-- [ ] **Step 2: Update nftBin constant**
+(Requires `"os/exec"` import in the test file.)
+
+- [ ] **Step 2: Run test — expect FAIL**
+
+```bash
+docker run --rm -v "$(pwd)":/src -w /src golang:1.25-alpine go test ./cmd/vaka-init/... -run TestNoArgExitsZero -v 2>&1
+```
+Expected: FAIL — no-args path still calls `fatal(...)`.
+
+- [ ] **Step 3: Update nftBin constant**
 
 In `cmd/vaka-init/main.go` replace:
 ```go
@@ -221,7 +246,7 @@ with:
 const nftBin = "/opt/vaka/sbin/nft"
 ```
 
-- [ ] **Step 3: Change no-args behavior to exit 0**
+- [ ] **Step 4: Change no-args behavior to exit 0**
 
 In `cmd/vaka-init/main.go` replace:
 ```go
@@ -247,17 +272,17 @@ func main() {
 	}
 ```
 
-- [ ] **Step 4: Run tests — expect all pass**
+- [ ] **Step 5: Run tests — expect all pass**
 
 ```bash
 docker run --rm -v "$(pwd)":/src -w /src golang:1.25-alpine go test ./pkg/... ./cmd/... 2>&1
 ```
-Expected: all `ok`.
+Expected: all `ok`, including `TestNoArgExitsZero`.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/vaka-init/main.go
+git add cmd/vaka-init/main.go cmd/vaka-init/main_test.go
 git commit -m "fix(vaka-init): update nftBin path to /opt/vaka/sbin/nft; exit 0 on no-args"
 ```
 
@@ -855,16 +880,76 @@ func (d *dockerImageEnsurer) EnsureImage(ctx context.Context, ref string) error 
 }
 ```
 
-- [ ] **Step 2: Run tests — expect all pass**
+- [ ] **Step 2: Create cmd/vaka/images_test.go with stub and unit tests**
+
+```go
+// cmd/vaka/images_test.go
+package main
+
+import (
+	"context"
+	"errors"
+	"testing"
+)
+
+// stubEnsurer implements ImageEnsurer without a live Docker daemon.
+type stubEnsurer struct {
+	present bool
+	pullErr error
+	calls   int
+}
+
+func (s *stubEnsurer) EnsureImage(_ context.Context, ref string) error {
+	if s.present {
+		return nil
+	}
+	s.calls++
+	return s.pullErr
+}
+
+func TestImageEnsurerPresent(t *testing.T) {
+	stub := &stubEnsurer{present: true}
+	if err := stub.EnsureImage(context.Background(), "emsi/vaka-init:v0.1.0"); err != nil {
+		t.Errorf("image present: expected nil error, got %v", err)
+	}
+	if stub.calls != 0 {
+		t.Errorf("image present: pull must not be called, got %d calls", stub.calls)
+	}
+}
+
+func TestImageEnsurerAbsentPullSucceeds(t *testing.T) {
+	stub := &stubEnsurer{present: false, pullErr: nil}
+	if err := stub.EnsureImage(context.Background(), "emsi/vaka-init:v0.1.0"); err != nil {
+		t.Errorf("absent+pull succeeds: expected nil error, got %v", err)
+	}
+	if stub.calls != 1 {
+		t.Errorf("absent+pull succeeds: expected 1 pull call, got %d", stub.calls)
+	}
+}
+
+func TestImageEnsurerPullFails(t *testing.T) {
+	pullErr := errors.New("network unreachable")
+	stub := &stubEnsurer{present: false, pullErr: pullErr}
+	err := stub.EnsureImage(context.Background(), "emsi/vaka-init:v0.1.0")
+	if err == nil {
+		t.Fatal("pull fails: expected error, got nil")
+	}
+	if !errors.Is(err, pullErr) {
+		t.Errorf("pull fails: expected %v, got %v", pullErr, err)
+	}
+}
+```
+
+- [ ] **Step 3: Run tests — expect all pass**
 
 ```bash
 docker run --rm -v "$(pwd)":/src -w /src golang:1.25-alpine go test ./pkg/... ./cmd/... 2>&1
 ```
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add cmd/vaka/images.go
+git add cmd/vaka/images.go cmd/vaka/images_test.go
 git commit -m "feat(vaka): add ImageEnsurer interface for testable Docker image check/pull"
 ```
 
@@ -1250,17 +1335,92 @@ func exitCode(err error) int {
 }
 ```
 
-- [ ] **Step 5: Run all tests — expect all pass**
+- [ ] **Step 5: Add runDown tests**
+
+`runDown` has two testable paths: passthrough (when `vakaInitPresent=true`) and YAML injection (when false). Extract a pure helper so the YAML-building logic can be tested without exec:
+
+In `cmd/vaka/intercept.go`, add above `runDown`:
+```go
+// vakaInitDownOverride returns the compose override YAML for vaka down, or ""
+// when vakaInitPresent is true (passthrough — no __vaka-init container was created).
+func vakaInitDownOverride(vakaInitPresent bool, imageRef string) (string, error) {
+	if vakaInitPresent {
+		return "", nil
+	}
+	return compose.BuildVakaInitOnlyOverride(imageRef)
+}
+```
+
+Update `runDown` to call this helper:
+```go
+func runDown(args []string, vakaInitPresent bool) error {
+	yaml, err := vakaInitDownOverride(vakaInitPresent, vakaInitBaseImage+":"+version)
+	if err != nil {
+		return fmt.Errorf("build vaka-init container override: %w", err)
+	}
+	composeFiles := allFileFlags(args)
+	defaults := []string{}
+	if len(composeFiles) == 0 {
+		defaults = discoverComposeFiles(".")
+	}
+	dockerArgs := injectStdinOverride(append([]string{"compose"}, args...), defaults)
+	c := exec.Command("docker", dockerArgs...)
+	if yaml != "" {
+		c.Stdin = strings.NewReader(yaml)
+	} else {
+		c.Stdin = os.Stdin
+	}
+	c.Stdout = os.Stdout
+	c.Stderr = os.Stderr
+	return c.Run()
+}
+```
+
+Create `cmd/vaka/intercept_test.go`:
+```go
+// cmd/vaka/intercept_test.go
+package main
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestVakaInitDownOverridePassthrough(t *testing.T) {
+	yaml, err := vakaInitDownOverride(true, "emsi/vaka-init:v0.1.0")
+	if err != nil {
+		t.Fatalf("passthrough: unexpected error: %v", err)
+	}
+	if yaml != "" {
+		t.Errorf("passthrough: expected empty YAML, got:\n%s", yaml)
+	}
+}
+
+func TestVakaInitDownOverrideInjectsContainer(t *testing.T) {
+	yaml, err := vakaInitDownOverride(false, "emsi/vaka-init:v0.1.0")
+	if err != nil {
+		t.Fatalf("injection: unexpected error: %v", err)
+	}
+	if !strings.Contains(yaml, "__vaka-init") {
+		t.Errorf("injection: expected __vaka-init in YAML, got:\n%s", yaml)
+	}
+	if !strings.Contains(yaml, "emsi/vaka-init:v0.1.0") {
+		t.Errorf("injection: expected image ref in YAML, got:\n%s", yaml)
+	}
+}
+```
+
+- [ ] **Step 6: Run all tests — expect all pass**
 
 ```bash
 docker run --rm -v "$(pwd)":/src -w /src golang:1.25-alpine go test ./pkg/... ./cmd/... 2>&1
 ```
 Expected: all `ok`.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add cmd/vaka/intercept.go cmd/vaka/inject.go cmd/vaka/main.go
+git add cmd/vaka/intercept.go cmd/vaka/intercept_test.go cmd/vaka/inject.go cmd/vaka/main.go
 git commit -m "feat(vaka): rename up.go→intercept.go; add __vaka-init container injection, --vaka-init-present, vaka down interception"
 ```
 
@@ -1327,9 +1487,9 @@ git commit -m "feat(dockerfile): move binaries to /opt/vaka/sbin; add VOLUME /op
 - Modify: `README.md`
 - Modify: `docs/superpowers/specs/2026-04-14-vaka-secure-container-design.md`
 
-Update all `vaka.dev/v1alpha1` → `agent.vaka/v1alpha1`, binary path references `/usr/local/sbin/` → `/opt/vaka/sbin/`, baked-in instructions, and the opening claim.
+The goal is not just mechanical string replacement — the README must be structurally rewritten to reflect the feature's intent: **no container image changes required by default**. Baked-in instructions move from the main onboarding path to an advanced opt-out section.
 
-- [ ] **Step 1: Mass-replace in README.md**
+- [ ] **Step 1: Mechanical replacements in README.md**
 
 ```bash
 sed -i \
@@ -1337,21 +1497,56 @@ sed -i \
   README.md
 ```
 
-- [ ] **Step 2: Update README opening claim**
+- [ ] **Step 2: Confirm the opening claim is now accurate**
 
-Find the sentence in README.md that says something like "without modifying your docker-compose.yaml, without writing any files to disk on the host, and without changing your container images" — verify it now reads accurately. If it's missing "without changing your container images", ensure that claim is present.
+Find the sentence that lists what vaka works without. It must include "without changing your container images" as a true, unconditional statement (not qualified by "if you use the sidecar"). Verify it reads as a top-level claim, not buried in a conditional.
 
-- [ ] **Step 3: Update baked-in instructions in README**
+- [ ] **Step 3: Rewrite the "Installation / Getting started" onboarding section**
 
-Find any `COPY --from=vaka` example and ensure it shows:
+Remove any steps that tell users to add `vaka-init` or `nft` to their image as part of the normal setup. The new onboarding path is:
+
+1. Add vaka policy (`vaka.yaml`)
+2. Run `vaka up` — binaries are injected automatically from `emsi/vaka-init:<version>`
+
+No Dockerfile changes. No `COPY` steps. No manual binary installation.
+
+- [ ] **Step 4: Add "Advanced: opt-out for air-gapped environments" section**
+
+Create a new section (e.g. `### Air-gapped / opt-out`) explaining that users who cannot pull `emsi/vaka-init` from the internet can bake the binaries into their image and skip injection:
+
+```markdown
+### Air-gapped / opt-out
+
+If your environment cannot pull `emsi/vaka-init` from the internet, bake the binaries
+into your image and pass `--vaka-init-present` to skip automatic injection:
+
 ```dockerfile
-FROM emsi/vaka-init:latest AS vaka
+FROM emsi/vaka-init:v0.1.2 AS vaka
 FROM ubuntu:24.04
 COPY --from=vaka /opt/vaka/sbin/vaka-init /opt/vaka/sbin/vaka-init
 COPY --from=vaka /opt/vaka/sbin/nft       /opt/vaka/sbin/nft
 ```
 
-- [ ] **Step 4: Mass-replace in spec doc**
+Then run with:
+```bash
+vaka up --vaka-init-present
+vaka down --vaka-init-present
+```
+
+Per-service opt-out via `docker-compose.yaml` label:
+```yaml
+services:
+  myapp:
+    labels:
+      agent.vaka.init: present
+```
+```
+
+- [ ] **Step 5: Document `vaka down`**
+
+Add a short section (or extend the existing CLI reference) documenting that `vaka down` tears down the full stack including the `__vaka-init` container, and that `--vaka-init-present` must be passed if the stack was started with that flag.
+
+- [ ] **Step 6: Mechanical replacements in spec doc**
 
 ```bash
 sed -i \
@@ -1359,18 +1554,18 @@ sed -i \
   docs/superpowers/specs/2026-04-14-vaka-secure-container-design.md
 ```
 
-- [ ] **Step 5: Run tests — expect all pass**
+- [ ] **Step 7: Run tests — expect all pass**
 
 ```bash
 docker run --rm -v "$(pwd)":/src -w /src golang:1.25-alpine go test ./pkg/... ./cmd/... 2>&1
 ```
 Expected: all `ok`.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add README.md docs/superpowers/specs/2026-04-14-vaka-secure-container-design.md
-git commit -m "docs: update apiVersion domain, binary paths, baked-in instructions"
+git commit -m "docs: restructure README for no-image-changes default; add opt-out section; update apiVersion and paths"
 ```
 
 ---
