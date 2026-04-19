@@ -130,7 +130,9 @@ COPY --from=vaka /opt/vaka/sbin/nft       /opt/vaka/sbin/nft
 
 ## 7. Docker Go client — image check and pull
 
-When `__vaka-init` container injection is active, before invoking `docker compose`, vaka uses the Docker Go client (`github.com/docker/docker/client`) to verify the correct image is present locally:
+Injection is considered active only after all per-service opt-out labels have been evaluated. The image check and pull are skipped entirely when `--vaka-init-present` is set **or** when every managed service carries the `agent.vaka.init: present` label — the same guarantee in both cases.
+
+When injection is active, before invoking `docker compose`, vaka uses the Docker Go client (`github.com/docker/docker/client`) to verify the correct image is present locally:
 
 ```
 ImageInspect("emsi/vaka-init:<vaka-version>")
@@ -141,6 +143,8 @@ ImageInspect("emsi/vaka-init:<vaka-version>")
           "failed to pull emsi/vaka-init:v0.1.2 — check network connectivity
            or use --vaka-init-present if binaries are baked into the image"
 ```
+
+The implementation therefore evaluates per-service labels first (building the `entries` list), then decides whether to pull, then calls `BuildOverride`.
 
 The client is initialised via `client.NewClientWithOpts(client.FromEnv)`, respecting `DOCKER_HOST`, TLS settings, and the active Docker context.
 

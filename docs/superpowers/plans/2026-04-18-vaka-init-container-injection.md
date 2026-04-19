@@ -984,19 +984,10 @@ func runInjection(vakaFile string, args []string, vakaInitPresent bool) error {
 	}
 	defer dockerClient.Close()
 
-	// Determine __vaka-init container image reference (empty = global opt-out via --vaka-init-present).
-	vakaInitImageRef := ""
-	if !vakaInitPresent {
-		vakaInitImageRef = vakaInitBaseImage + ":" + version
-		ensurer := newDockerImageEnsurer(dockerClient)
-		if err := ensurer.EnsureImage(ctx, vakaInitImageRef); err != nil {
-			return err
-		}
-	}
-
 	var entries []compose.ServiceEntry
 	envVars := os.Environ()
 
+	// Build entries first so OptOut labels are known before deciding to pull.
 	for svcName, svc := range p.Services {
 		composeSvc, ok := project.Services[svcName]
 		if !ok {
@@ -1039,6 +1030,24 @@ func runInjection(vakaFile string, args []string, vakaInitPresent bool) error {
 			EnvVarName: envKey,
 			OptOut:     composeSvc.Labels[vakaInitLabel] == "present",
 		})
+	}
+
+	// Pull only when injection is actually needed: flag not set AND at least one
+	// service lacks the opt-out label. Mirrors the BuildOverride anyNeedsInjection check.
+	needsInjection := false
+	for _, e := range entries {
+		if !e.OptOut {
+			needsInjection = true
+			break
+		}
+	}
+	vakaInitImageRef := ""
+	if !vakaInitPresent && needsInjection {
+		vakaInitImageRef = vakaInitBaseImage + ":" + version
+		ensurer := newDockerImageEnsurer(dockerClient)
+		if err := ensurer.EnsureImage(ctx, vakaInitImageRef); err != nil {
+			return err
+		}
 	}
 
 	overrideYAML, err := compose.BuildOverride(entries, vakaInitImageRef)
