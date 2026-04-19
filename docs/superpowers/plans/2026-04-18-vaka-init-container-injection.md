@@ -23,7 +23,7 @@
 | `pkg/compose/override_test.go` | Update for new signature; add `__vaka-init` container/opt-out/path tests |
 | `cmd/vaka/inject.go` | Add `--vaka-init-present` boolean flag extraction |
 | `cmd/vaka/images.go` | New: `ImageEnsurer` interface + `dockerImageEnsurer` |
-| `cmd/vaka/images_test.go` | New: stub `ImageEnsurer`; tests for present/absent/pull-fail paths |
+| `cmd/vaka/images_test.go` | New: `fakeInspector`/`fakePuller`; tests call `ensureImage` directly for present/absent/pull-fail paths |
 | `cmd/vaka/up.go` → `cmd/vaka/intercept.go` | Rename; `classifySubcmd`; `execDockerCompose` shared helper; `runFull` (was `runInjection`); `runLifecycle` (down/stop/kill/rm); `lifecycleOverrideYAML` helper; populate `VakaVersion`; label detection |
 | `cmd/vaka/intercept_test.go` | New: `TestClassifySubcmd`; `TestLifecycleOverrideYAMLPassthrough`; `TestLifecycleOverrideYAMLInjectsContainer` |
 | `cmd/vaka/main.go` | Use `classifySubcmd` dispatch; add cobra stubs for `create`, `down`, `stop`, `kill`, `rm` |
@@ -860,8 +860,9 @@ git commit -m "feat(compose): vaka-init container injection in BuildOverride; ad
 
 **Files:**
 - Create: `cmd/vaka/images.go`
+- Create: `cmd/vaka/images_test.go`
 
-The `ImageEnsurer` interface allows unit-testing image check/pull logic without a live Docker daemon. The real implementation uses `client.ImageInspect` then `client.ImagePull`.
+The `ImageEnsurer` interface allows injecting a test double into `runFull`. The inspect-then-pull logic lives in a package-level `ensureImage` helper that accepts narrow `imageInspector`/`imagePuller` interfaces — so unit tests exercise the real conditional and error-handling paths by swapping in fakes for each Docker operation, without a live daemon.
 
 - [ ] **Step 1: Create cmd/vaka/images.go**
 
@@ -884,6 +885,34 @@ type ImageEnsurer interface {
 	EnsureImage(ctx context.Context, ref string) error
 }
 
+// imageInspector and imagePuller are narrow interfaces over the Docker client
+// operations needed by ensureImage. *client.Client satisfies both.
+type imageInspector interface {
+	ImageInspect(ctx context.Context, ref string) (dockerimage.InspectResponse, error)
+}
+type imagePuller interface {
+	ImagePull(ctx context.Context, ref string, opts dockerimage.PullOptions) (io.ReadCloser, error)
+}
+
+// ensureImage contains the real inspect-then-pull logic.
+// Accepting narrow interfaces makes it unit-testable without a live daemon.
+func ensureImage(ctx context.Context, ins imageInspector, pull imagePuller, ref string) error {
+	_, err := ins.ImageInspect(ctx, ref)
+	if err == nil {
+		return nil
+	}
+	if !client.IsErrNotFound(err) {
+		return fmt.Errorf("inspect %s: %w", ref, err)
+	}
+	rc, err := pull.ImagePull(ctx, ref, dockerimage.PullOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to pull %s — check network connectivity or use --vaka-init-present if binaries are baked into the image: %w", ref, err)
+	}
+	defer rc.Close()
+	_, err = io.Copy(os.Stderr, rc)
+	return err
+}
+
 type dockerImageEnsurer struct {
 	c *client.Client
 }
@@ -892,80 +921,85 @@ func newDockerImageEnsurer(c *client.Client) ImageEnsurer {
 	return &dockerImageEnsurer{c: c}
 }
 
+// EnsureImage is a thin wrapper; all logic lives in ensureImage.
 func (d *dockerImageEnsurer) EnsureImage(ctx context.Context, ref string) error {
-	_, err := d.c.ImageInspect(ctx, ref)
-	if err == nil {
-		return nil
-	}
-	if !client.IsErrNotFound(err) {
-		return fmt.Errorf("inspect %s: %w", ref, err)
-	}
-	rc, err := d.c.ImagePull(ctx, ref, dockerimage.PullOptions{})
-	if err != nil {
-		return fmt.Errorf("failed to pull %s — check network connectivity or use --vaka-init-present if binaries are baked into the image: %w", ref, err)
-	}
-	defer rc.Close()
-	_, err = io.Copy(os.Stderr, rc)
-	return err
+	return ensureImage(ctx, d.c, d.c, ref)
 }
 ```
 
-- [ ] **Step 2: Create cmd/vaka/images_test.go with stub and unit tests**
+- [ ] **Step 2: Create cmd/vaka/images_test.go with fakes and unit tests**
+
+`fakeInspector` and `fakePuller` implement the narrow interfaces and let each test control exactly one Docker operation. The tests call `ensureImage` directly — they exercise the real conditional and error-wrapping in `images.go`, not a hand-rolled stub.
 
 ```go
 // cmd/vaka/images_test.go
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"testing"
+
+	dockerimage "github.com/docker/docker/api/types/image"
+	"github.com/docker/docker/errdefs"
 )
 
-// stubEnsurer implements ImageEnsurer without a live Docker daemon.
-type stubEnsurer struct {
-	present bool
-	pullErr error
-	calls   int
+type fakeInspector struct{ notFound bool }
+
+func (f *fakeInspector) ImageInspect(_ context.Context, _ string) (dockerimage.InspectResponse, error) {
+	if f.notFound {
+		return dockerimage.InspectResponse{}, errdefs.NotFound(errors.New("not found"))
+	}
+	return dockerimage.InspectResponse{}, nil
 }
 
-func (s *stubEnsurer) EnsureImage(_ context.Context, ref string) error {
-	if s.present {
-		return nil
-	}
-	s.calls++
-	return s.pullErr
+type fakePuller struct {
+	err    error
+	called bool
 }
 
-func TestImageEnsurerPresent(t *testing.T) {
-	stub := &stubEnsurer{present: true}
-	if err := stub.EnsureImage(context.Background(), "emsi/vaka-init:v0.1.0"); err != nil {
-		t.Errorf("image present: expected nil error, got %v", err)
+func (f *fakePuller) ImagePull(_ context.Context, _ string, _ dockerimage.PullOptions) (io.ReadCloser, error) {
+	f.called = true
+	if f.err != nil {
+		return nil, f.err
 	}
-	if stub.calls != 0 {
-		t.Errorf("image present: pull must not be called, got %d calls", stub.calls)
-	}
+	return io.NopCloser(&bytes.Buffer{}), nil
 }
 
-func TestImageEnsurerAbsentPullSucceeds(t *testing.T) {
-	stub := &stubEnsurer{present: false, pullErr: nil}
-	if err := stub.EnsureImage(context.Background(), "emsi/vaka-init:v0.1.0"); err != nil {
-		t.Errorf("absent+pull succeeds: expected nil error, got %v", err)
+func TestEnsureImagePresent(t *testing.T) {
+	ins := &fakeInspector{notFound: false}
+	pull := &fakePuller{}
+	if err := ensureImage(context.Background(), ins, pull, "emsi/vaka-init:v0.1.0"); err != nil {
+		t.Fatalf("present: unexpected error: %v", err)
 	}
-	if stub.calls != 1 {
-		t.Errorf("absent+pull succeeds: expected 1 pull call, got %d", stub.calls)
+	if pull.called {
+		t.Error("present: pull must not be called when image is already present")
 	}
 }
 
-func TestImageEnsurerPullFails(t *testing.T) {
+func TestEnsureImageAbsentPullSucceeds(t *testing.T) {
+	ins := &fakeInspector{notFound: true}
+	pull := &fakePuller{}
+	if err := ensureImage(context.Background(), ins, pull, "emsi/vaka-init:v0.1.0"); err != nil {
+		t.Fatalf("absent+pull succeeds: unexpected error: %v", err)
+	}
+	if !pull.called {
+		t.Error("absent+pull succeeds: pull must be called when image is absent")
+	}
+}
+
+func TestEnsureImageAbsentPullFails(t *testing.T) {
+	ins := &fakeInspector{notFound: true}
 	pullErr := errors.New("network unreachable")
-	stub := &stubEnsurer{present: false, pullErr: pullErr}
-	err := stub.EnsureImage(context.Background(), "emsi/vaka-init:v0.1.0")
+	pull := &fakePuller{err: pullErr}
+	err := ensureImage(context.Background(), ins, pull, "emsi/vaka-init:v0.1.0")
 	if err == nil {
 		t.Fatal("pull fails: expected error, got nil")
 	}
 	if !errors.Is(err, pullErr) {
-		t.Errorf("pull fails: expected %v, got %v", pullErr, err)
+		t.Errorf("pull fails: expected %v wrapped, got %v", pullErr, err)
 	}
 }
 ```

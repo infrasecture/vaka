@@ -258,11 +258,13 @@ Affected locations: `validate.go`, all test fixtures, README, spec documents.
 - `lifecycleOverrideYAML(false, …)` → returns YAML containing `__vaka-init`
 
 **`cmd/vaka/images_test.go`:**
-- Stub `ImageEnsurer`: image present → no pull called
-- Stub `ImageEnsurer`: image absent, pull succeeds → pull called once
-- Stub `ImageEnsurer`: image absent, pull fails → error returned
+- `fakeInspector`/`fakePuller` implement the narrow `imageInspector`/`imagePuller` interfaces
+- Tests call `ensureImage` directly (not a stub of `ImageEnsurer`):
+  - Image present → inspect returns nil, pull never called
+  - Image absent, pull succeeds → inspect returns not-found, pull called, no error
+  - Image absent, pull fails → inspect returns not-found, pull returns error, error propagated
 
-**Docker Go client:** behind `ImageEnsurer` interface; unit-testable via stub without live Docker daemon.
+**Docker Go client:** `ensureImage` helper accepts narrow `imageInspector`/`imagePuller` interfaces; `*client.Client` satisfies both. `dockerImageEnsurer.EnsureImage` is a thin wrapper. Unit tests use fakes without a live daemon.
 
 ---
 
