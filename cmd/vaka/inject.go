@@ -12,10 +12,16 @@ var vakaFlagsTakingValue = map[string]bool{
 	"--vaka-file": true,
 }
 
+// vakaFlagsBool lists --vaka-* boolean flags (no value token consumed).
+var vakaFlagsBool = map[string]bool{
+	"--vaka-init-present": true,
+}
+
 // extractVakaFlags splits raw os.Args[1:] into vaka-specific flags (returned as
 // a map of flag→value) and the remaining compose-destined args.
-// Only flags in vakaFlagsTakingValue are recognised; unknown --vaka-* flags are
-// left in rest so docker compose can reject them with a clear error.
+// Only flags in vakaFlagsTakingValue or vakaFlagsBool are recognised; unknown
+// --vaka-* flags are left in rest so docker compose can reject them with a
+// clear error.
 func extractVakaFlags(argv []string) (flags map[string]string, rest []string) {
 	flags = make(map[string]string)
 	for i := 0; i < len(argv); i++ {
@@ -25,6 +31,10 @@ func extractVakaFlags(argv []string) (flags map[string]string, rest []string) {
 				flags[arg] = argv[i+1]
 				i++ // consume value token
 			}
+			continue
+		}
+		if vakaFlagsBool[arg] {
+			flags[arg] = "true"
 			continue
 		}
 		rest = append(rest, arg)

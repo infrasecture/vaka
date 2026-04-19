@@ -8,10 +8,11 @@ import (
 	"io"
 	"testing"
 
-	containertypes "github.com/docker/docker/api/types/container"
 	dockerimage "github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/errdefs"
+	dockerspec "github.com/moby/docker-image-spec/specs-go/v1"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
 	composetypes "github.com/compose-spec/compose-go/v2/types"
 )
@@ -102,9 +103,11 @@ func TestResolveEntrypointFromInspect(t *testing.T) {
 	// No compose entrypoint — should inspect image and use Dockerfile defaults.
 	dc := &fakeDockerClient{
 		inspectResult: dockerimage.InspectResponse{
-			Config: &containertypes.Config{
-				Entrypoint: []string{"/docker-entrypoint.sh"},
-				Cmd:        []string{"nginx", "-g", "daemon off;"},
+			Config: &dockerspec.DockerOCIImageConfig{
+				ImageConfig: ocispec.ImageConfig{
+					Entrypoint: []string{"/docker-entrypoint.sh"},
+					Cmd:        []string{"nginx", "-g", "daemon off;"},
+				},
 			},
 		},
 	}

@@ -1,0 +1,220 @@
+// cmd/vaka/intercept.go
+package main
+
+import (
+	"context"
+	"encoding/base64"
+	"fmt"
+	"os"
+	"os/exec"
+	"strings"
+
+	composetypes "github.com/compose-spec/compose-go/v2/types"
+	"gopkg.in/yaml.v3"
+	"vaka.dev/vaka/pkg/compose"
+	"vaka.dev/vaka/pkg/policy"
+)
+
+// vakaInitLabel is the compose service label that signals the image already
+// ships the vaka-init binaries at /opt/vaka/sbin/. When present, the service
+// does not depend on the __vaka-init volume helper container.
+const vakaInitLabel = "agent.vaka.init"
+
+// vakaInitBaseImage is the image repository for the __vaka-init helper
+// container. The full reference is built by appending ":" + version.
+const vakaInitBaseImage = "emsi/vaka-init"
+
+// defaultDockerCaps is the set of capabilities present in a default Docker
+// container (no cap_drop, no cap_add). NET_ADMIN is notably absent.
+var defaultDockerCaps = map[string]bool{
+	"CAP_CHOWN": true, "CAP_DAC_OVERRIDE": true, "CAP_FOWNER": true,
+	"CAP_FSETID": true, "CAP_KILL": true, "CAP_SETGID": true,
+	"CAP_SETUID": true, "CAP_SETPCAP": true, "CAP_NET_BIND_SERVICE": true,
+	"CAP_NET_RAW": true, "CAP_SYS_CHROOT": true, "CAP_MKNOD": true,
+	"CAP_AUDIT_WRITE": true, "CAP_SETFCAP": true,
+}
+
+// subcmdPath classifies how a compose subcommand is handled.
+type subcmdPath int
+
+const (
+	pathCobra       subcmdPath = iota // validate, show, version — cobra commands
+	pathFull                          // up, run, create — full policy + __vaka-init injection
+	pathLifecycle                     // down, stop, kill, rm — __vaka-init container only
+	pathPassthrough                   // all others — forwarded unchanged to docker compose
+)
+
+// classifySubcmd maps a compose subcommand name to its dispatch path.
+func classifySubcmd(subcmd string) subcmdPath {
+	switch subcmd {
+	case "validate", "show", "version", "":
+		return pathCobra
+	case "up", "run", "create":
+		return pathFull
+	case "down", "stop", "kill", "rm":
+		return pathLifecycle
+	default:
+		return pathPassthrough
+	}
+}
+
+// execDockerCompose executes docker compose with the given args.
+// When overrideYAML is non-empty it is injected via -f - (with default compose
+// files also passed via -f so compose merges them correctly).
+// extraEnv, when non-nil, is appended to the inherited environment.
+func execDockerCompose(args []string, overrideYAML string, extraEnv []string) error {
+	var dockerArgs []string
+	if overrideYAML != "" {
+		defaults := []string{}
+		if len(allFileFlags(args)) == 0 {
+			defaults = discoverComposeFiles(".")
+		}
+		dockerArgs = injectStdinOverride(append([]string{"compose"}, args...), defaults)
+	} else {
+		dockerArgs = append([]string{"compose"}, args...)
+	}
+	c := exec.Command("docker", dockerArgs...)
+	if overrideYAML != "" {
+		c.Stdin = strings.NewReader(overrideYAML)
+	} else {
+		c.Stdin = os.Stdin
+	}
+	c.Stdout = os.Stdout
+	c.Stderr = os.Stderr
+	if extraEnv != nil {
+		c.Env = append(os.Environ(), extraEnv...)
+	}
+	return c.Run()
+}
+
+// runFull handles full-override commands: up, run, create.
+// It loads and validates vaka.yaml, ensures the __vaka-init image when needed,
+// builds the full compose override, and delegates to execDockerCompose.
+func runFull(vakaFile string, args []string, vakaInitPresent bool) error {
+	composeFiles := allFileFlags(args)
+	if len(composeFiles) == 0 {
+		composeFiles = discoverComposeFiles(".")
+		if len(composeFiles) == 0 {
+			return fmt.Errorf("no compose configuration file found in current directory")
+		}
+	}
+
+	p, project, err := loadAndValidate(vakaFile, composeFiles)
+	if err != nil {
+		return err
+	}
+
+	ctx := context.Background()
+
+	// Create ONE Docker client for both entrypoint resolution and image ensuring.
+	ds, err := NewDockerServices()
+	if err != nil {
+		return err
+	}
+
+	var entries []compose.ServiceEntry
+	var extraEnv []string
+
+	for svcName, svc := range p.Services {
+		composeSvc, ok := project.Services[svcName]
+		if !ok {
+			return fmt.Errorf("service %q: not found in compose files %v", svcName, composeFiles)
+		}
+
+		entrypoint, cmd, err := ds.ResolveEntrypoint(ctx, svcName, composeSvc)
+		if err != nil {
+			return err
+		}
+
+		delta := computeCapDelta(composeSvc)
+		if svc.Runtime == nil {
+			svc.Runtime = &policy.RuntimeConfig{}
+		}
+		if len(svc.Runtime.DropCaps) == 0 {
+			svc.Runtime.DropCaps = delta
+		}
+		fmt.Fprintf(os.Stderr, "vaka: service %s: dropCaps: %v\n", svcName, svc.Runtime.DropCaps)
+
+		sliced, err := policy.SliceService(p, svcName)
+		if err != nil {
+			return err
+		}
+		sliced.VakaVersion = version
+
+		raw, err := yaml.Marshal(sliced)
+		if err != nil {
+			return fmt.Errorf("marshal policy for %s: %w", svcName, err)
+		}
+
+		envKey := "VAKA_" + strings.ToUpper(strings.ReplaceAll(svcName, "-", "_")) + "_CONF"
+		extraEnv = append(extraEnv, envKey+"="+base64.StdEncoding.EncodeToString(raw))
+
+		entries = append(entries, compose.ServiceEntry{
+			Name:       svcName,
+			Entrypoint: entrypoint,
+			Command:    cmd,
+			CapDelta:   delta,
+			EnvVarName: envKey,
+			OptOut:     composeSvc.Labels[vakaInitLabel] == "present",
+		})
+	}
+
+	// Pull __vaka-init image only when injection is actually needed.
+	needsInjection := false
+	for _, e := range entries {
+		if !e.OptOut {
+			needsInjection = true
+			break
+		}
+	}
+	vakaInitImageRef := ""
+	if !vakaInitPresent && needsInjection {
+		vakaInitImageRef = vakaInitBaseImage + ":" + version
+		if err := ds.EnsureImage(ctx, vakaInitImageRef); err != nil {
+			return err
+		}
+	}
+
+	overrideYAML, err := compose.BuildOverride(entries, vakaInitImageRef)
+	if err != nil {
+		return fmt.Errorf("build override: %w", err)
+	}
+
+	return execDockerCompose(args, overrideYAML, extraEnv)
+}
+
+// lifecycleOverrideYAML returns the minimal compose override YAML declaring the
+// __vaka-init container so lifecycle commands (down/stop/kill/rm) include it in
+// their operation. Returns "" when vakaInitPresent is true; execDockerCompose
+// then runs as a pure passthrough without injecting -f -.
+func lifecycleOverrideYAML(vakaInitPresent bool, imageRef string) (string, error) {
+	if vakaInitPresent {
+		return "", nil
+	}
+	return compose.BuildVakaInitOnlyOverride(imageRef)
+}
+
+// runLifecycle handles lifecycle commands: down, stop, kill, rm.
+func runLifecycle(args []string, vakaInitPresent bool) error {
+	overrideYAML, err := lifecycleOverrideYAML(vakaInitPresent, vakaInitBaseImage+":"+version)
+	if err != nil {
+		return fmt.Errorf("build vaka-init container override: %w", err)
+	}
+	return execDockerCompose(args, overrideYAML, nil)
+}
+
+// computeCapDelta returns capabilities vaka needs that are absent from Docker's
+// default set and not already in the merged compose service's cap_add.
+func computeCapDelta(svc composetypes.ServiceConfig) []string {
+	existing := map[string]bool{}
+	for _, cap := range svc.CapAdd {
+		existing[strings.ToUpper(cap)] = true
+	}
+	var delta []string
+	for _, cap := range []string{"NET_ADMIN"} {
+		if !existing[cap] && !defaultDockerCaps["CAP_"+cap] {
+			delta = append(delta, cap)
+		}
+	}
+	return delta
+}
