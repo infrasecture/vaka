@@ -908,7 +908,9 @@ type dockerServices struct {
 
 // NewDockerServices creates a DockerServices using the Docker environment
 // (DOCKER_HOST, TLS settings, active context). The underlying client is
-// created once and reused for all operations.
+// created once and reused for all operations. Close is intentionally omitted:
+// this is a short-lived CLI process that exits immediately after the operation,
+// so the OS reclaims all resources without an explicit teardown.
 func NewDockerServices() (DockerServices, error) {
 	c, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
