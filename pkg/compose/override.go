@@ -8,18 +8,19 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const vakaInitServiceName = "__vaka-init"
+const vakaInitPath = "/opt/vaka/sbin/vaka-init"
+
 // ServiceEntry holds per-service data needed to build the compose override.
 type ServiceEntry struct {
-	// Name is the docker-compose service name.
-	Name string
-	// Entrypoint is the harness's original entrypoint (from image or compose).
+	Name       string
 	Entrypoint []string
-	// Command is the harness's original command (from image or compose).
-	Command []string
-	// CapDelta is the list of capabilities vaka adds that must later be dropped.
-	CapDelta []string
-	// EnvVarName is the VAKA_<SERVICE>_CONF env var name for the secret.
+	Command    []string
+	CapDelta   []string
 	EnvVarName string
+	// OptOut is true when the service carries the agent.vaka.init: present label,
+	// meaning vaka-init is already baked into the image at /opt/vaka/sbin/.
+	OptOut bool
 }
 
 // secretKey returns the compose secret key for a service name.
@@ -28,7 +29,6 @@ func secretKey(serviceName string) string {
 	return "vaka_" + strings.ReplaceAll(strings.ToLower(serviceName), "-", "_") + "_conf"
 }
 
-// composeOverride is the typed struct marshaled to YAML.
 type composeOverride struct {
 	Secrets  map[string]secretDef       `yaml:"secrets,omitempty"`
 	Services map[string]serviceOverride `yaml:"services,omitempty"`
@@ -39,10 +39,14 @@ type secretDef struct {
 }
 
 type serviceOverride struct {
-	Entrypoint []string      `yaml:"entrypoint,omitempty"`
-	Command    []string      `yaml:"command,omitempty"`
-	CapAdd     []string      `yaml:"cap_add,omitempty"`
-	Secrets    []secretMount `yaml:"secrets,omitempty"`
+	Image       string             `yaml:"image,omitempty"`
+	Entrypoint  []string           `yaml:"entrypoint,omitempty"`
+	Command     []string           `yaml:"command,omitempty"`
+	CapAdd      []string           `yaml:"cap_add,omitempty"`
+	Secrets     []secretMount      `yaml:"secrets,omitempty"`
+	VolumesFrom []string           `yaml:"volumes_from,omitempty"`
+	DependsOn   map[string]depCond `yaml:"depends_on,omitempty"`
+	Restart     string             `yaml:"restart,omitempty"`
 }
 
 type secretMount struct {
@@ -50,33 +54,51 @@ type secretMount struct {
 	Target string `yaml:"target"`
 }
 
+type depCond struct {
+	Condition string `yaml:"condition"`
+}
+
 // BuildOverride constructs the compose override YAML string from entries.
-// The result is passed to docker compose via stdin (-f -).
-func BuildOverride(entries []ServiceEntry) (string, error) {
+// imageRef is the fully-qualified image reference for the __vaka-init container
+// (e.g. "emsi/vaka-init:v0.1.2"). Pass "" to disable injection globally
+// (--vaka-init-present flag).
+func BuildOverride(entries []ServiceEntry, imageRef string) (string, error) {
 	override := composeOverride{
 		Secrets:  make(map[string]secretDef),
 		Services: make(map[string]serviceOverride),
+	}
+
+	injectVakaInit := imageRef != "" && anyNeedsInjection(entries)
+	if injectVakaInit {
+		override.Services[vakaInitServiceName] = serviceOverride{
+			Image:      imageRef,
+			Entrypoint: []string{vakaInitPath},
+			Restart:    "no",
+		}
 	}
 
 	for _, e := range entries {
 		key := secretKey(e.Name)
 		override.Secrets[key] = secretDef{Environment: e.EnvVarName}
 
-		// vaka-init replaces the entrypoint; the original entrypoint+command
-		// is passed as arguments after "--".
 		cmd := make([]string, 0, len(e.Entrypoint)+len(e.Command))
 		cmd = append(cmd, e.Entrypoint...)
 		cmd = append(cmd, e.Command...)
 
 		svc := serviceOverride{
-			Entrypoint: []string{"vaka-init", "--"},
+			Entrypoint: []string{vakaInitPath, "--"},
 			Command:    cmd,
 			CapAdd:     e.CapDelta,
-			Secrets: []secretMount{{
-				Source: key,
-				Target: "vaka.yaml",
-			}},
+			Secrets:    []secretMount{{Source: key, Target: "vaka.yaml"}},
 		}
+
+		if injectVakaInit && !e.OptOut {
+			svc.VolumesFrom = []string{vakaInitServiceName + ":ro"}
+			svc.DependsOn = map[string]depCond{
+				vakaInitServiceName: {Condition: "service_completed_successfully"},
+			}
+		}
+
 		override.Services[e.Name] = svc
 	}
 
@@ -85,4 +107,33 @@ func BuildOverride(entries []ServiceEntry) (string, error) {
 		return "", fmt.Errorf("marshal compose override: %w", err)
 	}
 	return string(data), nil
+}
+
+// BuildVakaInitOnlyOverride returns a minimal compose override YAML containing
+// only the __vaka-init service definition. Used by vaka down to include the
+// __vaka-init container in teardown even though the full policy override is not re-generated.
+func BuildVakaInitOnlyOverride(imageRef string) (string, error) {
+	override := composeOverride{
+		Services: map[string]serviceOverride{
+			vakaInitServiceName: {
+				Image:      imageRef,
+				Entrypoint: []string{vakaInitPath},
+				Restart:    "no",
+			},
+		},
+	}
+	data, err := yaml.Marshal(override)
+	if err != nil {
+		return "", fmt.Errorf("marshal vaka-init container override: %w", err)
+	}
+	return string(data), nil
+}
+
+func anyNeedsInjection(entries []ServiceEntry) bool {
+	for _, e := range entries {
+		if !e.OptOut {
+			return true
+		}
+	}
+	return false
 }
