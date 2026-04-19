@@ -145,6 +145,33 @@ func TestParseCaps_unknownName(t *testing.T) {
 	}
 }
 
+func TestCheckVersion(t *testing.T) {
+	tests := []struct {
+		policy  string
+		self    string
+		wantErr bool
+	}{
+		{"v0.1.2", "v0.1.0", false},  // same major.minor, patch differs → ok
+		{"v0.1.2", "v0.1.2", false},  // exact match → ok
+		{"v0.1.0", "v0.2.0", true},   // minor mismatch → error
+		{"v0.2.0", "v0.1.0", true},   // minor mismatch → error
+		{"v1.0.0", "v0.1.0", true},   // major mismatch → error
+		{"4178cc0", "4178cc0", false}, // git hash exact match → ok
+		{"4178cc0", "4178cc0-dirty", true},  // git hash mismatch → error
+		{"4178cc0-dirty", "4178cc0", true},  // git hash mismatch → error
+		{"", "v0.1.0", true},          // missing → error
+	}
+	for _, tc := range tests {
+		err := checkVersion(tc.policy, tc.self)
+		if tc.wantErr && err == nil {
+			t.Errorf("checkVersion(%q, %q): expected error, got nil", tc.policy, tc.self)
+		}
+		if !tc.wantErr && err != nil {
+			t.Errorf("checkVersion(%q, %q): unexpected error: %v", tc.policy, tc.self, err)
+		}
+	}
+}
+
 func TestNoArgExitsZero(t *testing.T) {
 	// Subprocess trick: re-run this test binary as vaka-init with no "--".
 	// When BE_VAKA_INIT=1 the subprocess calls main(); os.Args has no "--",
