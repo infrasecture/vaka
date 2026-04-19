@@ -18,7 +18,7 @@ Remove the requirement that users modify their container images to include `vaka
 
 vaka injects a `__vaka-init` sidecar service into the compose override alongside existing service patches. The sidecar image (`emsi/vaka-init:<vaka-version>`) contains both binaries at `/opt/vaka/sbin/`. Each managed service mounts the sidecar's filesystem via `volumes_from` and uses `/opt/vaka/sbin/vaka-init` as its entrypoint.
 
-The sidecar runs `entrypoint: ["true"]` and exits immediately with code 0. Its filesystem persists for the lifetime of the Compose project. Docker Compose manages teardown on `vaka down`.
+The sidecar runs `entrypoint: ["/opt/vaka/sbin/vaka-init"]` — no arguments. vaka-init detects the absence of `--` and prints its usage message then exits 0. Its filesystem persists for the lifetime of the Compose project. `vaka down` intercepts the `down` command and injects a minimal override so Compose knows to tear the sidecar container down.
 
 ---
 
@@ -54,7 +54,7 @@ VOLUME /opt/vaka
 services:
   __vaka-init:
     image: emsi/vaka-init:v0.1.2   # tag = vaka CLI version
-    entrypoint: ["true"]
+    entrypoint: ["/opt/vaka/sbin/vaka-init"]
     restart: "no"
 
   myapp:
@@ -72,6 +72,20 @@ services:
 `service_completed_successfully` ensures `__vaka-init` has exited with code 0 before the managed service starts. A non-zero exit (e.g., image pull failure) causes Compose to refuse to start the managed service.
 
 `__vaka-init` is emitted once per stack, not once per service.
+
+### Teardown
+
+`vaka down` intercepts the `down` command (it does not fall through to the passthrough path) and injects a minimal override containing only the `__vaka-init` service definition. This tells Docker Compose the service exists so it is included in teardown. No policy parsing or secret injection is needed for `down`.
+
+```yaml
+services:
+  __vaka-init:
+    image: emsi/vaka-init:v0.1.2
+    entrypoint: ["/opt/vaka/sbin/vaka-init"]
+    restart: "no"
+```
+
+When `--vaka-init-present` is passed to `vaka down`, no override is injected (no sidecar was created on `up`).
 
 ---
 
@@ -200,7 +214,7 @@ Affected locations: `validate.go`, all test fixtures, README, spec documents.
 | `pkg/compose/override_test.go` | Full sidecar injection tests; opt-out tests; mixed-stack test |
 | `cmd/vaka/up.go` | Add `--vaka-init-present` flag; Docker Go client image check/pull |
 | `cmd/vaka/run.go` | Same as `up.go` |
-| `cmd/vaka-init/main.go` | `nftBin` const → `/opt/vaka/sbin/nft`; read and validate `vakaVersion` |
+| `cmd/vaka-init/main.go` | `nftBin` const → `/opt/vaka/sbin/nft`; read and validate `vakaVersion`; no-args case exits 0 (prints usage) instead of fatal |
 | `README.md` | Update paths, `apiVersion`, baked-in instructions, opening claim |
 | `docs/superpowers/specs/2026-04-14-vaka-secure-container-design.md` | Update paths and `apiVersion` |
 
