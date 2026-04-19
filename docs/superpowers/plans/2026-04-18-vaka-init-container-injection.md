@@ -1785,7 +1785,10 @@ After all tasks:
 docker run --rm -v "$(pwd)":/src -w /src golang:1.25-alpine go test ./pkg/... ./cmd/... -v 2>&1
 
 # No remaining vaka.dev/v1alpha1 references in code or docs
-grep -rn "vaka\.dev/v1alpha1" . --include="*.go" --include="*.md" --include="*.yaml" | grep -v ".worktrees" | grep -v "plans/"
+# (plans/ and specs/ are excluded: they legitimately reference the old value in
+#  before/after examples and test-case descriptions)
+grep -rn "vaka\.dev/v1alpha1" . --include="*.go" --include="*.md" --include="*.yaml" \
+  | grep -v ".worktrees" | grep -v "docs/superpowers/"
 
 # No old binary paths in Go source
 grep -rn "/usr/local/sbin" . --include="*.go"
