@@ -218,8 +218,8 @@ Affected locations: `validate.go`, all test fixtures, README, spec documents.
 | `pkg/compose/override.go` | Add `__vaka-init` container; `volumes_from`; `depends_on`; `imageRef string` parameter; `OptOut bool` on `ServiceEntry`; label detection; entrypoint path; add `BuildVakaInitOnlyOverride` |
 | `pkg/compose/override_test.go` | Full `__vaka-init` container injection tests; opt-out tests; mixed-stack test |
 | `cmd/vaka/inject.go` | Add `vakaFlagsBool` map; update `extractVakaFlags` for boolean flags; `--vaka-init-present` support |
-| `cmd/vaka/images.go` | New: `ImageEnsurer` interface; `dockerClient` narrow interface; `dockerImageEnsurer` holds `dockerClient` (not `*client.Client`); `NewDockerImageEnsurer()` wires real client |
-| `cmd/vaka/images_test.go` | New: `fakeDockerClient` stub implementing `dockerClient`; tests instantiate `dockerImageEnsurer` directly and call `EnsureImage` to verify inspect-present, inspect-notfound+pull, and pull-fail paths |
+| `cmd/vaka/images.go` | New: `DockerServices` interface (`EnsureImage` + `ResolveEntrypoint`); `dockerClient` narrow interface for testability; `dockerServices` struct; `NewDockerServices()` wires real `*client.Client` once |
+| `cmd/vaka/images_test.go` | New: `fakeDockerClient` stub; `dockerServices` unit tests for `EnsureImage` (present/absent/pull-fail) and `ResolveEntrypoint` (compose-declared/inspect/not-found) |
 | `cmd/vaka/up.go` → `cmd/vaka/intercept.go` | Rename; `classifySubcmd` (full/lifecycle/passthrough/cobra); `execDockerCompose` shared helper (conditionally injects `-f -`); `runFull` handles `up`/`run`/`create`; `runLifecycle` + `lifecycleOverrideYAML` handle `down`/`stop`/`kill`/`rm` |
 | `cmd/vaka/intercept_test.go` | New: `TestClassifySubcmd`; `TestLifecycleOverrideYAMLPassthrough`; `TestLifecycleOverrideYAMLInjectsContainer`; `TestExtractVakaFlagsBool` |
 | `cmd/vaka/main.go` | Use `classifySubcmd` dispatch; add cobra stubs for `create`, `down`, `stop`, `kill`, `rm` |
@@ -258,13 +258,11 @@ Affected locations: `validate.go`, all test fixtures, README, spec documents.
 - `lifecycleOverrideYAML(false, …)` → returns YAML containing `__vaka-init`
 
 **`cmd/vaka/images_test.go`:**
-- `fakeInspector`/`fakePuller` implement the narrow `imageInspector`/`imagePuller` interfaces
-- Tests call `ensureImage` directly (not a stub of `ImageEnsurer`):
-  - Image present → inspect returns nil, pull never called
-  - Image absent, pull succeeds → inspect returns not-found, pull called, no error
-  - Image absent, pull fails → inspect returns not-found, pull returns error, error propagated
+- `fakeDockerClient` implements the narrow `dockerClient` interface; tests construct `dockerServices{c: dc}` directly
+- `EnsureImage`: image present → no pull called; image absent + pull succeeds → pull called; image absent + pull fails → error propagated
+- `ResolveEntrypoint`: entrypoint declared in compose → returned directly, no inspect; no entrypoint + image present → inspect used, Dockerfile defaults returned; no entrypoint + image not found → error
 
-**Docker Go client:** `ensureImage` helper accepts narrow `imageInspector`/`imagePuller` interfaces; `*client.Client` satisfies both. `dockerImageEnsurer.EnsureImage` is a thin wrapper. Unit tests use fakes without a live daemon.
+**Docker Go client:** `DockerServices` is the single interface for all Docker daemon operations. `dockerServices` holds a `dockerClient` narrow interface; `*client.Client` satisfies it. One `*client.Client` is created by `NewDockerServices()` and reused for both `EnsureImage` and `ResolveEntrypoint`. Unit tests use `fakeDockerClient` without a live daemon.
 
 ---
 
