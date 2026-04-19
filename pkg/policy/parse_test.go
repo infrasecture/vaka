@@ -9,7 +9,7 @@ import (
 )
 
 const minimalValid = `
-apiVersion: vaka.dev/v1alpha1
+apiVersion: agent.vaka/v1alpha1
 kind: ServicePolicy
 services:
   codex:
@@ -27,8 +27,8 @@ func TestParseMinimalValid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if p.APIVersion != "vaka.dev/v1alpha1" {
-		t.Errorf("APIVersion = %q, want %q", p.APIVersion, "vaka.dev/v1alpha1")
+	if p.APIVersion != "agent.vaka/v1alpha1" {
+		t.Errorf("APIVersion = %q, want %q", p.APIVersion, "agent.vaka/v1alpha1")
 	}
 	if p.Kind != "ServicePolicy" {
 		t.Errorf("Kind = %q, want %q", p.Kind, "ServicePolicy")
@@ -44,7 +44,7 @@ func TestParseMinimalValid(t *testing.T) {
 
 func TestParseUnknownFieldRejected(t *testing.T) {
 	input := `
-apiVersion: vaka.dev/v1alpha1
+apiVersion: agent.vaka/v1alpha1
 kind: ServicePolicy
 services:
   codex:
@@ -64,7 +64,7 @@ services:
 
 func TestParseDefaultActionDefaultsToReject(t *testing.T) {
 	input := `
-apiVersion: vaka.dev/v1alpha1
+apiVersion: agent.vaka/v1alpha1
 kind: ServicePolicy
 services:
   codex:
@@ -87,7 +87,7 @@ services:
 
 func TestParsePortRange(t *testing.T) {
 	input := `
-apiVersion: vaka.dev/v1alpha1
+apiVersion: agent.vaka/v1alpha1
 kind: ServicePolicy
 services:
   svc:

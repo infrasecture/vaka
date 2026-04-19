@@ -45,7 +45,7 @@ func main() {
 	if len(p.Services) != 1 {
 		fatal("policy must contain exactly one service, got %d", len(p.Services))
 	}
-	if p.APIVersion != "vaka.dev/v1alpha1" {
+	if p.APIVersion != "agent.vaka/v1alpha1" {
 		fatal("unsupported apiVersion: %s", p.APIVersion)
 	}
 	var svcName string

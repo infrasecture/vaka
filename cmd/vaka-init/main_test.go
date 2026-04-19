@@ -40,7 +40,7 @@ func writeTmp(t *testing.T, content string) string {
 
 func TestReadPolicy_roundtrip(t *testing.T) {
 	want := &policy.ServicePolicy{
-		APIVersion: "vaka.dev/v1alpha1",
+		APIVersion: "agent.vaka/v1alpha1",
 		Kind:       "ServicePolicy",
 		Services: map[string]*policy.ServiceConfig{
 			"svc": {
@@ -76,7 +76,7 @@ func TestReadPolicy_trailingNewline(t *testing.T) {
 	// Docker compose appends a newline when writing env-var secrets.
 	// TrimSpace must strip it before base64 decoding.
 	p := &policy.ServicePolicy{
-		APIVersion: "vaka.dev/v1alpha1",
+		APIVersion: "agent.vaka/v1alpha1",
 		Kind:       "ServicePolicy",
 		Services: map[string]*policy.ServiceConfig{
 			"svc": {
@@ -96,7 +96,7 @@ func TestReadPolicy_trailingNewline(t *testing.T) {
 func TestReadPolicy_notBase64(t *testing.T) {
 	// Raw YAML (not base64-encoded) must be rejected — this would be the
 	// behaviour if vaka-init were pointed at the old unencoded secret format.
-	path := writeTmp(t, "apiVersion: vaka.dev/v1alpha1\nkind: ServicePolicy\n")
+	path := writeTmp(t, "apiVersion: agent.vaka/v1alpha1\nkind: ServicePolicy\n")
 
 	if _, err := readPolicy(path); err == nil {
 		t.Fatal("expected error for non-base64 content, got nil")

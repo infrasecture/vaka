@@ -35,7 +35,7 @@ services:
 
 func TestValidateKind(t *testing.T) {
 	p := mustParse(t, `
-apiVersion: vaka.dev/v1alpha1
+apiVersion: agent.vaka/v1alpha1
 kind: BadKind
 services:
   s: {}
@@ -54,7 +54,7 @@ services:
 
 func TestValidateUnknownProto(t *testing.T) {
 	p := mustParse(t, `
-apiVersion: vaka.dev/v1alpha1
+apiVersion: agent.vaka/v1alpha1
 kind: ServicePolicy
 services:
   s:
@@ -77,7 +77,7 @@ services:
 func TestValidatePortOutOfRange(t *testing.T) {
 	// PortSpec.UnmarshalYAML catches this at parse time, but validate checks it too.
 	p := &policy.ServicePolicy{
-		APIVersion: "vaka.dev/v1alpha1",
+		APIVersion: "agent.vaka/v1alpha1",
 		Kind:       "ServicePolicy",
 		Services: map[string]*policy.ServiceConfig{
 			"s": {Network: &policy.NetworkConfig{Egress: &policy.EgressPolicy{
@@ -98,7 +98,7 @@ func TestValidatePortOutOfRange(t *testing.T) {
 
 func TestValidateNetworkModeHost(t *testing.T) {
 	p := mustParse(t, `
-apiVersion: vaka.dev/v1alpha1
+apiVersion: agent.vaka/v1alpha1
 kind: ServicePolicy
 services:
   s:
@@ -118,7 +118,7 @@ services:
 
 func TestValidateServiceNotInCompose(t *testing.T) {
 	p := mustParse(t, `
-apiVersion: vaka.dev/v1alpha1
+apiVersion: agent.vaka/v1alpha1
 kind: ServicePolicy
 services:
   ghost:
@@ -141,7 +141,7 @@ services:
 
 func TestValidateInvalidServiceName(t *testing.T) {
 	p := mustParse(t, `
-apiVersion: vaka.dev/v1alpha1
+apiVersion: agent.vaka/v1alpha1
 kind: ServicePolicy
 services:
   "My Service!!":
@@ -160,7 +160,7 @@ services:
 
 func TestValidateValidPolicyPassesClean(t *testing.T) {
 	p := mustParse(t, `
-apiVersion: vaka.dev/v1alpha1
+apiVersion: agent.vaka/v1alpha1
 kind: ServicePolicy
 services:
   codex:
@@ -181,7 +181,7 @@ services:
 
 func TestValidateDefaultActionAcceptIsAllowed(t *testing.T) {
 	p := mustParse(t, `
-apiVersion: vaka.dev/v1alpha1
+apiVersion: agent.vaka/v1alpha1
 kind: ServicePolicy
 services:
   s:
@@ -198,7 +198,7 @@ services:
 
 func TestValidateInvalidHostname(t *testing.T) {
 	p := mustParse(t, `
-apiVersion: vaka.dev/v1alpha1
+apiVersion: agent.vaka/v1alpha1
 kind: ServicePolicy
 services:
   s:
@@ -217,7 +217,7 @@ services:
 
 func TestValidatePortsWithoutProtoIsError(t *testing.T) {
 	p := &policy.ServicePolicy{
-		APIVersion: "vaka.dev/v1alpha1",
+		APIVersion: "agent.vaka/v1alpha1",
 		Kind:       "ServicePolicy",
 		Services: map[string]*policy.ServiceConfig{
 			"s": {Network: &policy.NetworkConfig{Egress: &policy.EgressPolicy{
@@ -241,7 +241,7 @@ func TestValidatePortsWithoutProtoIsError(t *testing.T) {
 
 func TestValidateDropCapsUnknownNameIsError(t *testing.T) {
 	p := mustParse(t, `
-apiVersion: vaka.dev/v1alpha1
+apiVersion: agent.vaka/v1alpha1
 kind: ServicePolicy
 services:
   s:
@@ -259,7 +259,7 @@ services:
 
 func TestValidateDropCapsCapPrefixAcceptedAndStripped(t *testing.T) {
 	p := mustParse(t, `
-apiVersion: vaka.dev/v1alpha1
+apiVersion: agent.vaka/v1alpha1
 kind: ServicePolicy
 services:
   s:
@@ -290,7 +290,7 @@ func TestValidateBlockMetadata(t *testing.T) {
 		{
 			name: "drop is valid",
 			yaml: `
-apiVersion: vaka.dev/v1alpha1
+apiVersion: agent.vaka/v1alpha1
 kind: ServicePolicy
 services:
   s:
@@ -303,7 +303,7 @@ services:
 		{
 			name: "accept is valid",
 			yaml: `
-apiVersion: vaka.dev/v1alpha1
+apiVersion: agent.vaka/v1alpha1
 kind: ServicePolicy
 services:
   s:
@@ -316,7 +316,7 @@ services:
 		{
 			name: "reject is valid",
 			yaml: `
-apiVersion: vaka.dev/v1alpha1
+apiVersion: agent.vaka/v1alpha1
 kind: ServicePolicy
 services:
   s:
@@ -329,7 +329,7 @@ services:
 		{
 			name: "mapping form reject with with_tcp_reset false is valid",
 			yaml: `
-apiVersion: vaka.dev/v1alpha1
+apiVersion: agent.vaka/v1alpha1
 kind: ServicePolicy
 services:
   s:
@@ -346,7 +346,7 @@ services:
 			wantErr: true,
 			errFrag: "with_tcp_reset",
 			yaml: `
-apiVersion: vaka.dev/v1alpha1
+apiVersion: agent.vaka/v1alpha1
 kind: ServicePolicy
 services:
   s:
@@ -363,7 +363,7 @@ services:
 			wantErr: true,
 			errFrag: "with_tcp_reset",
 			yaml: `
-apiVersion: vaka.dev/v1alpha1
+apiVersion: agent.vaka/v1alpha1
 kind: ServicePolicy
 services:
   s:
@@ -414,7 +414,7 @@ func TestValidateWithTCPReset(t *testing.T) {
 		{
 			name: "with_tcp_reset true on defaultAction reject is valid",
 			yaml: `
-apiVersion: vaka.dev/v1alpha1
+apiVersion: agent.vaka/v1alpha1
 kind: ServicePolicy
 services:
   s:
@@ -427,7 +427,7 @@ services:
 		{
 			name: "with_tcp_reset false on defaultAction reject is valid",
 			yaml: `
-apiVersion: vaka.dev/v1alpha1
+apiVersion: agent.vaka/v1alpha1
 kind: ServicePolicy
 services:
   s:
@@ -442,7 +442,7 @@ services:
 			wantErr: true,
 			errFrag: "with_tcp_reset",
 			yaml: `
-apiVersion: vaka.dev/v1alpha1
+apiVersion: agent.vaka/v1alpha1
 kind: ServicePolicy
 services:
   s:
@@ -457,7 +457,7 @@ services:
 			wantErr: true,
 			errFrag: "with_tcp_reset",
 			yaml: `
-apiVersion: vaka.dev/v1alpha1
+apiVersion: agent.vaka/v1alpha1
 kind: ServicePolicy
 services:
   s:
@@ -470,7 +470,7 @@ services:
 		{
 			name: "rule with_tcp_reset true in reject list with proto tcp is valid",
 			yaml: `
-apiVersion: vaka.dev/v1alpha1
+apiVersion: agent.vaka/v1alpha1
 kind: ServicePolicy
 services:
   s:
@@ -487,7 +487,7 @@ services:
 		{
 			name: "rule with_tcp_reset false in reject list with proto tcp is valid",
 			yaml: `
-apiVersion: vaka.dev/v1alpha1
+apiVersion: agent.vaka/v1alpha1
 kind: ServicePolicy
 services:
   s:
@@ -506,7 +506,7 @@ services:
 			wantErr: true,
 			errFrag: "with_tcp_reset",
 			yaml: `
-apiVersion: vaka.dev/v1alpha1
+apiVersion: agent.vaka/v1alpha1
 kind: ServicePolicy
 services:
   s:
@@ -525,7 +525,7 @@ services:
 			wantErr: true,
 			errFrag: "with_tcp_reset",
 			yaml: `
-apiVersion: vaka.dev/v1alpha1
+apiVersion: agent.vaka/v1alpha1
 kind: ServicePolicy
 services:
   s:
@@ -544,7 +544,7 @@ services:
 			wantErr: true,
 			errFrag: "with_tcp_reset",
 			yaml: `
-apiVersion: vaka.dev/v1alpha1
+apiVersion: agent.vaka/v1alpha1
 kind: ServicePolicy
 services:
   s:
@@ -563,7 +563,7 @@ services:
 			wantErr: true,
 			errFrag: "with_tcp_reset",
 			yaml: `
-apiVersion: vaka.dev/v1alpha1
+apiVersion: agent.vaka/v1alpha1
 kind: ServicePolicy
 services:
   s:
@@ -601,5 +601,28 @@ services:
 				}
 			}
 		})
+	}
+}
+
+func TestValidateRejectsOldAPIVersion(t *testing.T) {
+	p := mustParse(t, `
+apiVersion: vaka.dev/v1alpha1
+kind: ServicePolicy
+services:
+  s: {}
+`)
+	errs := policy.Validate(p, nil)
+	if len(errs) == 0 {
+		t.Fatal("expected error for old apiVersion vaka.dev/v1alpha1, got none")
+	}
+	found := false
+	for _, e := range errs {
+		if strings.Contains(e.Error(), "apiVersion") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected error mentioning apiVersion, got: %v", errs)
 	}
 }
