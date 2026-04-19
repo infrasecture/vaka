@@ -626,3 +626,27 @@ services:
 		t.Errorf("expected error mentioning apiVersion, got: %v", errs)
 	}
 }
+
+func TestValidateVakaVersionForbiddenInUserYAML(t *testing.T) {
+	p := mustParse(t, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+vakaVersion: v0.1.0
+services:
+  s: {}
+`)
+	errs := policy.Validate(p, nil)
+	if len(errs) == 0 {
+		t.Fatal("expected error for user-supplied vakaVersion, got none")
+	}
+	found := false
+	for _, e := range errs {
+		if strings.Contains(e.Error(), "vakaVersion") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected error mentioning vakaVersion, got: %v", errs)
+	}
+}

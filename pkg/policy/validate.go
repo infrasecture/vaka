@@ -73,6 +73,9 @@ func Validate(p *ServicePolicy, networkModes map[string]string) []error {
 	if p.Kind != "ServicePolicy" {
 		add("kind: must be \"ServicePolicy\", got %q", p.Kind)
 	}
+	if p.VakaVersion != "" {
+		add("vakaVersion: must not be set in vaka.yaml (it is injected by the vaka CLI)")
+	}
 
 	for name, svc := range p.Services {
 		prefix := "services." + name
