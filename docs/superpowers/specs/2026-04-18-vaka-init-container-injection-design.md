@@ -1,6 +1,6 @@
-# Sidecar Injection Design
+# vaka-init Container Injection Design
 
-**Feature:** vaka automatically injects `vaka-init` and `nft` binaries into managed containers via a `__vaka-init` sidecar service, eliminating the requirement that users bake these binaries into their container images.
+**Feature:** vaka automatically injects `vaka-init` and `nft` binaries into managed containers via a `__vaka-init` container, eliminating the requirement that users bake these binaries into their container images.
 
 **Issue:** [#8](https://github.com/infrasecture/vaka/issues/8)
 
@@ -16,15 +16,15 @@ Remove the requirement that users modify their container images to include `vaka
 
 ## 2. Approach
 
-vaka injects a `__vaka-init` sidecar service into the compose override alongside existing service patches. The sidecar image (`emsi/vaka-init:<vaka-version>`) contains both binaries at `/opt/vaka/sbin/`. Each managed service mounts the sidecar's filesystem via `volumes_from` and uses `/opt/vaka/sbin/vaka-init` as its entrypoint.
+vaka injects a `__vaka-init` container into the compose override alongside existing service patches. The container image (`emsi/vaka-init:<vaka-version>`) contains both binaries at `/opt/vaka/sbin/`. Each managed service mounts its filesystem via `volumes_from` and uses `/opt/vaka/sbin/vaka-init` as its entrypoint.
 
-The sidecar runs `entrypoint: ["/opt/vaka/sbin/vaka-init"]` — no arguments. vaka-init detects the absence of `--` and prints its usage message then exits 0. Its filesystem persists for the lifetime of the Compose project. `vaka down` intercepts the `down` command and injects a minimal override so Compose knows to tear the sidecar container down.
+The `__vaka-init` container runs `entrypoint: ["/opt/vaka/sbin/vaka-init"]` — no arguments. vaka-init detects the absence of `--` and prints its usage message then exits 0. Its filesystem persists for the lifetime of the Compose project. `vaka down` intercepts the `down` command and injects a minimal override so Compose knows to tear the `__vaka-init` container down.
 
 ---
 
 ## 3. Binary paths
 
-All paths are standardised to `/opt/vaka/sbin/` in both sidecar and baked-in modes:
+All paths are standardised to `/opt/vaka/sbin/` in both injected and baked-in modes:
 
 | Binary | Path |
 |---|---|
@@ -85,7 +85,7 @@ services:
     restart: "no"
 ```
 
-When `--vaka-init-present` is passed to `vaka down`, no override is injected (no sidecar was created on `up`).
+When `--vaka-init-present` is passed to `vaka down`, no override is injected (no `__vaka-init` container was created on `up`).
 
 ---
 
@@ -104,7 +104,7 @@ services:
 
 When this label is present on a service, vaka skips `volumes_from`, `depends_on`, for that service. The entrypoint is still `/opt/vaka/sbin/vaka-init` — the user is responsible for placing the binary there in their image.
 
-The `__vaka-init` sidecar service is only omitted from the override if **all** managed services carry the opt-out label.
+The `__vaka-init` container is only omitted from the override if **all** managed services carry the opt-out label.
 
 ### 6b. CLI flag
 
@@ -113,7 +113,7 @@ vaka up --vaka-init-present [compose-flags...]
 vaka run --vaka-init-present [compose-flags...]
 ```
 
-Equivalent to all services carrying the opt-out label. No sidecar injected, no image check or pull performed.
+Equivalent to all services carrying the opt-out label. No `__vaka-init` container injected, no image check or pull performed.
 
 ### 6c. Baked-in image instructions
 
@@ -130,7 +130,7 @@ COPY --from=vaka /opt/vaka/sbin/nft       /opt/vaka/sbin/nft
 
 ## 7. Docker Go client — image check and pull
 
-When sidecar injection is active, before invoking `docker compose`, vaka uses the Docker Go client (`github.com/docker/docker/client`) to verify the correct image is present locally:
+When `__vaka-init` container injection is active, before invoking `docker compose`, vaka uses the Docker Go client (`github.com/docker/docker/client`) to verify the correct image is present locally:
 
 ```
 ImageInspect("emsi/vaka-init:<vaka-version>")
@@ -210,9 +210,9 @@ Affected locations: `validate.go`, all test fixtures, README, spec documents.
 | `pkg/policy/validate.go` | Error if `vakaVersion` present in user YAML; update `apiVersion` string |
 | `pkg/policy/validate_test.go` | Update `apiVersion` fixtures; add `vakaVersion` error test |
 | `pkg/policy/marshal_test.go` | Update `apiVersion` in `roundTripInput` |
-| `pkg/compose/override.go` | Add `__vaka-init` sidecar; `volumes_from`; `depends_on`; `injectSidecar bool` parameter; label detection; entrypoint path |
-| `pkg/compose/override_test.go` | Full sidecar injection tests; opt-out tests; mixed-stack test |
-| `cmd/vaka/up.go` → `cmd/vaka/intercept.go` | Rename; add `--vaka-init-present` flag; Docker Go client image check/pull; intercept `down` for sidecar teardown — `up`, `run`, and `down` all route through `runInjection` here |
+| `pkg/compose/override.go` | Add `__vaka-init` container; `volumes_from`; `depends_on`; `injectVakaInit bool` parameter; label detection; entrypoint path |
+| `pkg/compose/override_test.go` | Full `__vaka-init` container injection tests; opt-out tests; mixed-stack test |
+| `cmd/vaka/up.go` → `cmd/vaka/intercept.go` | Rename; add `--vaka-init-present` flag; Docker Go client image check/pull; intercept `down` for `__vaka-init` container teardown — `up`, `run`, and `down` all route through `runInjection` here |
 | `cmd/vaka-init/main.go` | `nftBin` const → `/opt/vaka/sbin/nft`; read and validate `vakaVersion`; no-args case exits 0 (prints usage) instead of fatal |
 | `README.md` | Update paths, `apiVersion`, baked-in instructions, opening claim |
 | `docs/superpowers/specs/2026-04-14-vaka-secure-container-design.md` | Update paths and `apiVersion` |
@@ -222,13 +222,13 @@ Affected locations: `validate.go`, all test fixtures, README, spec documents.
 ## 11. Testing strategy
 
 **`pkg/compose/override_test.go`:**
-- Sidecar `__vaka-init` emitted with correct image tag, `entrypoint: ["true"]`, `restart: "no"`
+- `__vaka-init` container emitted with correct image tag, `entrypoint: ["true"]`, `restart: "no"`
 - `depends_on: service_completed_successfully` on each managed service
 - `volumes_from: [__vaka-init:ro]` on each managed service
 - Entrypoint always `/opt/vaka/sbin/vaka-init`
-- Per-service label opt-out: service skips `volumes_from`/`depends_on`; sidecar still emitted if another service needs it
-- CLI flag opt-out: no sidecar emitted, no `volumes_from` on any service
-- All-services opt-out: no sidecar emitted
+- Per-service label opt-out: service skips `volumes_from`/`depends_on`; `__vaka-init` container still emitted if another service needs it
+- CLI flag opt-out: no `__vaka-init` container emitted, no `volumes_from` on any service
+- All-services opt-out: no `__vaka-init` container emitted
 
 **`pkg/policy/validate_test.go`:**
 - `vakaVersion:` in user vaka.yaml → validation error
