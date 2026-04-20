@@ -21,11 +21,13 @@ import (
 type fakeDockerClient struct {
 	notFound      bool                        // ImageInspect returns NotFound when true
 	inspectResult dockerimage.InspectResponse // returned when notFound == false
+	inspectCalled int                         // number of ImageInspect invocations
 	pullErr       error                       // error to return from ImagePull; nil = success
 	pullCalled    bool
 }
 
 func (f *fakeDockerClient) ImageInspect(_ context.Context, _ string, _ ...client.ImageInspectOption) (dockerimage.InspectResponse, error) {
+	f.inspectCalled++
 	if f.notFound {
 		return dockerimage.InspectResponse{}, errdefs.NotFound(errors.New("not found"))
 	}
@@ -79,49 +81,104 @@ func TestEnsureImageAbsentPullFails(t *testing.T) {
 
 // --- ResolveEntrypoint tests ---
 
-func TestResolveEntrypointFromCompose(t *testing.T) {
-	// Entrypoint declared in compose — no image inspect needed.
-	dc := &fakeDockerClient{}
-	ds := &dockerServices{c: dc}
-	svc := composetypes.ServiceConfig{
-		Entrypoint: []string{"/app"},
-		Command:    []string{"--flag"},
-	}
-	ep, cmd, err := ds.ResolveEntrypoint(context.Background(), "myapp", svc)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(ep) != 1 || ep[0] != "/app" {
-		t.Errorf("entrypoint = %v, want [/app]", ep)
-	}
-	if len(cmd) != 1 || cmd[0] != "--flag" {
-		t.Errorf("command = %v, want [--flag]", cmd)
-	}
-}
-
-func TestResolveEntrypointFromInspect(t *testing.T) {
-	// No compose entrypoint — should inspect image and use Dockerfile defaults.
-	dc := &fakeDockerClient{
-		inspectResult: dockerimage.InspectResponse{
-			Config: &dockerspec.DockerOCIImageConfig{
-				ImageConfig: ocispec.ImageConfig{
-					Entrypoint: []string{"/docker-entrypoint.sh"},
-					Cmd:        []string{"nginx", "-g", "daemon off;"},
-				},
+// imageConfig builds a fake inspect result with the given ENTRYPOINT and CMD.
+func imageConfig(entrypoint, cmd []string) dockerimage.InspectResponse {
+	return dockerimage.InspectResponse{
+		Config: &dockerspec.DockerOCIImageConfig{
+			ImageConfig: ocispec.ImageConfig{
+				Entrypoint: entrypoint,
+				Cmd:        cmd,
 			},
 		},
 	}
-	ds := &dockerServices{c: dc}
-	svc := composetypes.ServiceConfig{Image: "nginx:latest"}
-	ep, cmd, err := ds.ResolveEntrypoint(context.Background(), "web", svc)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+}
+
+func strEq(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
 	}
-	if len(ep) != 1 || ep[0] != "/docker-entrypoint.sh" {
-		t.Errorf("entrypoint = %v, want [/docker-entrypoint.sh]", ep)
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
 	}
-	if len(cmd) != 3 || cmd[0] != "nginx" {
-		t.Errorf("command = %v, want [nginx -g daemon off;]", cmd)
+	return true
+}
+
+// TestResolveEntrypointMatrix exercises the four combinations of compose
+// entrypoint/command presence against image defaults.
+func TestResolveEntrypointMatrix(t *testing.T) {
+	imgEP := []string{"/docker-entrypoint.sh"}
+	imgCmd := []string{"nginx", "-g", "daemon off;"}
+
+	tests := []struct {
+		name           string
+		composeEP      []string
+		composeCmd     []string
+		wantEP         []string
+		wantCmd        []string
+		wantInspect    bool
+	}{
+		{
+			name:        "both set — no inspect",
+			composeEP:   []string{"/app"},
+			composeCmd:  []string{"--flag"},
+			wantEP:      []string{"/app"},
+			wantCmd:     []string{"--flag"},
+			wantInspect: false,
+		},
+		{
+			name:        "entrypoint only — no inspect, command empty (Docker resets CMD)",
+			composeEP:   []string{"/app"},
+			composeCmd:  nil,
+			wantEP:      []string{"/app"},
+			wantCmd:     nil,
+			wantInspect: false,
+		},
+		{
+			name:        "command only — image ENTRYPOINT preserved",
+			composeEP:   nil,
+			composeCmd:  []string{"worker"},
+			wantEP:      imgEP,
+			wantCmd:     []string{"worker"},
+			wantInspect: true,
+		},
+		{
+			name:        "neither — both from image",
+			composeEP:   nil,
+			composeCmd:  nil,
+			wantEP:      imgEP,
+			wantCmd:     imgCmd,
+			wantInspect: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dc := &fakeDockerClient{inspectResult: imageConfig(imgEP, imgCmd)}
+			ds := &dockerServices{c: dc}
+			svc := composetypes.ServiceConfig{
+				Image:      "nginx:latest",
+				Entrypoint: tc.composeEP,
+				Command:    tc.composeCmd,
+			}
+			ep, cmd, err := ds.ResolveEntrypoint(context.Background(), "web", svc)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !strEq(ep, tc.wantEP) {
+				t.Errorf("entrypoint = %v, want %v", ep, tc.wantEP)
+			}
+			if !strEq(cmd, tc.wantCmd) {
+				t.Errorf("command = %v, want %v", cmd, tc.wantCmd)
+			}
+			if tc.wantInspect && dc.inspectCalled == 0 {
+				t.Error("expected ImageInspect to be called")
+			}
+			if !tc.wantInspect && dc.inspectCalled != 0 {
+				t.Errorf("ImageInspect called %d times; expected 0", dc.inspectCalled)
+			}
+		})
 	}
 }
 
@@ -132,5 +189,18 @@ func TestResolveEntrypointImageNotFound(t *testing.T) {
 	_, _, err := ds.ResolveEntrypoint(context.Background(), "myapp", svc)
 	if err == nil {
 		t.Fatal("expected error for missing image, got nil")
+	}
+}
+
+func TestResolveEntrypointNoImageNoEntrypoint(t *testing.T) {
+	dc := &fakeDockerClient{}
+	ds := &dockerServices{c: dc}
+	svc := composetypes.ServiceConfig{Command: []string{"worker"}}
+	_, _, err := ds.ResolveEntrypoint(context.Background(), "svc", svc)
+	if err == nil {
+		t.Fatal("expected error when neither image nor entrypoint is set")
+	}
+	if dc.inspectCalled != 0 {
+		t.Errorf("ImageInspect called %d times; expected 0 (no image)", dc.inspectCalled)
 	}
 }

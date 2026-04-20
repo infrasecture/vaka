@@ -68,21 +68,29 @@ func (d *dockerServices) EnsureImage(ctx context.Context, ref string) error {
 	return err
 }
 
-// ResolveEntrypoint returns the effective entrypoint and command for svc.
-// If the compose service declares either field they are returned directly;
-// otherwise the image is inspected to obtain the Dockerfile defaults.
+// ResolveEntrypoint returns the effective entrypoint and command for svc,
+// following Docker/Compose semantics:
+//
+//   - compose entrypoint set: resolved pair is (compose.Entrypoint, compose.Command).
+//     Docker resets CMD to empty when ENTRYPOINT is overridden, so a compose
+//     entrypoint without command legitimately yields an empty command.
+//   - compose entrypoint empty, command set: the image's ENTRYPOINT is preserved
+//     (common pattern: app image defines ENTRYPOINT, compose overrides args).
+//   - both empty: both come from the image's Dockerfile defaults.
+//
+// The image is inspected only when the image's ENTRYPOINT is needed.
 func (d *dockerServices) ResolveEntrypoint(ctx context.Context, svcName string, svc composetypes.ServiceConfig) ([]string, []string, error) {
-	if len(svc.Entrypoint) > 0 || len(svc.Command) > 0 {
+	if len(svc.Entrypoint) > 0 {
 		return svc.Entrypoint, svc.Command, nil
 	}
 	if svc.Image == "" {
-		return nil, nil, fmt.Errorf("service %s: no image and no entrypoint/command declared", svcName)
+		return nil, nil, fmt.Errorf("service %s: no image and no entrypoint declared", svcName)
 	}
 	inspect, err := d.c.ImageInspect(ctx, svc.Image)
 	if err != nil {
 		if errdefs.IsNotFound(err) {
 			return nil, nil, fmt.Errorf(
-				"service %s: image %q not available locally and no entrypoint/command declared — pull first or add entrypoint:",
+				"service %s: image %q not available locally — pull or build it first, or add entrypoint: to the compose file",
 				svcName, svc.Image)
 		}
 		return nil, nil, fmt.Errorf("service %s: inspect %q: %w", svcName, svc.Image, err)
@@ -90,5 +98,9 @@ func (d *dockerServices) ResolveEntrypoint(ctx context.Context, svcName string, 
 	if inspect.Config == nil {
 		return nil, nil, fmt.Errorf("service %s: image %q has no Config", svcName, svc.Image)
 	}
-	return inspect.Config.Entrypoint, inspect.Config.Cmd, nil
+	cmd := svc.Command
+	if len(cmd) == 0 {
+		cmd = inspect.Config.Cmd
+	}
+	return inspect.Config.Entrypoint, cmd, nil
 }
