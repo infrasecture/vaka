@@ -67,6 +67,76 @@ func TestExtractVakaFlags(t *testing.T) {
 		}
 		assertArgv(t, raw, rest)
 	})
+
+	t.Run("--vaka-file after service on run is NOT extracted (inner cmd arg)", func(t *testing.T) {
+		// The inner command (mytool) owns --vaka-file here, not vaka.
+		raw := []string{"run", "gateway", "mytool", "--vaka-file", "/app/cfg.yaml"}
+		flags, rest := extractVakaFlags(raw)
+		if len(flags) != 0 {
+			t.Fatalf("expected no flags extracted, got %v", flags)
+		}
+		assertArgv(t, raw, rest)
+	})
+
+	t.Run("--vaka-init-present between subcommand and positional IS extracted", func(t *testing.T) {
+		// Documented UX: vaka up --vaka-init-present, vaka run --vaka-init-present svc.
+		raw := []string{"up", "--vaka-init-present"}
+		flags, rest := extractVakaFlags(raw)
+		if flags["--vaka-init-present"] != "true" {
+			t.Fatalf("expected --vaka-init-present=true, got %v", flags)
+		}
+		want := []string{"up"}
+		assertArgv(t, want, rest)
+	})
+
+	t.Run("--vaka-init-present before service on run IS extracted", func(t *testing.T) {
+		raw := []string{"run", "--vaka-init-present", "gateway", "mytool"}
+		flags, rest := extractVakaFlags(raw)
+		if flags["--vaka-init-present"] != "true" {
+			t.Fatalf("expected --vaka-init-present=true, got %v", flags)
+		}
+		want := []string{"run", "gateway", "mytool"}
+		assertArgv(t, want, rest)
+	})
+
+	t.Run("--vaka-init-present after inner cmd on run is NOT extracted", func(t *testing.T) {
+		raw := []string{"run", "gateway", "mytool", "--vaka-init-present"}
+		flags, rest := extractVakaFlags(raw)
+		if len(flags) != 0 {
+			t.Fatalf("expected no flags extracted, got %v", flags)
+		}
+		assertArgv(t, raw, rest)
+	})
+
+	t.Run("vaka flag after -- is NOT extracted", func(t *testing.T) {
+		raw := []string{"--", "--vaka-file", "x"}
+		flags, rest := extractVakaFlags(raw)
+		if len(flags) != 0 {
+			t.Fatalf("expected no flags extracted, got %v", flags)
+		}
+		assertArgv(t, raw, rest)
+	})
+
+	t.Run("compose global with value does not consume subcommand", func(t *testing.T) {
+		// -p consumes "myproj"; then --vaka-file consumes "x"; then up is rest.
+		raw := []string{"-p", "myproj", "--vaka-file", "x", "up"}
+		flags, rest := extractVakaFlags(raw)
+		if flags["--vaka-file"] != "x" {
+			t.Fatalf("expected vaka-file=x, got %v", flags)
+		}
+		want := []string{"-p", "myproj", "up"}
+		assertArgv(t, want, rest)
+	})
+
+	t.Run("--vaka-init-present before subcommand is extracted", func(t *testing.T) {
+		raw := []string{"--vaka-init-present", "up"}
+		flags, rest := extractVakaFlags(raw)
+		if flags["--vaka-init-present"] != "true" {
+			t.Fatalf("expected --vaka-init-present=true, got %v", flags)
+		}
+		want := []string{"up"}
+		assertArgv(t, want, rest)
+	})
 }
 
 func TestDiscoverComposeFiles(t *testing.T) {
