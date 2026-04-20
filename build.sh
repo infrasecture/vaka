@@ -27,6 +27,14 @@
 #     emsi/nft-static:1.1.6-amd64,  emsi/nft-static:1.1.6-arm64
 #     emsi/vaka-init:v0.1.0-amd64,  emsi/vaka-init:v0.1.0-arm64
 #
+#   Native-arch local alias (unsuffixed, created during every local build):
+#     emsi/nft-static:1.1.6    → points at the native-arch image only
+#     emsi/vaka-init:v0.1.0    → points at the native-arch image only
+#   The alias makes the unsuffixed ref resolvable locally without a registry
+#   round-trip. vaka's CLI constructs emsi/vaka-init:<version> at runtime
+#   from its baked-in version string; this alias is what lets dirty dev
+#   builds run locally without pushing.
+#
 #   Manifest lists (registry only, created by --push or --manifest):
 #     emsi/nft-static:1.1.6    → auto-selects amd64 or arm64 at pull time
 #     emsi/nft-static:latest   → auto-selects amd64 or arm64 at pull time
@@ -205,6 +213,11 @@ require_qemu_for_arch() {
 # Uses docker buildx build --platform to set correct OCI platform metadata.
 # C compilation for a foreign arch (e.g. arm64 on amd64) requires QEMU binfmt.
 # The QEMU check is skipped when the image is already present (cache hit).
+#
+# Native-arch alias: after building the native-arch image, also tag it as the
+# unsuffixed tag (emsi/nft-static:VERSION). Consumers of the image by its
+# public tag then work locally without the manifest list that only
+# --push/--manifest creates in the registry.
 for ARCH in $ARCHS; do
     arch_nft_tag="${NFT_IMAGE}:${NFTABLES_VERSION}-${ARCH}"
     if [[ "${REBUILD_NFT}" == "false" ]] && \
@@ -221,6 +234,10 @@ for ARCH in $ARCHS; do
             --target artifacts \
             --tag "${arch_nft_tag}" \
             "${NFT_DIR}"
+    fi
+    if [[ "${ARCH}" == "${NATIVE_ARCH}" ]]; then
+        docker tag "${arch_nft_tag}" "${NFT_IMAGE}:${NFTABLES_VERSION}"
+        echo "    Tagged native-arch alias: ${NFT_IMAGE}:${NFTABLES_VERSION}"
     fi
     echo ""
 done
@@ -335,6 +352,11 @@ echo ""
 # ── Phase 4: vaka-init images — one per arch ─────────────────────────────────
 # FROM scratch + COPY does not need QEMU; --platform only sets OCI metadata.
 # Each arch gets its own minimal build context with the matching binaries.
+#
+# Native-arch alias: after building the native-arch image, also tag it as the
+# unsuffixed tag (emsi/vaka-init:VERSION). The `vaka` CLI constructs that ref
+# at runtime from its baked-in version string; without the alias, local dev
+# builds (especially --dirty) would have no tag to resolve to.
 for ARCH in $ARCHS; do
     arch_init_tag="${INIT_IMAGE}:${VERSION}-${ARCH}"
     echo "==> Building ${arch_init_tag} (platform linux/${ARCH})..."
@@ -355,6 +377,10 @@ for ARCH in $ARCHS; do
 
     rm -rf -- "${ctx}"
     trap - EXIT
+    if [[ "${ARCH}" == "${NATIVE_ARCH}" ]]; then
+        docker tag "${arch_init_tag}" "${INIT_IMAGE}:${VERSION}"
+        echo "    Tagged native-arch alias: ${INIT_IMAGE}:${VERSION}"
+    fi
     echo ""
 done
 
@@ -509,6 +535,12 @@ for ARCH in $ARCHS; do
     echo "  ${NFT_IMAGE}:${NFTABLES_VERSION}-${ARCH}"
     echo "  ${INIT_IMAGE}:${VERSION}-${ARCH}"
 done
+if echo " ${ARCHS} " | grep -qF " ${NATIVE_ARCH} "; then
+    echo ""
+    echo "Native-arch local aliases (unsuffixed, for local 'vaka up'):"
+    echo "  ${NFT_IMAGE}:${NFTABLES_VERSION}"
+    echo "  ${INIT_IMAGE}:${VERSION}"
+fi
 echo ""
 
 if [[ "${DO_PUSH}" == "true" ]]; then
