@@ -192,6 +192,19 @@ services:
 
 Services carrying this label skip the volume mount and use the baked-in `/opt/vaka/sbin/vaka-init` directly; services without it use the injected binaries as normal.
 
+### Build-only services
+
+A service that declares only `build:` with no `image:` key must also declare an `entrypoint:` in the compose file. Example:
+
+```yaml
+services:
+  myapp:
+    build: .
+    entrypoint: ["/usr/local/bin/myapp"]
+```
+
+Reason: compose-go does not synthesize an image ref at load time, so vaka cannot inspect the Dockerfile's `ENTRYPOINT` before build. Adding `image: myapp:latest` also resolves this (vaka inspects that image after prebuild). If neither is set, `vaka up` fails with a clear error before any container starts.
+
 ---
 
 ## Usage
