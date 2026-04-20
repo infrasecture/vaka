@@ -150,6 +150,32 @@ func TestGlobalFlags(t *testing.T) {
 	}
 }
 
+func TestComputeCapDelta(t *testing.T) {
+	tests := []struct {
+		name   string
+		capAdd []string
+		want   []string
+	}{
+		{"no cap_add", nil, []string{"NET_ADMIN"}},
+		{"unrelated cap", []string{"SYS_PTRACE"}, []string{"NET_ADMIN"}},
+		{"short form present", []string{"NET_ADMIN"}, nil},
+		{"prefixed form present", []string{"CAP_NET_ADMIN"}, nil},
+		{"lowercase prefixed", []string{"cap_net_admin"}, nil},
+		{"ALL catch-all", []string{"ALL"}, nil},
+		{"lowercase all", []string{"all"}, nil},
+		{"mixed prefixed + unrelated", []string{"CAP_NET_ADMIN", "SYS_PTRACE"}, nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := composetypes.ServiceConfig{CapAdd: tc.capAdd}
+			got := computeCapDelta(svc)
+			if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+				t.Errorf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestExtractVakaFlagsBool(t *testing.T) {
 	// --vaka-init-present is a boolean flag: no value token consumed.
 	flags, rest := extractVakaFlags([]string{"up", "--vaka-init-present", "--remove-orphans"})

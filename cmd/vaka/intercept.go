@@ -254,11 +254,17 @@ func servicesNeedingPrebuild(ctx context.Context, ds DockerServices, policySvcs 
 }
 
 // computeCapDelta returns capabilities vaka needs that are absent from Docker's
-// default set and not already in the merged compose service's cap_add.
+// default set and not already in the merged compose service's cap_add. Both
+// short-form (NET_ADMIN) and prefixed-form (CAP_NET_ADMIN) user entries are
+// recognised, along with the ALL catch-all.
 func computeCapDelta(svc composetypes.ServiceConfig) []string {
 	existing := map[string]bool{}
 	for _, cap := range svc.CapAdd {
-		existing[strings.ToUpper(cap)] = true
+		u := strings.ToUpper(cap)
+		existing[strings.TrimPrefix(u, "CAP_")] = true
+	}
+	if existing["ALL"] {
+		return nil
 	}
 	var delta []string
 	for _, cap := range []string{"NET_ADMIN"} {
