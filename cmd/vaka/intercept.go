@@ -116,7 +116,10 @@ func runFull(vakaFile string, args []string, vakaInitPresent bool) error {
 	// Pre-build any service whose image must be inspected for its ENTRYPOINT
 	// but isn't available locally and has a build: section. Without this,
 	// `vaka up --build` fails for services that rely on Dockerfile defaults.
-	toBuild, err := servicesNeedingPrebuild(ctx, ds, p.Services, project)
+	// When the user passes --build, every service with a build: section is
+	// prebuilt so ResolveEntrypoint inspects the fresh image, not a stale copy.
+	forceRebuild := hasBuildFlag(args)
+	toBuild, err := servicesNeedingPrebuild(ctx, ds, p.Services, project, forceRebuild)
 	if err != nil {
 		return err
 	}
@@ -224,8 +227,14 @@ func runLifecycle(args []string, vakaInitPresent bool) error {
 // be built before ResolveEntrypoint can inspect it. A service qualifies when:
 //   - it has no compose-declared entrypoint (image ENTRYPOINT is needed), AND
 //   - the compose definition has a build: section (we can build it), AND
-//   - the resolved image is not already available locally (or is absent).
-func servicesNeedingPrebuild(ctx context.Context, ds DockerServices, policySvcs map[string]*policy.ServiceConfig, project *composetypes.Project) ([]string, error) {
+//   - the resolved image is not already available locally OR forceRebuild is set.
+//
+// forceRebuild is true when the user passed --build to the final compose
+// command. In that case the existing local image is about to be replaced by a
+// fresh build, so inspecting the stale copy for ENTRYPOINT/CMD would produce
+// incorrect command vectors. Prebuilding every eligible service ensures
+// ResolveEntrypoint sees the post-build image.
+func servicesNeedingPrebuild(ctx context.Context, ds DockerServices, policySvcs map[string]*policy.ServiceConfig, project *composetypes.Project, forceRebuild bool) ([]string, error) {
 	var out []string
 	for svcName := range policySvcs {
 		composeSvc, ok := project.Services[svcName]
@@ -238,7 +247,7 @@ func servicesNeedingPrebuild(ctx context.Context, ds DockerServices, policySvcs 
 		if composeSvc.Build == nil {
 			continue
 		}
-		if composeSvc.Image != "" {
+		if composeSvc.Image != "" && !forceRebuild {
 			exists, err := ds.ImageExists(ctx, composeSvc.Image)
 			if err != nil {
 				return nil, err

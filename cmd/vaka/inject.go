@@ -236,3 +236,33 @@ func findSubcmd(args []string) string {
 	}
 	return ""
 }
+
+// hasBuildFlag reports whether --build appears among the subcommand's own
+// flags. It scans tokens after the compose subcommand boundary and stops at --
+// (anything after -- is the inner command's args for run/exec, not compose
+// flags). --build is a boolean flag on up/run/create; when set, prebuild must
+// not short-circuit on "image exists locally".
+func hasBuildFlag(args []string) bool {
+	seenSubcmd := false
+	for i := 0; i < len(args); i++ {
+		tok := args[i]
+		if tok == "--" {
+			return false
+		}
+		if !seenSubcmd {
+			if composeGlobalFlagsWithValue[tok] {
+				i++ // skip value token
+				continue
+			}
+			if strings.HasPrefix(tok, "-") {
+				continue
+			}
+			seenSubcmd = true
+			continue
+		}
+		if tok == "--build" {
+			return true
+		}
+	}
+	return false
+}

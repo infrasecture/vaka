@@ -135,6 +135,37 @@ func TestAllFileFlags(t *testing.T) {
 	})
 }
 
+func TestHasBuildFlag(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{"up --build", []string{"up", "--build"}, true},
+		{"up -d (no build)", []string{"up", "-d"}, false},
+		{"run --build svc", []string{"run", "--build", "svc"}, true},
+		{"-f a.yml up --build", []string{"-f", "a.yml", "up", "--build"}, true},
+		{"global flag with value, then up --build", []string{"--ansi", "always", "up", "--build"}, true},
+		{"--build before subcommand is ignored (treated as compose global flag)", []string{"--build", "up"}, false},
+		{"--build after -- is ignored (inner command arg)", []string{"run", "svc", "mycmd", "--", "--build"}, false},
+		// Accepted false positive: --build after the service name on `run` is
+		// really an arg to the inner command, but disambiguating requires
+		// compose-specific positional semantics. Extra prebuild is a perf
+		// cost only; stale entrypoints are a correctness bug.
+		{"--build without -- (false positive, safe)", []string{"run", "svc", "mycmd", "--build"}, true},
+		{"empty args", []string{}, false},
+		{"no subcommand", []string{"-f", "a.yml"}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := hasBuildFlag(tc.args)
+			if got != tc.want {
+				t.Errorf("hasBuildFlag(%v) = %v, want %v", tc.args, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestFindSubcmd(t *testing.T) {
 	tests := []struct {
 		args []string

@@ -117,11 +117,60 @@ func TestServicesNeedingPrebuild(t *testing.T) {
 		"external:latest": false,
 	}}
 
-	got, err := servicesNeedingPrebuild(context.Background(), ds, policySvcs, project)
+	got, err := servicesNeedingPrebuild(context.Background(), ds, policySvcs, project, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	want := []string{"buildonly", "needsbuild"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+// TestServicesNeedingPrebuildForceRebuild verifies that forceRebuild=true
+// includes services whose image already exists locally. Without this, a stale
+// local image could be inspected for its ENTRYPOINT even though the final
+// `docker compose up --build` will rebuild it to a different image.
+func TestServicesNeedingPrebuildForceRebuild(t *testing.T) {
+	policySvcs := map[string]*policy.ServiceConfig{
+		"prebuilt":  {},
+		"buildonly": {},
+		"nobuild":   {},
+		"hasentry":  {},
+	}
+	project := &composetypes.Project{
+		Services: map[string]composetypes.ServiceConfig{
+			// Has image locally + build section → under forceRebuild, still included.
+			"prebuilt": {
+				Image: "prebuilt:latest",
+				Build: &composetypes.BuildConfig{Context: "."},
+			},
+			// Build-only (no image) → included regardless of forceRebuild.
+			"buildonly": {
+				Build: &composetypes.BuildConfig{Context: "."},
+			},
+			// No build section → never prebuilt.
+			"nobuild": {
+				Image: "external:latest",
+			},
+			// Has compose-declared entrypoint → no inspection needed → never prebuilt.
+			"hasentry": {
+				Image:      "app:latest",
+				Build:      &composetypes.BuildConfig{Context: "."},
+				Entrypoint: []string{"/bin/run"},
+			},
+		},
+	}
+	ds := &fakeDS{exists: map[string]bool{
+		"prebuilt:latest": true,
+		"external:latest": false,
+	}}
+
+	got, err := servicesNeedingPrebuild(context.Background(), ds, policySvcs, project, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{"buildonly", "prebuilt"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("got %v, want %v", got, want)
 	}
