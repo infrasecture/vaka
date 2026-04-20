@@ -11,6 +11,13 @@ import (
 const vakaInitServiceName = "__vaka-init"
 const vakaInitPath = "/opt/vaka/sbin/vaka-init"
 
+// vakaInitNotAttached is the `attach: false` pointer used on __vaka-init.
+// With attach=false, compose does not stream __vaka-init's logs and does not
+// wait on it for foreground exit — so `vaka up` preserves the same UX as a
+// plain `docker compose up` on the user's own services (no spurious foreground
+// exit when the short-lived helper completes).
+var vakaInitNotAttached = func() *bool { b := false; return &b }()
+
 // ServiceEntry holds per-service data needed to build the compose override.
 type ServiceEntry struct {
 	Name       string
@@ -47,6 +54,10 @@ type serviceOverride struct {
 	VolumesFrom []string           `yaml:"volumes_from,omitempty"`
 	DependsOn   map[string]depCond `yaml:"depends_on,omitempty"`
 	Restart     string             `yaml:"restart,omitempty"`
+	// Attach, when set, controls whether compose streams this service's logs
+	// in the foreground and waits on it for `docker compose up`'s foreground
+	// exit logic. Pointer so the zero-value omits the key (default: true).
+	Attach *bool `yaml:"attach,omitempty"`
 }
 
 type secretMount struct {
@@ -74,6 +85,7 @@ func BuildOverride(entries []ServiceEntry, imageRef string) (string, error) {
 			Image:      imageRef,
 			Entrypoint: []string{vakaInitPath},
 			Restart:    "no",
+			Attach:     vakaInitNotAttached,
 		}
 	}
 
@@ -119,6 +131,7 @@ func BuildVakaInitOnlyOverride(imageRef string) (string, error) {
 				Image:      imageRef,
 				Entrypoint: []string{vakaInitPath},
 				Restart:    "no",
+				Attach:     vakaInitNotAttached,
 			},
 		},
 	}

@@ -19,6 +19,7 @@ type overrideDoc struct {
 		Command     []string `yaml:"command"`
 		CapAdd      []string `yaml:"cap_add"`
 		Restart     string   `yaml:"restart"`
+		Attach      *bool    `yaml:"attach"`
 		VolumesFrom []string `yaml:"volumes_from"`
 		DependsOn   map[string]struct {
 			Condition string `yaml:"condition"`
@@ -137,6 +138,12 @@ func TestOverrideVakaInitContainerEmitted(t *testing.T) {
 	if container.Restart != "no" {
 		t.Errorf("__vaka-init restart = %q, want no", container.Restart)
 	}
+	// attach: false — compose must not stream __vaka-init's logs or wait on it
+	// for foreground exit. Without this, `vaka up` returns as soon as the
+	// short-lived helper completes, breaking the prior pass-through UX.
+	if container.Attach == nil || *container.Attach != false {
+		t.Errorf("__vaka-init attach = %v, want &false", container.Attach)
+	}
 }
 
 func TestOverrideServiceGetsVolumesFromAndDependsOn(t *testing.T) {
@@ -221,6 +228,9 @@ func TestBuildVakaInitOnlyOverride(t *testing.T) {
 	}
 	if container.Image != testImage {
 		t.Errorf("image = %q, want %q", container.Image, testImage)
+	}
+	if container.Attach == nil || *container.Attach != false {
+		t.Errorf("__vaka-init attach = %v, want &false", container.Attach)
 	}
 	// Must not contain any other services or secrets.
 	if len(doc.Secrets) != 0 {
