@@ -4,9 +4,11 @@
 package main
 
 import (
+	"bytes"
 	"encoding/base64"
 	"os"
 	"os/exec"
+	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -174,8 +176,12 @@ func TestCheckVersion(t *testing.T) {
 
 func TestNoArgExitsZero(t *testing.T) {
 	// Subprocess trick: re-run this test binary as vaka-init with no "--".
-	// When BE_VAKA_INIT=1 the subprocess calls main(); os.Args has no "--",
-	// so main() hits fmt.Fprintln + os.Exit(0). Parent asserts exit code 0.
+	// When BE_VAKA_INIT=1 the subprocess calls main(); os.Args[1] will be
+	// `-test.run=…` (not "--"), so main() hits the bad-args branch. Parent
+	// asserts exit code 0 — the same lenient-on-misconfiguration contract
+	// documented in the design. The true no-args (standalone) branch is
+	// covered by the logic review + integration (`vaka up`) since the
+	// subprocess trick can't produce a len(os.Args) == 1 invocation.
 	if os.Getenv("BE_VAKA_INIT") == "1" {
 		main()
 		return
@@ -183,6 +189,25 @@ func TestNoArgExitsZero(t *testing.T) {
 	cmd := exec.Command(os.Args[0], "-test.run=TestNoArgExitsZero")
 	cmd.Env = append(os.Environ(), "BE_VAKA_INIT=1")
 	if err := cmd.Run(); err != nil {
-		t.Errorf("vaka-init with no args: expected exit 0, got: %v", err)
+		t.Errorf("vaka-init with no harness args: expected exit 0, got: %v", err)
+	}
+}
+
+func TestBadArgsPrintsUsage(t *testing.T) {
+	// When invoked with args that are not "--", vaka-init should print the
+	// usage message to stderr and exit 0 (lenient on misconfiguration).
+	if os.Getenv("BE_VAKA_INIT") == "1" {
+		main()
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=TestBadArgsPrintsUsage", "notdashdash")
+	cmd.Env = append(os.Environ(), "BE_VAKA_INIT=1")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Errorf("vaka-init with bad args: expected exit 0, got: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "usage: vaka-init -- <entrypoint>") {
+		t.Errorf("vaka-init with bad args: expected usage message on stderr, got %q", stderr.String())
 	}
 }
