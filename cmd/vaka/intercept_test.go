@@ -70,13 +70,14 @@ func (f *fakeDS) EnsureImage(context.Context, string) error { return nil }
 func (f *fakeDS) ImageExists(_ context.Context, ref string) (bool, error) {
 	return f.exists[ref], nil
 }
-func (f *fakeDS) ResolveEntrypoint(context.Context, string, composetypes.ServiceConfig) ([]string, []string, error) {
-	return nil, nil, nil
+func (f *fakeDS) ResolveRuntime(context.Context, string, composetypes.ServiceConfig) (ResolvedRuntime, error) {
+	return ResolvedRuntime{}, nil
 }
 
 func TestServicesNeedingPrebuild(t *testing.T) {
 	policySvcs := map[string]*policy.ServiceConfig{
 		"needsbuild":  {},
+		"needsuser":   {},
 		"hasentry":    {},
 		"prebuilt":    {},
 		"nobuild":     {},
@@ -95,11 +96,18 @@ func TestServicesNeedingPrebuild(t *testing.T) {
 				Image:      "app:latest",
 				Build:      &composetypes.BuildConfig{Context: "."},
 				Entrypoint: []string{"/bin/run"},
+				User:       "1000:1000",
 			},
 			// Has build + image already local → no pre-build needed.
 			"prebuilt": {
 				Image: "prebuilt:latest",
 				Build: &composetypes.BuildConfig{Context: "."},
+			},
+			// Entrypoint is compose-declared, but user fallback still needs image inspect.
+			"needsuser": {
+				Image:      "needsuser:latest",
+				Build:      &composetypes.BuildConfig{Context: "."},
+				Entrypoint: []string{"/bin/run"},
 			},
 			// No build section → cannot pre-build even if missing.
 			"nobuild": {
@@ -112,16 +120,17 @@ func TestServicesNeedingPrebuild(t *testing.T) {
 		},
 	}
 	ds := &fakeDS{exists: map[string]bool{
-		"prebuilt:latest": true,
-		"myapp:latest":    false,
-		"external:latest": false,
+		"prebuilt:latest":  true,
+		"myapp:latest":     false,
+		"needsuser:latest": false,
+		"external:latest":  false,
 	}}
 
 	got, err := servicesNeedingPrebuild(context.Background(), ds, policySvcs, project, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := []string{"buildonly", "needsbuild"}
+	want := []string{"buildonly", "needsbuild", "needsuser"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("got %v, want %v", got, want)
 	}
@@ -158,6 +167,7 @@ func TestServicesNeedingPrebuildForceRebuild(t *testing.T) {
 				Image:      "app:latest",
 				Build:      &composetypes.BuildConfig{Context: "."},
 				Entrypoint: []string{"/bin/run"},
+				User:       "1000:1000",
 			},
 		},
 	}

@@ -10,11 +10,12 @@ import (
 )
 
 type overrideDoc struct {
-	Secrets  map[string]struct {
+	Secrets map[string]struct {
 		Environment string `yaml:"environment"`
 	} `yaml:"secrets"`
 	Services map[string]struct {
 		Image       string   `yaml:"image"`
+		User        string   `yaml:"user"`
 		Entrypoint  []string `yaml:"entrypoint"`
 		Command     []string `yaml:"command"`
 		CapAdd      []string `yaml:"cap_add"`
@@ -72,6 +73,15 @@ func TestOverrideEntrypointIsVakaInitAbsPath(t *testing.T) {
 	svc := doc.Services["codex"]
 	if len(svc.Entrypoint) < 2 || svc.Entrypoint[0] != "/opt/vaka/sbin/vaka-init" || svc.Entrypoint[1] != "--" {
 		t.Errorf("entrypoint = %v, want [/opt/vaka/sbin/vaka-init --]", svc.Entrypoint)
+	}
+}
+
+func TestOverrideForcesRootUserForBootstrap(t *testing.T) {
+	out, _ := compose.BuildOverride(singleEntry("codex"), testImage)
+	doc := parseOverride(t, out)
+	svc := doc.Services["codex"]
+	if svc.User != "0:0" {
+		t.Errorf("user = %q, want 0:0", svc.User)
 	}
 }
 

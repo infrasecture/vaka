@@ -79,15 +79,16 @@ func TestEnsureImageAbsentPullFails(t *testing.T) {
 	}
 }
 
-// --- ResolveEntrypoint tests ---
+// --- ResolveRuntime tests ---
 
-// imageConfig builds a fake inspect result with the given ENTRYPOINT and CMD.
-func imageConfig(entrypoint, cmd []string) dockerimage.InspectResponse {
+// imageConfig builds a fake inspect result with ENTRYPOINT/CMD/USER defaults.
+func imageConfig(entrypoint, cmd []string, user string) dockerimage.InspectResponse {
 	return dockerimage.InspectResponse{
 		Config: &dockerspec.DockerOCIImageConfig{
 			ImageConfig: ocispec.ImageConfig{
 				Entrypoint: entrypoint,
 				Cmd:        cmd,
+				User:       user,
 			},
 		},
 	}
@@ -105,72 +106,97 @@ func strEq(a, b []string) bool {
 	return true
 }
 
-// TestResolveEntrypointMatrix exercises the four combinations of compose
-// entrypoint/command presence against image defaults.
-func TestResolveEntrypointMatrix(t *testing.T) {
+// TestResolveRuntimeMatrix exercises compose/image runtime resolution for
+// entrypoint/cmd and user fallback.
+func TestResolveRuntimeMatrix(t *testing.T) {
 	imgEP := []string{"/docker-entrypoint.sh"}
 	imgCmd := []string{"nginx", "-g", "daemon off;"}
+	imgUser := "1001:1002"
 
 	tests := []struct {
-		name           string
-		composeEP      []string
-		composeCmd     []string
-		wantEP         []string
-		wantCmd        []string
-		wantInspect    bool
+		name          string
+		composeEP     []string
+		composeCmd    []string
+		composeUser   string
+		wantEP        []string
+		wantCmd       []string
+		wantImageUser string
+		wantInspect   bool
 	}{
 		{
-			name:        "both set — no inspect",
-			composeEP:   []string{"/app"},
-			composeCmd:  []string{"--flag"},
-			wantEP:      []string{"/app"},
-			wantCmd:     []string{"--flag"},
-			wantInspect: false,
+			name:          "entrypoint and user set — no inspect",
+			composeEP:     []string{"/app"},
+			composeCmd:    []string{"--flag"},
+			composeUser:   "app",
+			wantEP:        []string{"/app"},
+			wantCmd:       []string{"--flag"},
+			wantImageUser: "",
+			wantInspect:   false,
 		},
 		{
-			name:        "entrypoint only — no inspect, command empty (Docker resets CMD)",
-			composeEP:   []string{"/app"},
-			composeCmd:  nil,
-			wantEP:      []string{"/app"},
-			wantCmd:     nil,
-			wantInspect: false,
+			name:          "entrypoint only with compose user set — no inspect",
+			composeEP:     []string{"/app"},
+			composeCmd:    nil,
+			composeUser:   "1000:1000",
+			wantEP:        []string{"/app"},
+			wantCmd:       nil,
+			wantImageUser: "",
+			wantInspect:   false,
 		},
 		{
-			name:        "command only — image ENTRYPOINT preserved",
-			composeEP:   nil,
-			composeCmd:  []string{"worker"},
-			wantEP:      imgEP,
-			wantCmd:     []string{"worker"},
-			wantInspect: true,
+			name:          "command only with compose user set — image entrypoint needed",
+			composeEP:     nil,
+			composeCmd:    []string{"worker"},
+			composeUser:   "1000",
+			wantEP:        imgEP,
+			wantCmd:       []string{"worker"},
+			wantImageUser: "",
+			wantInspect:   true,
 		},
 		{
-			name:        "neither — both from image",
-			composeEP:   nil,
-			composeCmd:  nil,
-			wantEP:      imgEP,
-			wantCmd:     imgCmd,
-			wantInspect: true,
+			name:          "neither entrypoint nor user set — both from image",
+			composeEP:     nil,
+			composeCmd:    nil,
+			composeUser:   "",
+			wantEP:        imgEP,
+			wantCmd:       imgCmd,
+			wantImageUser: imgUser,
+			wantInspect:   true,
+		},
+		{
+			name:          "entrypoint set and user empty — image user fallback only",
+			composeEP:     []string{"/app"},
+			composeCmd:    []string{"serve"},
+			composeUser:   "",
+			wantEP:        []string{"/app"},
+			wantCmd:       []string{"serve"},
+			wantImageUser: imgUser,
+			wantInspect:   true,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			dc := &fakeDockerClient{inspectResult: imageConfig(imgEP, imgCmd)}
+			dc := &fakeDockerClient{inspectResult: imageConfig(imgEP, imgCmd, imgUser)}
 			ds := &dockerServices{c: dc}
 			svc := composetypes.ServiceConfig{
 				Image:      "nginx:latest",
 				Entrypoint: tc.composeEP,
 				Command:    tc.composeCmd,
+				User:       tc.composeUser,
 			}
-			ep, cmd, err := ds.ResolveEntrypoint(context.Background(), "web", svc)
+			got, err := ds.ResolveRuntime(context.Background(), "web", svc)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if !strEq(ep, tc.wantEP) {
-				t.Errorf("entrypoint = %v, want %v", ep, tc.wantEP)
+			if !strEq(got.Entrypoint, tc.wantEP) {
+				t.Errorf("entrypoint = %v, want %v", got.Entrypoint, tc.wantEP)
 			}
-			if !strEq(cmd, tc.wantCmd) {
-				t.Errorf("command = %v, want %v", cmd, tc.wantCmd)
+			if !strEq(got.Command, tc.wantCmd) {
+				t.Errorf("command = %v, want %v", got.Command, tc.wantCmd)
+			}
+			if got.ImageUser != tc.wantImageUser {
+				t.Errorf("image user = %q, want %q", got.ImageUser, tc.wantImageUser)
 			}
 			if tc.wantInspect && dc.inspectCalled == 0 {
 				t.Error("expected ImageInspect to be called")
@@ -208,25 +234,51 @@ func TestImageExistsAbsent(t *testing.T) {
 	}
 }
 
-func TestResolveEntrypointImageNotFound(t *testing.T) {
+func TestResolveRuntimeImageNotFound(t *testing.T) {
 	dc := &fakeDockerClient{notFound: true}
 	ds := &dockerServices{c: dc}
 	svc := composetypes.ServiceConfig{Image: "myapp:latest"}
-	_, _, err := ds.ResolveEntrypoint(context.Background(), "myapp", svc)
+	_, err := ds.ResolveRuntime(context.Background(), "myapp", svc)
 	if err == nil {
 		t.Fatal("expected error for missing image, got nil")
 	}
 }
 
-func TestResolveEntrypointNoImageNoEntrypoint(t *testing.T) {
+func TestResolveRuntimeNoImageNeedsFallback(t *testing.T) {
 	dc := &fakeDockerClient{}
 	ds := &dockerServices{c: dc}
 	svc := composetypes.ServiceConfig{Command: []string{"worker"}}
-	_, _, err := ds.ResolveEntrypoint(context.Background(), "svc", svc)
+	_, err := ds.ResolveRuntime(context.Background(), "svc", svc)
 	if err == nil {
-		t.Fatal("expected error when neither image nor entrypoint is set")
+		t.Fatal("expected error when image fallback is needed but image is unset")
 	}
 	if dc.inspectCalled != 0 {
 		t.Errorf("ImageInspect called %d times; expected 0 (no image)", dc.inspectCalled)
+	}
+}
+
+func TestResolveRuntimeNoImageButComposeHasAllRuntimeFields(t *testing.T) {
+	dc := &fakeDockerClient{}
+	ds := &dockerServices{c: dc}
+	svc := composetypes.ServiceConfig{
+		Entrypoint: []string{"/usr/local/bin/app"},
+		Command:    []string{"serve"},
+		User:       "1000:1000",
+	}
+	got, err := ds.ResolveRuntime(context.Background(), "svc", svc)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strEq(got.Entrypoint, svc.Entrypoint) {
+		t.Errorf("entrypoint = %v, want %v", got.Entrypoint, svc.Entrypoint)
+	}
+	if !strEq(got.Command, svc.Command) {
+		t.Errorf("command = %v, want %v", got.Command, svc.Command)
+	}
+	if got.ImageUser != "" {
+		t.Errorf("image user = %q, want empty", got.ImageUser)
+	}
+	if dc.inspectCalled != 0 {
+		t.Errorf("ImageInspect called %d times; expected 0", dc.inspectCalled)
 	}
 }

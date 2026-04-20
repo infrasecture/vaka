@@ -47,6 +47,7 @@ type secretDef struct {
 
 type serviceOverride struct {
 	Image       string             `yaml:"image,omitempty"`
+	User        string             `yaml:"user,omitempty"`
 	Entrypoint  []string           `yaml:"entrypoint,omitempty"`
 	Command     []string           `yaml:"command,omitempty"`
 	CapAdd      []string           `yaml:"cap_add,omitempty"`
@@ -98,6 +99,7 @@ func BuildOverride(entries []ServiceEntry, imageRef string) (string, error) {
 		cmd = append(cmd, e.Command...)
 
 		svc := serviceOverride{
+			User:       "0:0",
 			Entrypoint: []string{vakaInitPath, "--"},
 			Command:    cmd,
 			CapAdd:     e.CapDelta,

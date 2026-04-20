@@ -11,9 +11,11 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"syscall"
 
+	mobyuser "github.com/moby/sys/user"
 	"github.com/syndtr/gocapability/capability"
 	"golang.org/x/sys/unix"
 	"vaka.dev/vaka/pkg/nft"
@@ -25,6 +27,8 @@ var version = "dev"
 
 const secretPath = "/run/secrets/vaka.yaml"
 const nftBin = "/opt/vaka/sbin/nft"
+const passwdPath = "/etc/passwd"
+const groupPath = "/etc/group"
 
 func main() {
 	// No arguments: __vaka-init helper-container "standalone" mode. The helper
@@ -50,14 +54,18 @@ func main() {
 	if err != nil {
 		fatal("%v", err)
 	}
+	if errs := policy.ValidateInjected(p); len(errs) > 0 {
+		msgs := make([]string, 0, len(errs))
+		for _, e := range errs {
+			msgs = append(msgs, e.Error())
+		}
+		fatal("validate policy: %s", strings.Join(msgs, "; "))
+	}
 	if len(p.Services) != 1 {
 		fatal("policy must contain exactly one service, got %d", len(p.Services))
 	}
 	if err := checkVersion(p.VakaVersion, version); err != nil {
 		fatal("%v", err)
-	}
-	if p.APIVersion != "agent.vaka/v1alpha1" {
-		fatal("unsupported apiVersion: %s", p.APIVersion)
 	}
 	var svcName string
 	var svc *policy.ServiceConfig
@@ -102,29 +110,50 @@ func main() {
 		fatal("nft -f /dev/stdin: %v\nruleset:\n%s", err, ruleset)
 	}
 
-	// Step 5: Drop capabilities listed in dropCaps.
-	if svc.Runtime != nil && len(svc.Runtime.DropCaps) > 0 {
-		if err := dropCaps(svc.Runtime.DropCaps); err != nil {
-			fatal("drop caps: %v", err)
+	// Step 5: Resolve target service user (compose-compatible syntax) and drop
+	// capabilities. For identity transitions, SETUID/SETGID can be deferred from
+	// Effective/Permitted until after switch while still dropping from
+	// Bounding/Inheritable up front.
+	targetUser, err := resolveExecUser(svc.User, passwdPath, groupPath)
+	if err != nil {
+		fatal("resolve service user %q: %v", svc.User, err)
+	}
+	switchNeeded := needsIdentitySwitch(targetUser)
+	dropCaps := []string{}
+	if svc.Runtime != nil {
+		dropCaps = svc.Runtime.DropCaps
+	}
+	deferSetUID := switchNeeded && targetUser.UID != 0
+	deferSetGID := switchNeeded && (targetUser.GID != 0 || len(targetUser.SupplementaryGIDs) > 0)
+
+	if len(dropCaps) > 0 {
+		if deferSetUID || deferSetGID {
+			if err := dropCapsPreservingTransition(dropCaps, deferSetUID, deferSetGID); err != nil {
+				fatal("drop caps (pre-switch): %v", err)
+			}
+		} else {
+			if err := dropCapsFully(dropCaps); err != nil {
+				fatal("drop caps: %v", err)
+			}
 		}
 	}
 
-	// Step 6: Apply runAs (setresgid then setresuid).
-	if svc.Runtime != nil && svc.Runtime.RunAs != nil {
-		uid := svc.Runtime.RunAs.UID
-		gid := svc.Runtime.RunAs.GID
-		// Validate before touching syscalls.
-		if uid < 0 || gid < 0 {
-			fatal("runAs uid/gid must be non-negative, got uid=%d gid=%d", uid, gid)
+	// Step 6: Restore original service identity when needed.
+	if switchNeeded {
+		if err := switchIdentity(targetUser); err != nil {
+			fatal("switch identity to user %q: %v", svc.User, err)
 		}
-		// GID must be changed before UID.
-		if err := unix.Setresgid(gid, gid, gid); err != nil {
-			fatal("setresgid(%d): %v", gid, err)
+		// On 0->nonzero UID transitions, the kernel clears Effective/Permitted/
+		// Ambient automatically. When UID remains 0 (e.g. user "0:1000"),
+		// deferred SETUID/SETGID still need explicit Effective/Permitted drop.
+		if len(dropCaps) > 0 && targetUser.UID == 0 {
+			deferred := deferredTransitionCapNames(deferSetUID, deferSetGID)
+			if len(deferred) > 0 {
+				if err := dropCapsFully(deferred); err != nil {
+					fatal("drop deferred caps after identity switch: %v", err)
+				}
+			}
 		}
-		if err := unix.Setresuid(uid, uid, uid); err != nil {
-			fatal("setresuid(%d): %v", uid, err)
-		}
-		// Kernel clears E+P automatically on 0→nonzero UID transition.
 	}
 
 	// Step 7: execve — replace vaka-init with the harness.
@@ -161,12 +190,30 @@ func readPolicy(path string) (*policy.ServicePolicy, error) {
 	return p, nil
 }
 
-func dropCaps(caps []string) error {
+func dropCapsFully(caps []string) error {
 	capNums, err := parseCaps(caps)
 	if err != nil {
 		return err
 	}
+	return applyCapDrop(capNums, nil)
+}
 
+func dropCapsPreservingTransition(caps []string, deferSetUID, deferSetGID bool) error {
+	capNums, err := parseCaps(caps)
+	if err != nil {
+		return err
+	}
+	deferred := map[capability.Cap]bool{}
+	if deferSetUID {
+		deferred[capability.CAP_SETUID] = true
+	}
+	if deferSetGID {
+		deferred[capability.CAP_SETGID] = true
+	}
+	return applyCapDrop(capNums, deferred)
+}
+
+func applyCapDrop(capNums []capability.Cap, deferred map[capability.Cap]bool) error {
 	c, err := capability.NewPid2(0)
 	if err != nil {
 		return fmt.Errorf("capability.NewPid2: %w", err)
@@ -178,8 +225,10 @@ func dropCaps(caps []string) error {
 	for _, cap := range capNums {
 		c.Unset(capability.INHERITABLE, cap)
 		c.Unset(capability.BOUNDS, cap)
-		c.Unset(capability.EFFECTIVE, cap)
-		c.Unset(capability.PERMITTED, cap)
+		if deferred == nil || !deferred[cap] {
+			c.Unset(capability.EFFECTIVE, cap)
+			c.Unset(capability.PERMITTED, cap)
+		}
 	}
 
 	// Inheritable must be applied before clearing Ambient (kernel requires
@@ -195,6 +244,73 @@ func dropCaps(caps []string) error {
 	}
 
 	return nil
+}
+
+type execIdentity struct {
+	UID               int
+	GID               int
+	SupplementaryGIDs []int
+}
+
+func resolveExecUser(userSpec, passwd, group string) (*execIdentity, error) {
+	spec := strings.TrimSpace(userSpec)
+	if spec == "" {
+		return nil, nil
+	}
+	execUser, err := mobyuser.GetExecUserPath(spec, nil, passwd, group)
+	if err != nil {
+		return nil, err
+	}
+	ids := append([]int(nil), execUser.Sgids...)
+	sort.Ints(ids)
+	dedup := ids[:0]
+	for _, gid := range ids {
+		if len(dedup) == 0 || dedup[len(dedup)-1] != gid {
+			dedup = append(dedup, gid)
+		}
+	}
+	return &execIdentity{
+		UID:               execUser.Uid,
+		GID:               execUser.Gid,
+		SupplementaryGIDs: dedup,
+	}, nil
+}
+
+func needsIdentitySwitch(u *execIdentity) bool {
+	if u == nil {
+		return false
+	}
+	return u.UID != 0 || u.GID != 0 || len(u.SupplementaryGIDs) > 0
+}
+
+func switchIdentity(u *execIdentity) error {
+	if u == nil {
+		return nil
+	}
+	if u.UID < 0 || u.GID < 0 {
+		return fmt.Errorf("uid/gid must be non-negative, got uid=%d gid=%d", u.UID, u.GID)
+	}
+	if err := unix.Setgroups(u.SupplementaryGIDs); err != nil {
+		return fmt.Errorf("setgroups(%v): %w", u.SupplementaryGIDs, err)
+	}
+	if err := unix.Setresgid(u.GID, u.GID, u.GID); err != nil {
+		return fmt.Errorf("setresgid(%d): %w", u.GID, err)
+	}
+	if err := unix.Setresuid(u.UID, u.UID, u.UID); err != nil {
+		return fmt.Errorf("setresuid(%d): %w", u.UID, err)
+	}
+	return nil
+}
+
+func deferredTransitionCapNames(deferSetUID, deferSetGID bool) []string {
+	out := []string{}
+	if deferSetUID {
+		out = append(out, "SETUID")
+	}
+	if deferSetGID {
+		out = append(out, "SETGID")
+	}
+	return out
 }
 
 // parseCaps converts short-form capability names to capability.Cap values.

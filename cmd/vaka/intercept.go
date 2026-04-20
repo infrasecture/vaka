@@ -113,11 +113,12 @@ func runFull(vakaFile string, args []string, vakaInitPresent bool) error {
 		return err
 	}
 
-	// Pre-build any service whose image must be inspected for its ENTRYPOINT
-	// but isn't available locally and has a build: section. Without this,
+	// Pre-build any service whose image must be inspected for ENTRYPOINT/CMD
+	// and/or USER fallback but isn't available locally and has a build: section.
+	// Without this,
 	// `vaka up --build` fails for services that rely on Dockerfile defaults.
 	// When the user passes --build, every service with a build: section is
-	// prebuilt so ResolveEntrypoint inspects the fresh image, not a stale copy.
+	// prebuilt so ResolveRuntime inspects the fresh image, not a stale copy.
 	forceRebuild := hasBuildFlag(args)
 	toBuild, err := servicesNeedingPrebuild(ctx, ds, p.Services, project, forceRebuild)
 	if err != nil {
@@ -141,7 +142,7 @@ func runFull(vakaFile string, args []string, vakaInitPresent bool) error {
 			return fmt.Errorf("service %q: not found in compose files %v", svcName, composeFiles)
 		}
 
-		entrypoint, cmd, err := ds.ResolveEntrypoint(ctx, svcName, composeSvc)
+		rt, err := ds.ResolveRuntime(ctx, svcName, composeSvc)
 		if err != nil {
 			return err
 		}
@@ -160,6 +161,11 @@ func runFull(vakaFile string, args []string, vakaInitPresent bool) error {
 			return err
 		}
 		sliced.VakaVersion = version
+		restoreUser := strings.TrimSpace(composeSvc.User)
+		if restoreUser == "" {
+			restoreUser = strings.TrimSpace(rt.ImageUser)
+		}
+		sliced.Services[svcName].User = restoreUser
 
 		raw, err := yaml.Marshal(sliced)
 		if err != nil {
@@ -171,8 +177,8 @@ func runFull(vakaFile string, args []string, vakaInitPresent bool) error {
 
 		entries = append(entries, compose.ServiceEntry{
 			Name:       svcName,
-			Entrypoint: entrypoint,
-			Command:    cmd,
+			Entrypoint: rt.Entrypoint,
+			Command:    rt.Command,
 			CapDelta:   delta,
 			EnvVarName: envKey,
 			OptOut:     composeSvc.Labels[vakaInitLabel] == "present",
@@ -224,16 +230,16 @@ func runLifecycle(args []string, vakaInitPresent bool) error {
 }
 
 // servicesNeedingPrebuild returns the sorted list of services whose image must
-// be built before ResolveEntrypoint can inspect it. A service qualifies when:
-//   - it has no compose-declared entrypoint (image ENTRYPOINT is needed), AND
+// be built before ResolveRuntime can inspect it. A service qualifies when:
+//   - it needs image defaults for entrypoint/cmd and/or user fallback, AND
 //   - the compose definition has a build: section (we can build it), AND
 //   - the resolved image is not already available locally OR forceRebuild is set.
 //
 // forceRebuild is true when the user passed --build to the final compose
 // command. In that case the existing local image is about to be replaced by a
-// fresh build, so inspecting the stale copy for ENTRYPOINT/CMD would produce
+// fresh build, so inspecting the stale copy for ENTRYPOINT/CMD/USER would produce
 // incorrect command vectors. Prebuilding every eligible service ensures
-// ResolveEntrypoint sees the post-build image.
+// ResolveRuntime sees the post-build image.
 func servicesNeedingPrebuild(ctx context.Context, ds DockerServices, policySvcs map[string]*policy.ServiceConfig, project *composetypes.Project, forceRebuild bool) ([]string, error) {
 	var out []string
 	for svcName := range policySvcs {
@@ -241,7 +247,7 @@ func servicesNeedingPrebuild(ctx context.Context, ds DockerServices, policySvcs 
 		if !ok {
 			continue
 		}
-		if len(composeSvc.Entrypoint) > 0 {
+		if !needsImageRuntimeFallback(composeSvc) {
 			continue
 		}
 		if composeSvc.Build == nil {
@@ -260,6 +266,10 @@ func servicesNeedingPrebuild(ctx context.Context, ds DockerServices, policySvcs 
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+func needsImageRuntimeFallback(svc composetypes.ServiceConfig) bool {
+	return len(svc.Entrypoint) == 0 || strings.TrimSpace(svc.User) == ""
 }
 
 // computeCapDelta returns capabilities vaka needs that are absent from Docker's

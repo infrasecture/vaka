@@ -138,3 +138,23 @@ func TestSliceServiceNotFound(t *testing.T) {
 		t.Errorf("error %q does not mention the service name", err.Error())
 	}
 }
+
+func TestParseRunAsRemovedUnknownField(t *testing.T) {
+	input := `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  s:
+    runtime:
+      runAs:
+        uid: 1000
+        gid: 1000
+`
+	_, err := policy.Parse(strings.NewReader(input))
+	if err == nil {
+		t.Fatal("expected parse error for removed runtime.runAs field, got nil")
+	}
+	if !strings.Contains(err.Error(), "runAs") {
+		t.Errorf("error %q does not mention runAs", err.Error())
+	}
+}
