@@ -19,6 +19,9 @@ import (
 type DockerServices interface {
 	// EnsureImage inspects ref locally and pulls it if absent.
 	EnsureImage(ctx context.Context, ref string) error
+	// ImageExists returns true if ref is available locally. Transport errors
+	// other than NotFound are propagated.
+	ImageExists(ctx context.Context, ref string) (bool, error)
 	// ResolveEntrypoint returns the effective entrypoint and command for a
 	// compose service. If the service declares either field they are returned
 	// directly; otherwise the image is inspected to obtain defaults.
@@ -48,6 +51,18 @@ func NewDockerServices() (DockerServices, error) {
 		return nil, fmt.Errorf("create Docker client: %w", err)
 	}
 	return &dockerServices{c: c}, nil
+}
+
+// ImageExists returns true if ref is present in the local image store.
+func (d *dockerServices) ImageExists(ctx context.Context, ref string) (bool, error) {
+	_, err := d.c.ImageInspect(ctx, ref)
+	if err == nil {
+		return true, nil
+	}
+	if errdefs.IsNotFound(err) {
+		return false, nil
+	}
+	return false, fmt.Errorf("inspect %s: %w", ref, err)
 }
 
 // EnsureImage inspects ref locally; pulls it if absent.

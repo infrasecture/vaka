@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 
 	composetypes "github.com/compose-spec/compose-go/v2/types"
@@ -112,6 +113,22 @@ func runFull(vakaFile string, args []string, vakaInitPresent bool) error {
 		return err
 	}
 
+	// Pre-build any service whose image must be inspected for its ENTRYPOINT
+	// but isn't available locally and has a build: section. Without this,
+	// `vaka up --build` fails for services that rely on Dockerfile defaults.
+	toBuild, err := servicesNeedingPrebuild(ctx, ds, p.Services, project)
+	if err != nil {
+		return err
+	}
+	if len(toBuild) > 0 {
+		fmt.Fprintf(os.Stderr, "vaka: pre-building services to resolve entrypoints: %v\n", toBuild)
+		buildArgs := append(globalFlags(args), "build")
+		buildArgs = append(buildArgs, toBuild...)
+		if err := execDockerCompose(buildArgs, "", nil); err != nil {
+			return fmt.Errorf("pre-build: %w", err)
+		}
+	}
+
 	var entries []compose.ServiceEntry
 	var extraEnv []string
 
@@ -201,6 +218,39 @@ func runLifecycle(args []string, vakaInitPresent bool) error {
 		return fmt.Errorf("build vaka-init container override: %w", err)
 	}
 	return execDockerCompose(args, overrideYAML, nil)
+}
+
+// servicesNeedingPrebuild returns the sorted list of services whose image must
+// be built before ResolveEntrypoint can inspect it. A service qualifies when:
+//   - it has no compose-declared entrypoint (image ENTRYPOINT is needed), AND
+//   - the compose definition has a build: section (we can build it), AND
+//   - the resolved image is not already available locally (or is absent).
+func servicesNeedingPrebuild(ctx context.Context, ds DockerServices, policySvcs map[string]*policy.ServiceConfig, project *composetypes.Project) ([]string, error) {
+	var out []string
+	for svcName := range policySvcs {
+		composeSvc, ok := project.Services[svcName]
+		if !ok {
+			continue
+		}
+		if len(composeSvc.Entrypoint) > 0 {
+			continue
+		}
+		if composeSvc.Build == nil {
+			continue
+		}
+		if composeSvc.Image != "" {
+			exists, err := ds.ImageExists(ctx, composeSvc.Image)
+			if err != nil {
+				return nil, err
+			}
+			if exists {
+				continue
+			}
+		}
+		out = append(out, svcName)
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 // computeCapDelta returns capabilities vaka needs that are absent from Docker's

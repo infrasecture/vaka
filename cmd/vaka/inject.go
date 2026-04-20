@@ -182,6 +182,38 @@ func allFileFlags(args []string) []string {
 	return files
 }
 
+// globalFlags returns the docker compose global flags (tokens appearing before
+// the first bare-word subcommand) from args, preserving their original order.
+// Used to prefix an auxiliary compose invocation (e.g. pre-build) so that user
+// overrides like -f, --project-name, --profile, etc. are honoured.
+func globalFlags(args []string) []string {
+	var out []string
+	for i := 0; i < len(args); i++ {
+		tok := args[i]
+		if tok == "--" {
+			break
+		}
+		if composeGlobalFlagsWithValue[tok] {
+			if i+1 < len(args) {
+				out = append(out, tok, args[i+1])
+				i++
+			}
+			continue
+		}
+		if strings.HasPrefix(tok, "--") && strings.Contains(tok, "=") {
+			out = append(out, tok)
+			continue
+		}
+		if strings.HasPrefix(tok, "-") {
+			out = append(out, tok)
+			continue
+		}
+		// Subcommand boundary.
+		break
+	}
+	return out
+}
+
 // findSubcmd returns the first non-flag, non-value token from args (the compose
 // subcommand). Returns "" if no subcommand is found.
 func findSubcmd(args []string) string {

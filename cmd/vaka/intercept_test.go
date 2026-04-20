@@ -2,8 +2,12 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
+
+	composetypes "github.com/compose-spec/compose-go/v2/types"
+	"vaka.dev/vaka/pkg/policy"
 )
 
 func TestClassifySubcmd(t *testing.T) {
@@ -54,6 +58,95 @@ func TestLifecycleOverrideYAMLInjectsContainer(t *testing.T) {
 	}
 	if !strings.Contains(yaml, "emsi/vaka-init:v0.1.0") {
 		t.Errorf("injection: expected image ref in YAML, got:\n%s", yaml)
+	}
+}
+
+// fakeDS is a minimal DockerServices used to drive servicesNeedingPrebuild.
+type fakeDS struct {
+	exists map[string]bool // ref -> present locally
+}
+
+func (f *fakeDS) EnsureImage(context.Context, string) error { return nil }
+func (f *fakeDS) ImageExists(_ context.Context, ref string) (bool, error) {
+	return f.exists[ref], nil
+}
+func (f *fakeDS) ResolveEntrypoint(context.Context, string, composetypes.ServiceConfig) ([]string, []string, error) {
+	return nil, nil, nil
+}
+
+func TestServicesNeedingPrebuild(t *testing.T) {
+	policySvcs := map[string]*policy.ServiceConfig{
+		"needsbuild":  {},
+		"hasentry":    {},
+		"prebuilt":    {},
+		"nobuild":     {},
+		"buildonly":   {},
+		"notinpolicy": {},
+	}
+	project := &composetypes.Project{
+		Services: map[string]composetypes.ServiceConfig{
+			// Needs build: no entrypoint, has build, image not local.
+			"needsbuild": {
+				Image: "myapp:latest",
+				Build: &composetypes.BuildConfig{Context: "."},
+			},
+			// Has entrypoint in compose → no inspect → no pre-build.
+			"hasentry": {
+				Image:      "app:latest",
+				Build:      &composetypes.BuildConfig{Context: "."},
+				Entrypoint: []string{"/bin/run"},
+			},
+			// Has build + image already local → no pre-build needed.
+			"prebuilt": {
+				Image: "prebuilt:latest",
+				Build: &composetypes.BuildConfig{Context: "."},
+			},
+			// No build section → cannot pre-build even if missing.
+			"nobuild": {
+				Image: "external:latest",
+			},
+			// Build-only (no image field) → pre-build unconditionally.
+			"buildonly": {
+				Build: &composetypes.BuildConfig{Context: "."},
+			},
+		},
+	}
+	ds := &fakeDS{exists: map[string]bool{
+		"prebuilt:latest": true,
+		"myapp:latest":    false,
+		"external:latest": false,
+	}}
+
+	got, err := servicesNeedingPrebuild(context.Background(), ds, policySvcs, project)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{"buildonly", "needsbuild"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+func TestGlobalFlags(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{"no flags", []string{"up", "-d"}, nil},
+		{"single -f", []string{"-f", "foo.yml", "up", "-d"}, []string{"-f", "foo.yml"}},
+		{"multiple globals", []string{"-f", "a.yml", "--project-name", "p", "up"}, []string{"-f", "a.yml", "--project-name", "p"}},
+		{"--file=value form", []string{"--file=foo.yml", "up"}, []string{"--file=foo.yml"}},
+		{"boolean global", []string{"--dry-run", "up"}, []string{"--dry-run"}},
+		{"stops at subcommand", []string{"-f", "a.yml", "up", "-f", "ignored.yml"}, []string{"-f", "a.yml"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := globalFlags(tc.args)
+			if strings.Join(got, " ") != strings.Join(tc.want, " ") {
+				t.Errorf("got %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 

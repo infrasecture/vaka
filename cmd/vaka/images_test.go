@@ -182,6 +182,32 @@ func TestResolveEntrypointMatrix(t *testing.T) {
 	}
 }
 
+// --- ImageExists tests ---
+
+func TestImageExistsPresent(t *testing.T) {
+	dc := &fakeDockerClient{notFound: false}
+	ds := &dockerServices{c: dc}
+	ok, err := ds.ImageExists(context.Background(), "nginx:latest")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !ok {
+		t.Error("expected ImageExists=true for present image")
+	}
+}
+
+func TestImageExistsAbsent(t *testing.T) {
+	dc := &fakeDockerClient{notFound: true}
+	ds := &dockerServices{c: dc}
+	ok, err := ds.ImageExists(context.Background(), "nginx:latest")
+	if err != nil {
+		t.Fatalf("unexpected error on NotFound: %v", err)
+	}
+	if ok {
+		t.Error("expected ImageExists=false for absent image")
+	}
+}
+
 func TestResolveEntrypointImageNotFound(t *testing.T) {
 	dc := &fakeDockerClient{notFound: true}
 	ds := &dockerServices{c: dc}
