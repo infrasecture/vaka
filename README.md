@@ -156,7 +156,7 @@ services:
 vaka up
 ```
 
-That's it. No Dockerfile changes, no `COPY` steps, no manual binary installation. On the first `vaka up` vaka starts a short-lived helper container (`__vaka-init`) built from `emsi/vaka-init:<version>`, which populates a shared named volume with the `vaka-init` and `nft` binaries. Each of your service containers mounts that volume read-only at `/opt/vaka/sbin/` and runs `vaka-init` as its entrypoint — your images are not modified.
+That's it. No Dockerfile changes, no `COPY` steps, no manual binary installation. On the first `vaka up` vaka starts a short-lived helper container (`__vaka-init`) built from `emsi/vaka-init:<version>`, whose `/opt/vaka` directory holds the `vaka-init` and `nft` binaries. Each of your service containers mounts that directory read-only via compose `volumes_from` and runs `vaka-init` (from `/opt/vaka/sbin/`) as its entrypoint — your images are not modified.
 
 The full schema for `vaka.yaml` is in [Configuration reference](#configuration-reference).
 
@@ -206,13 +206,13 @@ vaka up --build -d    # build images first, then start detached
 vaka run llm-gateway bash    # policy is enforced for run too
 ```
 
-On first start, vaka brings up a short-lived `__vaka-init` helper container that publishes the `vaka-init` and `nft` binaries into a named volume shared with every policy-enforced service. Your images are unchanged.
+On first start, vaka brings up a short-lived `__vaka-init` helper container that exposes the `vaka-init` and `nft` binaries (under `/opt/vaka`) and shares them read-only with every policy-enforced service via compose `volumes_from`. Your images are unchanged.
 
 ### Tear the stack down
 
 ```bash
 vaka down               # stop and remove all containers + the __vaka-init helper
-vaka down --volumes     # also remove the binary-injection volume
+vaka down --volumes     # also remove the anonymous volume attached to __vaka-init
 vaka stop               # stop without removing
 vaka kill               # SIGKILL
 vaka rm                 # remove stopped containers
@@ -423,7 +423,7 @@ Switches UID and GID before execve-ing the application. `setresgid` is called be
 
 ### `vaka up`
 
-Validates `vaka.yaml`, generates a compose override in memory, and starts the stack with the override piped via stdin. By default the override adds a `__vaka-init` helper container that publishes the `vaka-init` and `nft` binaries into a named volume shared read-only with each policy-enforced service. All `docker compose up` flags are passed through.
+Validates `vaka.yaml`, generates a compose override in memory, and starts the stack with the override piped via stdin. By default the override adds a `__vaka-init` helper container that exposes the `vaka-init` and `nft` binaries (under `/opt/vaka`) and shares them read-only with each policy-enforced service via compose `volumes_from`. All `docker compose up` flags are passed through.
 
 ```
 vaka [--vaka-file vaka.yaml] up [--vaka-init-present] [compose-flags...]
@@ -450,7 +450,7 @@ vaka [--vaka-file vaka.yaml] kill [--vaka-init-present] [compose-flags...]
 vaka [--vaka-file vaka.yaml] rm   [--vaka-init-present] [compose-flags...]
 ```
 
-`vaka down --volumes` additionally removes the named volume used for binary injection.
+`vaka down --volumes` additionally removes the anonymous volume attached to `__vaka-init` that holds the injected binaries.
 
 ### `vaka validate`
 
