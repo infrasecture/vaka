@@ -4,8 +4,11 @@
 package main
 
 import (
+	"bytes"
 	"encoding/base64"
 	"os"
+	"os/exec"
+	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -40,7 +43,7 @@ func writeTmp(t *testing.T, content string) string {
 
 func TestReadPolicy_roundtrip(t *testing.T) {
 	want := &policy.ServicePolicy{
-		APIVersion: "vaka.dev/v1alpha1",
+		APIVersion: "agent.vaka/v1alpha1",
 		Kind:       "ServicePolicy",
 		Services: map[string]*policy.ServiceConfig{
 			"svc": {
@@ -76,7 +79,7 @@ func TestReadPolicy_trailingNewline(t *testing.T) {
 	// Docker compose appends a newline when writing env-var secrets.
 	// TrimSpace must strip it before base64 decoding.
 	p := &policy.ServicePolicy{
-		APIVersion: "vaka.dev/v1alpha1",
+		APIVersion: "agent.vaka/v1alpha1",
 		Kind:       "ServicePolicy",
 		Services: map[string]*policy.ServiceConfig{
 			"svc": {
@@ -96,7 +99,7 @@ func TestReadPolicy_trailingNewline(t *testing.T) {
 func TestReadPolicy_notBase64(t *testing.T) {
 	// Raw YAML (not base64-encoded) must be rejected — this would be the
 	// behaviour if vaka-init were pointed at the old unencoded secret format.
-	path := writeTmp(t, "apiVersion: vaka.dev/v1alpha1\nkind: ServicePolicy\n")
+	path := writeTmp(t, "apiVersion: agent.vaka/v1alpha1\nkind: ServicePolicy\n")
 
 	if _, err := readPolicy(path); err == nil {
 		t.Fatal("expected error for non-base64 content, got nil")
@@ -141,5 +144,70 @@ func TestParseCaps_unknownName(t *testing.T) {
 	_, err := parseCaps([]string{"NOT_A_CAP"})
 	if err == nil {
 		t.Error("parseCaps(NOT_A_CAP) expected error, got nil")
+	}
+}
+
+func TestCheckVersion(t *testing.T) {
+	tests := []struct {
+		policy  string
+		self    string
+		wantErr bool
+	}{
+		{"v0.1.2", "v0.1.0", false},  // same major.minor, patch differs → ok
+		{"v0.1.2", "v0.1.2", false},  // exact match → ok
+		{"v0.1.0", "v0.2.0", true},   // minor mismatch → error
+		{"v0.2.0", "v0.1.0", true},   // minor mismatch → error
+		{"v1.0.0", "v0.1.0", true},   // major mismatch → error
+		{"4178cc0", "4178cc0", false}, // git hash exact match → ok
+		{"4178cc0", "4178cc0-dirty", true},  // git hash mismatch → error
+		{"4178cc0-dirty", "4178cc0", true},  // git hash mismatch → error
+		{"", "v0.1.0", true},          // missing → error
+	}
+	for _, tc := range tests {
+		err := checkVersion(tc.policy, tc.self)
+		if tc.wantErr && err == nil {
+			t.Errorf("checkVersion(%q, %q): expected error, got nil", tc.policy, tc.self)
+		}
+		if !tc.wantErr && err != nil {
+			t.Errorf("checkVersion(%q, %q): unexpected error: %v", tc.policy, tc.self, err)
+		}
+	}
+}
+
+func TestNoArgExitsZero(t *testing.T) {
+	// Subprocess trick: re-run this test binary as vaka-init with no "--".
+	// When BE_VAKA_INIT=1 the subprocess calls main(); os.Args[1] will be
+	// `-test.run=…` (not "--"), so main() hits the bad-args branch. Parent
+	// asserts exit code 0 — the same lenient-on-misconfiguration contract
+	// documented in the design. The true no-args (standalone) branch is
+	// covered by the logic review + integration (`vaka up`) since the
+	// subprocess trick can't produce a len(os.Args) == 1 invocation.
+	if os.Getenv("BE_VAKA_INIT") == "1" {
+		main()
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=TestNoArgExitsZero")
+	cmd.Env = append(os.Environ(), "BE_VAKA_INIT=1")
+	if err := cmd.Run(); err != nil {
+		t.Errorf("vaka-init with no harness args: expected exit 0, got: %v", err)
+	}
+}
+
+func TestBadArgsPrintsUsage(t *testing.T) {
+	// When invoked with args that are not "--", vaka-init should print the
+	// usage message to stderr and exit 0 (lenient on misconfiguration).
+	if os.Getenv("BE_VAKA_INIT") == "1" {
+		main()
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=TestBadArgsPrintsUsage", "notdashdash")
+	cmd.Env = append(os.Environ(), "BE_VAKA_INIT=1")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Errorf("vaka-init with bad args: expected exit 0, got: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "usage: vaka-init -- <entrypoint>") {
+		t.Errorf("vaka-init with bad args: expected usage message on stderr, got %q", stderr.String())
 	}
 }

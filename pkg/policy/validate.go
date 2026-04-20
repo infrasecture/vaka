@@ -67,11 +67,14 @@ func Validate(p *ServicePolicy, networkModes map[string]string) []error {
 		errs = append(errs, fmt.Errorf(format, args...))
 	}
 
-	if p.APIVersion != "vaka.dev/v1alpha1" {
-		add("apiVersion: must be \"vaka.dev/v1alpha1\", got %q", p.APIVersion)
+	if p.APIVersion != "agent.vaka/v1alpha1" {
+		add("apiVersion: must be \"agent.vaka/v1alpha1\", got %q", p.APIVersion)
 	}
 	if p.Kind != "ServicePolicy" {
 		add("kind: must be \"ServicePolicy\", got %q", p.Kind)
+	}
+	if p.VakaVersion != "" {
+		add("vakaVersion: must not be set in vaka.yaml (it is injected by the vaka CLI)")
 	}
 
 	for name, svc := range p.Services {

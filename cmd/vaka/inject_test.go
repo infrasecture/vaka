@@ -67,6 +67,76 @@ func TestExtractVakaFlags(t *testing.T) {
 		}
 		assertArgv(t, raw, rest)
 	})
+
+	t.Run("--vaka-file after service on run is NOT extracted (inner cmd arg)", func(t *testing.T) {
+		// The inner command (mytool) owns --vaka-file here, not vaka.
+		raw := []string{"run", "gateway", "mytool", "--vaka-file", "/app/cfg.yaml"}
+		flags, rest := extractVakaFlags(raw)
+		if len(flags) != 0 {
+			t.Fatalf("expected no flags extracted, got %v", flags)
+		}
+		assertArgv(t, raw, rest)
+	})
+
+	t.Run("--vaka-init-present between subcommand and positional IS extracted", func(t *testing.T) {
+		// Documented UX: vaka up --vaka-init-present, vaka run --vaka-init-present svc.
+		raw := []string{"up", "--vaka-init-present"}
+		flags, rest := extractVakaFlags(raw)
+		if flags["--vaka-init-present"] != "true" {
+			t.Fatalf("expected --vaka-init-present=true, got %v", flags)
+		}
+		want := []string{"up"}
+		assertArgv(t, want, rest)
+	})
+
+	t.Run("--vaka-init-present before service on run IS extracted", func(t *testing.T) {
+		raw := []string{"run", "--vaka-init-present", "gateway", "mytool"}
+		flags, rest := extractVakaFlags(raw)
+		if flags["--vaka-init-present"] != "true" {
+			t.Fatalf("expected --vaka-init-present=true, got %v", flags)
+		}
+		want := []string{"run", "gateway", "mytool"}
+		assertArgv(t, want, rest)
+	})
+
+	t.Run("--vaka-init-present after inner cmd on run is NOT extracted", func(t *testing.T) {
+		raw := []string{"run", "gateway", "mytool", "--vaka-init-present"}
+		flags, rest := extractVakaFlags(raw)
+		if len(flags) != 0 {
+			t.Fatalf("expected no flags extracted, got %v", flags)
+		}
+		assertArgv(t, raw, rest)
+	})
+
+	t.Run("vaka flag after -- is NOT extracted", func(t *testing.T) {
+		raw := []string{"--", "--vaka-file", "x"}
+		flags, rest := extractVakaFlags(raw)
+		if len(flags) != 0 {
+			t.Fatalf("expected no flags extracted, got %v", flags)
+		}
+		assertArgv(t, raw, rest)
+	})
+
+	t.Run("compose global with value does not consume subcommand", func(t *testing.T) {
+		// -p consumes "myproj"; then --vaka-file consumes "x"; then up is rest.
+		raw := []string{"-p", "myproj", "--vaka-file", "x", "up"}
+		flags, rest := extractVakaFlags(raw)
+		if flags["--vaka-file"] != "x" {
+			t.Fatalf("expected vaka-file=x, got %v", flags)
+		}
+		want := []string{"-p", "myproj", "up"}
+		assertArgv(t, want, rest)
+	})
+
+	t.Run("--vaka-init-present before subcommand is extracted", func(t *testing.T) {
+		raw := []string{"--vaka-init-present", "up"}
+		flags, rest := extractVakaFlags(raw)
+		if flags["--vaka-init-present"] != "true" {
+			t.Fatalf("expected --vaka-init-present=true, got %v", flags)
+		}
+		want := []string{"up"}
+		assertArgv(t, want, rest)
+	})
 }
 
 func TestDiscoverComposeFiles(t *testing.T) {
@@ -133,6 +203,37 @@ func TestAllFileFlags(t *testing.T) {
 			t.Fatalf("expected empty, got %v", got)
 		}
 	})
+}
+
+func TestHasBuildFlag(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{"up --build", []string{"up", "--build"}, true},
+		{"up -d (no build)", []string{"up", "-d"}, false},
+		{"run --build svc", []string{"run", "--build", "svc"}, true},
+		{"-f a.yml up --build", []string{"-f", "a.yml", "up", "--build"}, true},
+		{"global flag with value, then up --build", []string{"--ansi", "always", "up", "--build"}, true},
+		{"--build before subcommand is ignored (treated as compose global flag)", []string{"--build", "up"}, false},
+		{"--build after -- is ignored (inner command arg)", []string{"run", "svc", "mycmd", "--", "--build"}, false},
+		// Accepted false positive: --build after the service name on `run` is
+		// really an arg to the inner command, but disambiguating requires
+		// compose-specific positional semantics. Extra prebuild is a perf
+		// cost only; stale entrypoints are a correctness bug.
+		{"--build without -- (false positive, safe)", []string{"run", "svc", "mycmd", "--build"}, true},
+		{"empty args", []string{}, false},
+		{"no subcommand", []string{"-f", "a.yml"}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := hasBuildFlag(tc.args)
+			if got != tc.want {
+				t.Errorf("hasBuildFlag(%v) = %v, want %v", tc.args, got, tc.want)
+			}
+		})
+	}
 }
 
 func TestFindSubcmd(t *testing.T) {

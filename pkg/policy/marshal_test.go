@@ -14,7 +14,7 @@ import (
 )
 
 const roundTripInput = `
-apiVersion: vaka.dev/v1alpha1
+apiVersion: agent.vaka/v1alpha1
 kind: ServicePolicy
 services:
   agent:
@@ -78,7 +78,7 @@ func TestPortSpecMarshalRoundTrip(t *testing.T) {
 
 func TestBlockMetadataScalarRoundTrip(t *testing.T) {
 	input := `
-apiVersion: vaka.dev/v1alpha1
+apiVersion: agent.vaka/v1alpha1
 kind: ServicePolicy
 services:
   s:
@@ -110,7 +110,7 @@ services:
 
 func TestBlockMetadataMappingRoundTrip(t *testing.T) {
 	input := `
-apiVersion: vaka.dev/v1alpha1
+apiVersion: agent.vaka/v1alpha1
 kind: ServicePolicy
 services:
   s:
@@ -145,7 +145,7 @@ services:
 func TestBlockMetadataBoolParseError(t *testing.T) {
 	for _, input := range []string{
 		`
-apiVersion: vaka.dev/v1alpha1
+apiVersion: agent.vaka/v1alpha1
 kind: ServicePolicy
 services:
   s:
@@ -154,7 +154,7 @@ services:
         block_metadata: true
 `,
 		`
-apiVersion: vaka.dev/v1alpha1
+apiVersion: agent.vaka/v1alpha1
 kind: ServicePolicy
 services:
   s:
@@ -172,7 +172,7 @@ services:
 
 func TestBlockMetadataMappingUnknownKeyIsError(t *testing.T) {
 	input := `
-apiVersion: vaka.dev/v1alpha1
+apiVersion: agent.vaka/v1alpha1
 kind: ServicePolicy
 services:
   s:
@@ -190,7 +190,7 @@ services:
 
 func TestBlockMetadataMappingDuplicateKeyIsError(t *testing.T) {
 	input := `
-apiVersion: vaka.dev/v1alpha1
+apiVersion: agent.vaka/v1alpha1
 kind: ServicePolicy
 services:
   s:
@@ -208,7 +208,7 @@ services:
 
 func TestBlockMetadataMappingMissingActionIsError(t *testing.T) {
 	input := `
-apiVersion: vaka.dev/v1alpha1
+apiVersion: agent.vaka/v1alpha1
 kind: ServicePolicy
 services:
   s:
