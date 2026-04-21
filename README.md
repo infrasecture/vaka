@@ -179,7 +179,9 @@ vaka up   --vaka-init-present
 vaka down --vaka-init-present
 ```
 
-The `--vaka-init-present` flag must be passed to every lifecycle command (`up`, `down`, `stop`, `kill`, `rm`, `run`) for the whole stack.
+The `--vaka-init-present` flag must be passed consistently for every command
+that uses vaka's injection-aware paths for the stack:
+`up`, `run`, `create`, `volumes`, `down`, `stop`, `kill`, `rm`.
 
 Per-service opt-out via `docker-compose.yaml` label — useful when some services have the binaries baked in and others rely on injection:
 
@@ -236,6 +238,22 @@ vaka rm                 # remove stopped containers
 ```bash
 vaka up   --vaka-init-present
 vaka down --vaka-init-present
+```
+
+When upgrading `vaka`/`vaka-init`, refresh injected helper volumes before
+restarting services. Otherwise existing service containers may keep an older
+anonymous `/opt/vaka` volume and fail with a `vakaVersion` mismatch. Safe
+refresh options:
+
+```bash
+vaka down --volumes
+vaka up
+```
+
+or:
+
+```bash
+vaka up -V    # docker compose --renew-anon-volumes
 ```
 
 ### Passthrough commands
@@ -462,6 +480,10 @@ Uses the same full injection path as `up`/`run`/`create`, then proxies to
 `docker compose volumes`. This ensures vaka-managed helper resources are visible
 in the project volume listing.
 
+Because it uses the full path, `vaka volumes` still validates `vaka.yaml` and
+may inspect/pre-build service images or ensure/pull the matching
+`emsi/vaka-init:<version>` image when injection is enabled.
+
 ```bash
 vaka [--vaka-file vaka.yaml] volumes [--vaka-init-present] [compose-flags...]
 ```
@@ -593,6 +615,12 @@ sudo dpkg -i dist/vaka_0.1.0_amd64.deb
 # Fedora / RHEL / CentOS
 sudo rpm -i dist/vaka-0.1.0-1.x86_64.rpm
 ```
+
+Installed paths from packages:
+
+- `/usr/local/bin/vaka`
+- `/opt/vaka/sbin/vaka-init`
+- `/opt/vaka/sbin/nft`
 
 ### Versioning and releasing
 
