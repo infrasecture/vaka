@@ -269,7 +269,7 @@ Expected: FAIL — no-args path still calls `fatal(...)`.
 
 In `cmd/vaka-init/main.go` replace:
 ```go
-const nftBin = "/usr/local/sbin/nft"
+const nftBin = "/opt/vaka/sbin/nft"
 ```
 with:
 ```go
@@ -1714,7 +1714,7 @@ The goal is not just mechanical string replacement — the README must be struct
 
 ```bash
 sed -i \
-  's|vaka\.dev/v1alpha1|agent.vaka/v1alpha1|g; s|/usr/local/sbin/vaka-init|/opt/vaka/sbin/vaka-init|g; s|/usr/local/sbin/nft|/opt/vaka/sbin/nft|g' \
+  's|vaka\.dev/v1alpha1|agent.vaka/v1alpha1|g' \
   README.md
 ```
 
@@ -1771,7 +1771,7 @@ Add a short section (or extend the existing CLI reference) documenting that `vak
 
 ```bash
 sed -i \
-  's|vaka\.dev/v1alpha1|agent.vaka/v1alpha1|g; s|/usr/local/sbin/vaka-init|/opt/vaka/sbin/vaka-init|g; s|/usr/local/sbin/nft|/opt/vaka/sbin/nft|g' \
+  's|vaka\.dev/v1alpha1|agent.vaka/v1alpha1|g' \
   docs/superpowers/specs/2026-04-14-vaka-secure-container-design.md
 ```
 
@@ -1806,7 +1806,7 @@ grep -rn "vaka\.dev/v1alpha1" . --include="*.go" --include="*.md" --include="*.y
   | grep -v ".worktrees" | grep -v "docs/superpowers/"
 
 # No old binary paths in Go source
-grep -rn "/usr/local/sbin" . --include="*.go"
+grep -rn "/opt/vaka/sbin" . --include="*.go"
 
 # __vaka-init container name consistent
 grep -rn "__vaka-init\|vaka-init:ro\|service_completed_successfully" pkg/compose/ cmd/vaka/

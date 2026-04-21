@@ -97,8 +97,8 @@ Example:
 ```dockerfile
 FROM emsi/nft-static:1.1.6 AS nftbuild
 FROM ubuntu:24.04
-COPY --from=nftbuild /opt/nftables/bin/nft /usr/local/sbin/nft
-ENTRYPOINT ["/usr/local/sbin/nft"]
+COPY --from=nftbuild /opt/nftables/bin/nft /opt/vaka/sbin/nft
+ENTRYPOINT ["/opt/vaka/sbin/nft"]
 ```
 
 Also works with Alpine/Fedora-style targets using the same copy path.

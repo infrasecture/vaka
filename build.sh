@@ -55,8 +55,8 @@
 #
 # When installed via .deb/.rpm the binaries are named:
 #   /usr/local/bin/vaka
-#   /usr/local/sbin/vaka-init
-#   /usr/local/sbin/nft
+#   /opt/vaka/sbin/vaka-init
+#   /opt/vaka/sbin/nft
 
 set -euo pipefail
 
@@ -438,7 +438,7 @@ if [[ "${BUILD_PACKAGES}" == "true" ]]; then
         nft_entry=""
         if [[ -f "dist/nft-linux-${ARCH}" ]]; then
             nft_entry="  - src: /src/dist/nft-linux-${ARCH}
-    dst: /usr/local/sbin/nft
+    dst: /opt/vaka/sbin/nft
     file_info:
       mode: 0755"
         fi
@@ -461,7 +461,7 @@ contents:
     file_info:
       mode: 0755
   - src: /src/dist/vaka-init-linux-${ARCH}
-    dst: /usr/local/sbin/vaka-init
+    dst: /opt/vaka/sbin/vaka-init
     file_info:
       mode: 0755
 ${nft_entry}
