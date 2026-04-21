@@ -95,7 +95,7 @@ func loadAndValidate(vakaFile string, composeFiles []string) (*policy.ServicePol
 		}
 	}
 
-	errs := policy.Validate(p, networkModes)
+	errs := policy.ValidateHost(p, networkModes)
 
 	// Warn on defaultAction: accept.
 	for name, svc := range p.Services {

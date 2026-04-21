@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	composetypes "github.com/compose-spec/compose-go/v2/types"
 	dockerimage "github.com/docker/docker/api/types/image"
@@ -22,10 +23,19 @@ type DockerServices interface {
 	// ImageExists returns true if ref is available locally. Transport errors
 	// other than NotFound are propagated.
 	ImageExists(ctx context.Context, ref string) (bool, error)
-	// ResolveEntrypoint returns the effective entrypoint and command for a
-	// compose service. If the service declares either field they are returned
-	// directly; otherwise the image is inspected to obtain defaults.
-	ResolveEntrypoint(ctx context.Context, svcName string, svc composetypes.ServiceConfig) ([]string, []string, error)
+	// ResolveRuntime resolves runtime metadata needed by vaka:
+	// effective entrypoint/command vectors and image-level USER fallback.
+	ResolveRuntime(ctx context.Context, svcName string, svc composetypes.ServiceConfig) (ResolvedRuntime, error)
+}
+
+// ResolvedRuntime is resolved service runtime metadata from compose + image.
+type ResolvedRuntime struct {
+	Entrypoint []string
+	Command    []string
+	// ImageUser is the image config USER value. Compose `service.user` is
+	// intentionally not folded into this field so callers can apply explicit
+	// precedence rules (compose user first, image fallback second).
+	ImageUser string
 }
 
 // dockerClient is a narrow interface over the Docker API operations used by
@@ -83,8 +93,8 @@ func (d *dockerServices) EnsureImage(ctx context.Context, ref string) error {
 	return err
 }
 
-// ResolveEntrypoint returns the effective entrypoint and command for svc,
-// following Docker/Compose semantics:
+// ResolveRuntime resolves effective runtime metadata for svc, following
+// Docker/Compose semantics:
 //
 //   - compose entrypoint set: resolved pair is (compose.Entrypoint, compose.Command).
 //     Docker resets CMD to empty when ENTRYPOINT is overridden, so a compose
@@ -93,29 +103,62 @@ func (d *dockerServices) EnsureImage(ctx context.Context, ref string) error {
 //     (common pattern: app image defines ENTRYPOINT, compose overrides args).
 //   - both empty: both come from the image's Dockerfile defaults.
 //
-// The image is inspected only when the image's ENTRYPOINT is needed.
-func (d *dockerServices) ResolveEntrypoint(ctx context.Context, svcName string, svc composetypes.ServiceConfig) ([]string, []string, error) {
-	if len(svc.Entrypoint) > 0 {
-		return svc.Entrypoint, svc.Command, nil
+// For user restoration, image Config.User is also resolved when compose
+// service.user is unset, so image inspection is performed when either
+// entrypoint or user fallback requires it.
+func (d *dockerServices) ResolveRuntime(ctx context.Context, svcName string, svc composetypes.ServiceConfig) (ResolvedRuntime, error) {
+	resolved := ResolvedRuntime{
+		Entrypoint: svc.Entrypoint,
+		Command:    svc.Command,
 	}
+
+	needImageEntrypoint := len(svc.Entrypoint) == 0
+	needImageUser := strings.TrimSpace(svc.User) == ""
+	needInspect := needImageEntrypoint || needImageUser
+	if !needInspect {
+		return resolved, nil
+	}
+
 	if svc.Image == "" {
-		return nil, nil, fmt.Errorf("service %s: no image and no entrypoint declared", svcName)
+		return ResolvedRuntime{}, fmt.Errorf(
+			"service %s: cannot resolve image defaults without image: (needed for %s)",
+			svcName, missingRuntimeFieldsHint(needImageEntrypoint, needImageUser),
+		)
 	}
 	inspect, err := d.c.ImageInspect(ctx, svc.Image)
 	if err != nil {
 		if errdefs.IsNotFound(err) {
-			return nil, nil, fmt.Errorf(
-				"service %s: image %q not available locally — pull or build it first, or add entrypoint: to the compose file",
+			return ResolvedRuntime{}, fmt.Errorf(
+				"service %s: image %q not available locally — pull/build it first, or set compose user/entrypoint so image defaults are not needed",
 				svcName, svc.Image)
 		}
-		return nil, nil, fmt.Errorf("service %s: inspect %q: %w", svcName, svc.Image, err)
+		return ResolvedRuntime{}, fmt.Errorf("service %s: inspect %q: %w", svcName, svc.Image, err)
 	}
 	if inspect.Config == nil {
-		return nil, nil, fmt.Errorf("service %s: image %q has no Config", svcName, svc.Image)
+		return ResolvedRuntime{}, fmt.Errorf("service %s: image %q has no Config", svcName, svc.Image)
 	}
-	cmd := svc.Command
-	if len(cmd) == 0 {
-		cmd = inspect.Config.Cmd
+
+	if needImageEntrypoint {
+		resolved.Entrypoint = inspect.Config.Entrypoint
+		if len(resolved.Command) == 0 {
+			resolved.Command = inspect.Config.Cmd
+		}
 	}
-	return inspect.Config.Entrypoint, cmd, nil
+	if needImageUser {
+		resolved.ImageUser = inspect.Config.User
+	}
+	return resolved, nil
+}
+
+func missingRuntimeFieldsHint(needImageEntrypoint, needImageUser bool) string {
+	switch {
+	case needImageEntrypoint && needImageUser:
+		return "entrypoint/cmd and user fallback"
+	case needImageEntrypoint:
+		return "entrypoint/cmd fallback"
+	case needImageUser:
+		return "user fallback"
+	default:
+		return "runtime fallback"
+	}
 }

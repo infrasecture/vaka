@@ -14,7 +14,7 @@ import (
 // for services that declare only `build:` without an explicit `image:` key.
 //
 // compose-go v2 does NOT auto-populate ServiceConfig.Image during project
-// load; it stays empty. Because ResolveEntrypoint in cmd/vaka/images.go
+// load; it stays empty. Because ResolveRuntime in cmd/vaka/images.go
 // returns an error when Image is empty and no compose-declared entrypoint
 // exists, build-only services without an explicit entrypoint: key fail with
 // a clear message. This test ensures the loader assumption matches reality;
@@ -60,7 +60,7 @@ services:
 	}
 	if app.Image != "" {
 		t.Fatalf("compose-go populated Image=%q for a build-only service; the "+
-			"ResolveEntrypoint build-only limitation documented in README can "+
+			"ResolveRuntime build-only limitation documented in README can "+
 			"now be lifted", app.Image)
 	}
 }

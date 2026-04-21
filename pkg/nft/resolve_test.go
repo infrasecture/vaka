@@ -96,7 +96,7 @@ func TestResolvePolicyMixedDNSRulesRequireResolvConf(t *testing.T) {
 	e := &policy.EgressPolicy{
 		DefaultAction: "reject",
 		Accept: []policy.Rule{
-			{DNS: &policy.DNSRule{}},                              // needs resolv.conf
+			{DNS: &policy.DNSRule{}},                             // needs resolv.conf
 			{DNS: &policy.DNSRule{Servers: []string{"8.8.8.8"}}}, // does not
 		},
 	}

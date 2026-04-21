@@ -5,6 +5,10 @@
 **Scope:** `vaka-init` (container init binary) + `vaka` (host CLI) + `ServicePolicy` config schema.
 Secret-isolation architecture (LLM proxy, MCP sidecar) is out of scope here and will be a separate spec.
 
+> Historical note (2026-04-20+): this spec predates the breaking removal of
+> `runtime.runAs` from host policy. Current implementation restores identity via
+> generated `services.<name>.user` (compose/image user semantics).
+
 ---
 
 ## 1. Problem Statement

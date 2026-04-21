@@ -650,3 +650,63 @@ services:
 		t.Errorf("expected error mentioning vakaVersion, got: %v", errs)
 	}
 }
+
+func TestValidateRejectsServiceUserInHostYAML(t *testing.T) {
+	p := mustParse(t, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  s:
+    user: "1000:1000"
+`)
+	errs := policy.ValidateHost(p, nil)
+	if len(errs) == 0 {
+		t.Fatal("expected error for user-supplied services.<name>.user in host vaka.yaml, got none")
+	}
+	found := false
+	for _, e := range errs {
+		if strings.Contains(e.Error(), ".user") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected error mentioning services.<name>.user, got: %v", errs)
+	}
+}
+
+func TestValidateInjectedAllowsServiceUserAndRequiresVakaVersion(t *testing.T) {
+	ok := mustParse(t, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+vakaVersion: v0.1.2
+services:
+  s:
+    user: "1000:1000"
+`)
+	if errs := policy.ValidateInjected(ok); len(errs) != 0 {
+		t.Fatalf("expected injected policy with generated user to validate, got: %v", errs)
+	}
+
+	missingVersion := mustParse(t, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  s:
+    user: "1000:1000"
+`)
+	errs := policy.ValidateInjected(missingVersion)
+	if len(errs) == 0 {
+		t.Fatal("expected error for missing vakaVersion in injected policy, got none")
+	}
+	found := false
+	for _, e := range errs {
+		if strings.Contains(e.Error(), "vakaVersion") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected error mentioning vakaVersion, got: %v", errs)
+	}
+}

@@ -1,6 +1,10 @@
 # vaka Secure Container Layer Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+>
+> **Historical note (2026-04-20+):** this archived implementation plan contains
+> references to the now-removed `runtime.runAs` field. Current behavior uses
+> generated `services.<name>.user` for service identity restoration.
 
 **Goal:** Build `vaka-init` (container init binary) + `vaka` (host CLI) that enforce nftables egress firewall rules inside Docker containers running AI agentic harnesses, with zero changes to the original docker-compose.yaml.
 
