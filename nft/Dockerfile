@@ -88,7 +88,7 @@ RUN set -eux; \
     CONFIG_SHELL=/bin/bash \
     ./configure \
       --prefix=/usr/local \
-      --sbindir=/usr/local/sbin \
+      --sbindir=/opt/vaka/sbin \
       --enable-static \
       --disable-shared \
       --with-mini-gmp \

@@ -2221,7 +2221,7 @@ import (
 )
 
 const secretPath = "/run/secrets/vaka.yaml"
-const nftBin = "/usr/local/sbin/nft"
+const nftBin = "/opt/vaka/sbin/nft"
 
 func main() {
 	if len(os.Args) < 2 || os.Args[1] != "--" {
@@ -3547,8 +3547,8 @@ git commit -m "feat(vaka): manual argv dispatch; injection for up/run; pure pass
 # Usage in a harness Dockerfile:
 #   FROM emsi/vaka-init:latest AS vaka
 #   FROM ubuntu:24.04
-#   COPY --from=vaka /opt/vaka/bin/vaka-init /usr/local/sbin/vaka-init
-#   COPY --from=vaka /opt/vaka/bin/nft       /usr/local/sbin/nft
+#   COPY --from=vaka /opt/vaka/sbin/vaka-init /opt/vaka/sbin/vaka-init
+#   COPY --from=vaka /opt/vaka/sbin/nft       /opt/vaka/sbin/nft
 
 ARG NFTABLES_IMAGE=emsi/nft-static:1.1.6
 
