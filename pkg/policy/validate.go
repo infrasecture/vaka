@@ -4,6 +4,7 @@ package policy
 import (
 	"fmt"
 	"net"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -178,6 +179,18 @@ func validateWithMode(p *ServicePolicy, networkModes map[string]string, mode val
 				svc.Runtime.DropCaps[i] = short
 				if !knownLinuxCaps[short] {
 					add("%s.dropCaps[%d]: unknown capability %q", rp, i, cap)
+				}
+			}
+			for i, action := range svc.Runtime.Chown {
+				ap := fmt.Sprintf("%s.chown[%d]", rp, i)
+				path := strings.TrimSpace(action.Path)
+				if path == "" {
+					add("%s.path: required", ap)
+				} else if !filepath.IsAbs(path) {
+					add("%s.path: must be absolute, got %q", ap, action.Path)
+				}
+				if action.Owner != "" && strings.TrimSpace(action.Owner) == "" {
+					add("%s.owner: if set, must be a non-empty string", ap)
 				}
 			}
 		}

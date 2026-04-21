@@ -280,6 +280,78 @@ services:
 	}
 }
 
+func TestValidateRuntimeChownValid(t *testing.T) {
+	p := mustParse(t, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  s:
+    runtime:
+      chown:
+        - path: /data
+        - path: /cache
+          owner: "1000:1000"
+          recursive: true
+`)
+	errs := policy.Validate(p, nil)
+	if len(errs) != 0 {
+		t.Fatalf("expected no errors, got: %v", errs)
+	}
+}
+
+func TestValidateRuntimeChownRequiresAbsolutePath(t *testing.T) {
+	p := mustParse(t, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  s:
+    runtime:
+      chown:
+        - path: relative/path
+`)
+	errs := policy.Validate(p, nil)
+	if len(errs) == 0 {
+		t.Fatal("expected error for non-absolute runtime.chown path")
+	}
+	found := false
+	for _, e := range errs {
+		if strings.Contains(e.Error(), "chown[0].path") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected error mentioning chown path, got: %v", errs)
+	}
+}
+
+func TestValidateRuntimeChownRejectsEmptyOwner(t *testing.T) {
+	p := mustParse(t, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  s:
+    runtime:
+      chown:
+        - path: /data
+          owner: "   "
+`)
+	errs := policy.Validate(p, nil)
+	if len(errs) == 0 {
+		t.Fatal("expected error for empty runtime.chown owner")
+	}
+	found := false
+	for _, e := range errs {
+		if strings.Contains(e.Error(), "chown[0].owner") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected error mentioning chown owner, got: %v", errs)
+	}
+}
+
 func TestValidateBlockMetadata(t *testing.T) {
 	tests := []struct {
 		name    string

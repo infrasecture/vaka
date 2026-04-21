@@ -48,13 +48,14 @@ flowchart LR
 
 ### What vaka-init does at container startup
 
-vaka-init runs as the container entrypoint before the application. It sets up the firewall, drops the capabilities vaka added (or an explicit `dropCaps` list if configured), restores the original service user if one is configured, and then hands off to the original binary.
+vaka-init runs as the container entrypoint before the application. It sets up the firewall, applies optional ownership fixes for mounted data paths, drops the capabilities vaka added (or an explicit `dropCaps` list if configured), restores the original service user if one is configured, and then hands off to the original binary.
 
 ```mermaid
 flowchart TB
     s(["container starts"]) --> i["vaka-init reads policy<br/>from Docker secret"]
     i --> f["resolves hostnames,<br/>loads nftables egress rules"]
-    f --> d["drops capabilities vaka added<br/>(or explicit dropCaps list if set)"]
+    f --> c["applies optional runtime.chown<br/>actions on mounted paths"]
+    c --> d["drops capabilities vaka added<br/>(or explicit dropCaps list if set)"]
     d --> u["restores service user<br/>(compose `user` or image `USER`)<br/>if configured"]
     u --> e["execve — replaces itself<br/>with the original entrypoint"]
     e --> a(["application runs<br/>under enforced egress policy"])
@@ -75,9 +76,11 @@ The compose override that rewrites entrypoints and adds the secret is piped to `
 | 1 | Parse `/run/secrets/vaka.yaml` (unknown fields are errors) |
 | 2 | Resolve `dns: {}` rules and hostnames in `to:` lists to IP addresses |
 | 3 | Apply nftables ruleset atomically via `nft -f /dev/stdin` |
-| 4 | Drop capabilities: auto-computed set vaka added, or the explicit `dropCaps` list if set |
-| 5 | Restore service user (`services.<name>.user`) when present |
-| 6 | `execve` the original application entrypoint |
+| 4 | Resolve generated target service user (`services.<name>.user`) |
+| 5 | Apply optional `runtime.chown` actions |
+| 6 | Drop capabilities: auto-computed set vaka added, or the explicit `dropCaps` list if set |
+| 7 | Restore service user (`services.<name>.user`) when present |
+| 8 | `execve` the original application entrypoint |
 
 vaka-init is fail-closed. The application cannot start until the firewall is loaded. If the policy is malformed, the container exits before the application runs.
 
@@ -293,6 +296,11 @@ services:
         drop:   [<rule>, ...]
     runtime:
       dropCaps: [NET_RAW, SYS_ADMIN]
+      chown:
+        - path: /data
+        - path: /var/cache/app
+          owner: "1000:1000"
+          recursive: true
 ```
 
 `<service-name>` must match a service name in `docker-compose.yaml`.
@@ -422,6 +430,33 @@ Controls which Linux capabilities are dropped after the firewall is applied, bef
 runtime:
   dropCaps: [NET_ADMIN, NET_RAW, SYS_PTRACE]
 ```
+
+### runtime.chown
+
+Optional list of ownership-fix actions applied by vaka-init before capability drop and user switch.
+
+```yaml
+runtime:
+  chown:
+    - path: /data
+    - path: /var/cache/app
+      owner: "app:app"      # optional; defaults to generated services.<name>.user
+      recursive: true       # optional; default false
+```
+
+Rules:
+- `path` is required and must be an absolute container path.
+- `owner` uses compose-compatible `user[:group]` syntax (`name`, `uid`, `uid:gid`, `user:group`), resolved inside the container against `/etc/passwd` and `/etc/group`.
+- If `owner` is omitted, vaka-init uses generated `services.<name>.user`.
+- If `owner` is omitted and generated `services.<name>.user` is empty, startup fails closed.
+- `recursive` defaults to `false`.
+
+Scope guard (volumes-only):
+- `path` must exist at startup.
+- `path` must be on a writable mount.
+- `path` must not resolve to the root filesystem mount (`/`).
+
+Any violation fails closed and prevents application startup.
 
 ### services.<name>.user (generated)
 

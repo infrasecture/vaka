@@ -116,19 +116,28 @@ func main() {
 		fatal("nft -f /dev/stdin: %v\nruleset:\n%s", err, ruleset)
 	}
 
-	// Step 5: Resolve target service user (compose-compatible syntax) and drop
-	// capabilities. For identity transitions, SETUID/SETGID can be deferred from
-	// Effective/Permitted until after switch while still dropping from
-	// Bounding/Inheritable up front.
+	// Step 5: Resolve target service user (compose-compatible syntax).
 	targetUser, err := resolveExecUser(svc.User, passwdPath, groupPath)
 	if err != nil {
 		fatal("resolve service user %q: %v", svc.User, err)
 	}
-	switchNeeded := needsIdentitySwitch(targetUser)
+
+	// Step 6: Apply optional runtime.chown ownership-fix actions. Paths are
+	// restricted to writable non-root mounted filesystems.
+	chownActions := []policy.ChownAction{}
 	dropCaps := []string{}
 	if svc.Runtime != nil {
+		chownActions = svc.Runtime.Chown
 		dropCaps = svc.Runtime.DropCaps
 	}
+	if err := applyChownActions(chownActions, targetUser, passwdPath, groupPath); err != nil {
+		fatal("apply runtime.chown: %v", err)
+	}
+
+	// Step 7: Drop capabilities. For identity transitions, SETUID/SETGID can be
+	// deferred from Effective/Permitted until after switch while still dropping
+	// from Bounding/Inheritable up front.
+	switchNeeded := needsIdentitySwitch(targetUser)
 	deferSetUID := switchNeeded && targetUser.UID != 0
 	deferSetGID := switchNeeded && (targetUser.GID != 0 || len(targetUser.SupplementaryGIDs) > 0)
 
@@ -144,7 +153,7 @@ func main() {
 		}
 	}
 
-	// Step 6: Restore original service identity when needed.
+	// Step 8: Restore original service identity when needed.
 	if switchNeeded {
 		if err := switchIdentity(targetUser); err != nil {
 			fatal("switch identity to user %q: %v", svc.User, err)
@@ -162,7 +171,7 @@ func main() {
 		}
 	}
 
-	// Step 7: execve — replace vaka-init with the harness.
+	// Step 9: execve — replace vaka-init with the harness.
 	argv0, err := exec.LookPath(harness[0])
 	if err != nil {
 		fatal("look up %s: %v", harness[0], err)
