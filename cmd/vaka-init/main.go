@@ -30,6 +30,12 @@ const nftBin = "/opt/vaka/sbin/nft"
 const passwdPath = "/etc/passwd"
 const groupPath = "/etc/group"
 
+var (
+	setgroupsFn = unix.Setgroups
+	setresgidFn = unix.Setresgid
+	setresuidFn = unix.Setresuid
+)
+
 func main() {
 	// No arguments: __vaka-init helper-container "standalone" mode. The helper
 	// exists only so managed services can source /opt/vaka/sbin/ via
@@ -290,13 +296,13 @@ func switchIdentity(u *execIdentity) error {
 	if u.UID < 0 || u.GID < 0 {
 		return fmt.Errorf("uid/gid must be non-negative, got uid=%d gid=%d", u.UID, u.GID)
 	}
-	if err := unix.Setgroups(u.SupplementaryGIDs); err != nil {
+	if err := setgroupsFn(u.SupplementaryGIDs); err != nil {
 		return fmt.Errorf("setgroups(%v): %w", u.SupplementaryGIDs, err)
 	}
-	if err := unix.Setresgid(u.GID, u.GID, u.GID); err != nil {
+	if err := setresgidFn(u.GID, u.GID, u.GID); err != nil {
 		return fmt.Errorf("setresgid(%d): %w", u.GID, err)
 	}
-	if err := unix.Setresuid(u.UID, u.UID, u.UID); err != nil {
+	if err := setresuidFn(u.UID, u.UID, u.UID); err != nil {
 		return fmt.Errorf("setresuid(%d): %w", u.UID, err)
 	}
 	return nil

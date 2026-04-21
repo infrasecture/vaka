@@ -6,8 +6,11 @@ package main
 import (
 	"bytes"
 	"encoding/base64"
+	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -209,5 +212,163 @@ func TestBadArgsPrintsUsage(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "usage: vaka-init -- <entrypoint>") {
 		t.Errorf("vaka-init with bad args: expected usage message on stderr, got %q", stderr.String())
+	}
+}
+
+func TestResolveExecUserEmptySpec(t *testing.T) {
+	got, err := resolveExecUser("", "/does/not/matter", "/does/not/matter")
+	if err != nil {
+		t.Fatalf("resolveExecUser(empty) returned error: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("resolveExecUser(empty) = %#v, want nil", got)
+	}
+}
+
+func TestResolveExecUserNumericWithoutUserDB(t *testing.T) {
+	dir := t.TempDir()
+	passwd := filepath.Join(dir, "missing-passwd")
+	group := filepath.Join(dir, "missing-group")
+
+	got, err := resolveExecUser("1000:1000", passwd, group)
+	if err != nil {
+		t.Fatalf("resolveExecUser(numeric) returned error: %v", err)
+	}
+	if got == nil {
+		t.Fatal("resolveExecUser(numeric) returned nil identity")
+	}
+	if got.UID != 1000 || got.GID != 1000 {
+		t.Fatalf("resolveExecUser(numeric) uid/gid = %d:%d, want 1000:1000", got.UID, got.GID)
+	}
+	if len(got.SupplementaryGIDs) != 0 {
+		t.Fatalf("resolveExecUser(numeric) supplementary gids = %v, want empty", got.SupplementaryGIDs)
+	}
+}
+
+func TestResolveExecUserNamedFailsWithoutUserDB(t *testing.T) {
+	dir := t.TempDir()
+	passwd := filepath.Join(dir, "missing-passwd")
+	group := filepath.Join(dir, "missing-group")
+
+	if _, err := resolveExecUser("app", passwd, group); err == nil {
+		t.Fatal("resolveExecUser(named) expected error when passwd/group are missing, got nil")
+	}
+}
+
+func TestResolveExecUserNamedDedupsAndSortsSupplementaryGroups(t *testing.T) {
+	dir := t.TempDir()
+	passwd := filepath.Join(dir, "passwd")
+	group := filepath.Join(dir, "group")
+
+	passwdContent := "" +
+		"root:x:0:0:root:/root:/bin/sh\n" +
+		"app:x:1001:1000:app:/home/app:/bin/sh\n"
+	groupContent := "" +
+		"root:x:0:\n" +
+		"appgrp:x:1000:\n" +
+		"zextra:x:3000:app\n" +
+		"bextra:x:2000:app\n" +
+		"duplicate:x:2000:app\n"
+
+	if err := os.WriteFile(passwd, []byte(passwdContent), 0o644); err != nil {
+		t.Fatalf("write passwd: %v", err)
+	}
+	if err := os.WriteFile(group, []byte(groupContent), 0o644); err != nil {
+		t.Fatalf("write group: %v", err)
+	}
+
+	got, err := resolveExecUser("app", passwd, group)
+	if err != nil {
+		t.Fatalf("resolveExecUser(app): %v", err)
+	}
+	if got == nil {
+		t.Fatal("resolveExecUser(app) returned nil identity")
+	}
+	if got.UID != 1001 || got.GID != 1000 {
+		t.Fatalf("resolveExecUser(app) uid/gid = %d:%d, want 1001:1000", got.UID, got.GID)
+	}
+
+	wantSupp := []int{2000, 3000}
+	if !reflect.DeepEqual(got.SupplementaryGIDs, wantSupp) {
+		t.Fatalf("resolveExecUser(app) supplementary gids = %v, want %v", got.SupplementaryGIDs, wantSupp)
+	}
+}
+
+func TestSwitchIdentityUsesSetgroupsBeforeUidGidSwitch(t *testing.T) {
+	oldSetgroups, oldSetresgid, oldSetresuid := setgroupsFn, setresgidFn, setresuidFn
+	defer func() {
+		setgroupsFn = oldSetgroups
+		setresgidFn = oldSetresgid
+		setresuidFn = oldSetresuid
+	}()
+
+	var gotGroups []int
+	calls := []string{}
+	setgroupsFn = func(gids []int) error {
+		gotGroups = gids
+		calls = append(calls, "setgroups")
+		return nil
+	}
+	setresgidFn = func(rgid, egid, sgid int) error {
+		if rgid != 1000 || egid != 1000 || sgid != 1000 {
+			t.Fatalf("setresgid args = %d:%d:%d, want 1000:1000:1000", rgid, egid, sgid)
+		}
+		calls = append(calls, "setresgid")
+		return nil
+	}
+	setresuidFn = func(ruid, euid, suid int) error {
+		if ruid != 1000 || euid != 1000 || suid != 1000 {
+			t.Fatalf("setresuid args = %d:%d:%d, want 1000:1000:1000", ruid, euid, suid)
+		}
+		calls = append(calls, "setresuid")
+		return nil
+	}
+
+	err := switchIdentity(&execIdentity{UID: 1000, GID: 1000, SupplementaryGIDs: nil})
+	if err != nil {
+		t.Fatalf("switchIdentity returned error: %v", err)
+	}
+	if gotGroups != nil {
+		t.Fatalf("setgroups input = %v, want nil (clear supplementary groups)", gotGroups)
+	}
+	wantCalls := []string{"setgroups", "setresgid", "setresuid"}
+	if !reflect.DeepEqual(calls, wantCalls) {
+		t.Fatalf("call order = %v, want %v", calls, wantCalls)
+	}
+}
+
+func TestSwitchIdentityPropagatesSetgroupsError(t *testing.T) {
+	oldSetgroups, oldSetresgid, oldSetresuid := setgroupsFn, setresgidFn, setresuidFn
+	defer func() {
+		setgroupsFn = oldSetgroups
+		setresgidFn = oldSetresgid
+		setresuidFn = oldSetresuid
+	}()
+
+	calls := []string{}
+	boom := errors.New("setgroups failed")
+	setgroupsFn = func(_ []int) error {
+		calls = append(calls, "setgroups")
+		return boom
+	}
+	setresgidFn = func(_, _, _ int) error {
+		calls = append(calls, "setresgid")
+		return nil
+	}
+	setresuidFn = func(_, _, _ int) error {
+		calls = append(calls, "setresuid")
+		return nil
+	}
+
+	err := switchIdentity(&execIdentity{UID: 1000, GID: 1000, SupplementaryGIDs: []int{2000}})
+	if err == nil {
+		t.Fatal("switchIdentity expected error from setgroups, got nil")
+	}
+	if !strings.Contains(err.Error(), "setgroups") {
+		t.Fatalf("switchIdentity error = %q, want setgroups context", err)
+	}
+	wantCalls := []string{"setgroups"}
+	if !reflect.DeepEqual(calls, wantCalls) {
+		t.Fatalf("call order = %v, want %v", calls, wantCalls)
 	}
 }
