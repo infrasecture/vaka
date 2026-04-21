@@ -204,3 +204,11 @@ func TestParseMountInfoLineDecodesEscapes(t *testing.T) {
 		t.Fatalf("fstype = %q, want ext4", got.FSType)
 	}
 }
+
+func TestDecodeMountInfoFieldOutOfRangeOctalIsPreserved(t *testing.T) {
+	got := decodeMountInfoField("/mnt/\\777/path")
+	want := "/mnt/\\777/path"
+	if got != want {
+		t.Fatalf("decodeMountInfoField out-of-range octal = %q, want %q", got, want)
+	}
+}

@@ -207,9 +207,11 @@ func decodeMountInfoField(in string) string {
 			isOctalDigit(in[i+2]) &&
 			isOctalDigit(in[i+3]) {
 			v := (int(in[i+1]-'0') << 6) | (int(in[i+2]-'0') << 3) | int(in[i+3]-'0')
-			b.WriteByte(byte(v))
-			i += 3
-			continue
+			if v <= 255 {
+				b.WriteByte(byte(v))
+				i += 3
+				continue
+			}
 		}
 		b.WriteByte(in[i])
 	}
