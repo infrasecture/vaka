@@ -456,6 +456,16 @@ Same injection path as `up` but for `docker compose run`.
 vaka [--vaka-file vaka.yaml] run [--vaka-init-present] [compose-flags...] <service> [command...]
 ```
 
+### `vaka volumes`
+
+Uses the same full injection path as `up`/`run`/`create`, then proxies to
+`docker compose volumes`. This ensures vaka-managed helper resources are visible
+in the project volume listing.
+
+```bash
+vaka [--vaka-file vaka.yaml] volumes [--vaka-init-present] [compose-flags...]
+```
+
 ### `vaka down` / `vaka stop` / `vaka kill` / `vaka rm`
 
 Tear down the full stack including the `__vaka-init` helper container. If the stack was started with `--vaka-init-present`, the same flag must be passed here so vaka knows not to expect the helper.

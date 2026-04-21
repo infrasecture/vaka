@@ -18,6 +18,7 @@ func TestClassifySubcmd(t *testing.T) {
 		{"up", pathFull},
 		{"run", pathFull},
 		{"create", pathFull},
+		{"volumes", pathFull},
 		{"down", pathLifecycle},
 		{"stop", pathLifecycle},
 		{"kill", pathLifecycle},
