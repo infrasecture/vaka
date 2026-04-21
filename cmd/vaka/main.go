@@ -24,7 +24,7 @@ func main() {
 	rootCmd.AddCommand(
 		newValidateCmd(),
 		newShowCmd(),
-		// The up/run/create/down/stop/kill/rm stubs exist only for --help
+		// The up/run/create/volumes/down/stop/kill/rm stubs exist only for --help
 		// visibility. Actual execution is handled by the manual dispatch switch
 		// below and never reaches these cobra commands.
 		&cobra.Command{
@@ -45,6 +45,13 @@ func main() {
 			Use:                "create [compose-flags...]",
 			Short:              "Validate, inject vaka policy, and proxy to docker compose create",
 			Long:               "Use --vaka-init-present to skip __vaka-init container injection (binaries baked into image).",
+			DisableFlagParsing: true,
+			Run:                func(*cobra.Command, []string) {},
+		},
+		&cobra.Command{
+			Use:                "volumes [compose-flags...]",
+			Short:              "Validate, inject vaka policy, and proxy to docker compose volumes",
+			Long:               "Uses the same full injection path as up/run/create so __vaka-init resources are visible.",
 			DisableFlagParsing: true,
 			Run:                func(*cobra.Command, []string) {},
 		},

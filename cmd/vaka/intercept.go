@@ -40,7 +40,7 @@ type subcmdPath int
 
 const (
 	pathCobra       subcmdPath = iota // validate, show, version — cobra commands
-	pathFull                          // up, run, create — full policy + __vaka-init injection
+	pathFull                          // up, run, create, volumes — full policy + __vaka-init injection
 	pathLifecycle                     // down, stop, kill, rm — __vaka-init container only
 	pathPassthrough                   // all others — forwarded unchanged to docker compose
 )
@@ -50,7 +50,7 @@ func classifySubcmd(subcmd string) subcmdPath {
 	switch subcmd {
 	case "validate", "show", "version", "":
 		return pathCobra
-	case "up", "run", "create":
+	case "up", "run", "create", "volumes":
 		return pathFull
 	case "down", "stop", "kill", "rm":
 		return pathLifecycle
@@ -88,7 +88,7 @@ func execDockerCompose(args []string, overrideYAML string, extraEnv []string) er
 	return c.Run()
 }
 
-// runFull handles full-override commands: up, run, create.
+// runFull handles full-override commands: up, run, create, volumes.
 // It loads and validates vaka.yaml, ensures the __vaka-init image when needed,
 // builds the full compose override, and delegates to execDockerCompose.
 func runFull(vakaFile string, args []string, vakaInitPresent bool) error {
