@@ -153,15 +153,15 @@ func TestCheckVersion(t *testing.T) {
 		self    string
 		wantErr bool
 	}{
-		{"v0.1.2", "v0.1.0", false},  // same major.minor, patch differs → ok
-		{"v0.1.2", "v0.1.2", false},  // exact match → ok
-		{"v0.1.0", "v0.2.0", true},   // minor mismatch → error
-		{"v0.2.0", "v0.1.0", true},   // minor mismatch → error
-		{"v1.0.0", "v0.1.0", true},   // major mismatch → error
-		{"4178cc0", "4178cc0", false}, // git hash exact match → ok
-		{"4178cc0", "4178cc0-dirty", true},  // git hash mismatch → error
-		{"4178cc0-dirty", "4178cc0", true},  // git hash mismatch → error
-		{"", "v0.1.0", true},          // missing → error
+		{"v0.1.2", "v0.1.0", false},        // same major.minor, patch differs → ok
+		{"v0.1.2", "v0.1.2", false},        // exact match → ok
+		{"v0.1.0", "v0.2.0", true},         // minor mismatch → error
+		{"v0.2.0", "v0.1.0", true},         // minor mismatch → error
+		{"v1.0.0", "v0.1.0", true},         // major mismatch → error
+		{"4178cc0", "4178cc0", false},      // git hash exact match → ok
+		{"4178cc0", "4178cc0-dirty", true}, // git hash mismatch → error
+		{"4178cc0-dirty", "4178cc0", true}, // git hash mismatch → error
+		{"", "v0.1.0", true},               // missing → error
 	}
 	for _, tc := range tests {
 		err := checkVersion(tc.policy, tc.self)
