@@ -257,5 +257,13 @@ func (i ICMPSpec) NftString() string {
 
 // RuntimeConfig holds capability and identity settings for vaka-init.
 type RuntimeConfig struct {
-	DropCaps []string `yaml:"dropCaps,omitempty"`
+	DropCaps []string      `yaml:"dropCaps,omitempty"`
+	Chown    []ChownAction `yaml:"chown,omitempty"`
+}
+
+// ChownAction describes one startup ownership fix operation.
+type ChownAction struct {
+	Path      string `yaml:"path"`
+	Owner     string `yaml:"owner,omitempty"`
+	Recursive bool   `yaml:"recursive,omitempty"`
 }
