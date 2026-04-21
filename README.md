@@ -451,7 +451,7 @@ Rules:
 - If `owner` is omitted and generated `services.<name>.user` is empty, startup fails closed.
 - `recursive` defaults to `false`.
 
-Scope guard (volumes-only):
+Scope guard (mount-based):
 - `path` must exist at startup.
 - `path` must be on a writable mount.
 - `path` must not resolve to the root filesystem mount (`/`).
