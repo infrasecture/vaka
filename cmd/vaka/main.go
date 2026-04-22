@@ -84,11 +84,12 @@ func main() {
 			Run:                func(*cobra.Command, []string) {},
 		},
 		&cobra.Command{
-			Use:   "show-compose [compose-flags...]",
+			Use:   "show-compose [--build] [-o output.yaml]",
 			Short: "Print the generated compose override YAML used by vaka injection",
 			Long: "Uses the exact same override-generation path as up/run/create/volumes. " +
 				"It may pre-build services and pull emsi/vaka-init:<version> when needed to resolve runtime metadata. " +
 				"Output defaults to stdout; use -o, --output <path> to write a file. " +
+				"After show-compose, only --build and -o/--output are accepted; pass compose global flags before the subcommand. " +
 				"VAKA_<SERVICE>_CONF values are not printed.",
 			DisableFlagParsing: true,
 			Run:                func(*cobra.Command, []string) {},

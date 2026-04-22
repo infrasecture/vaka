@@ -56,7 +56,7 @@ func expandMetadataRules(cfg policy.BlockMetadataConfig) []string {
 
 // Generate renders the nft ruleset for e.
 // If a to: entry is a hostname (not IP/CIDR), it is rendered as a comment
-// with a stub — suitable for vaka show output. vaka-init always passes
+// with a stub — suitable for vaka show-nft output. vaka-init always passes
 // pre-resolved policies.
 func Generate(e *policy.EgressPolicy) (string, error) {
 	data := RulesetData{

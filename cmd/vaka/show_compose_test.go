@@ -104,7 +104,7 @@ services:
 	ds := &fakeBuilderDockerServices{}
 	setDockerServicesFactoryForTest(t, ds)
 
-	wantYAML, _, err := buildInjectionOverride(context.Background(), ds, "vaka.yaml", []string{"show-compose"}, true)
+	wantYAML, extraEnv, err := buildInjectionOverride(context.Background(), ds, "vaka.yaml", []string{"show-compose"}, true)
 	if err != nil {
 		t.Fatalf("buildInjectionOverride: %v", err)
 	}
@@ -118,6 +118,19 @@ services:
 
 	if gotStdout != wantYAML {
 		t.Fatalf("stdout mismatch\n--- got ---\n%s\n--- want ---\n%s", gotStdout, wantYAML)
+	}
+	if strings.Contains(gotStdout, "VAKA_APP_CONF=") {
+		t.Fatalf("stdout must not contain VAKA_APP_CONF assignment, got:\n%s", gotStdout)
+	}
+	if len(extraEnv) != 1 {
+		t.Fatalf("unexpected extraEnv size: got %d, want 1", len(extraEnv))
+	}
+	kv := strings.SplitN(extraEnv[0], "=", 2)
+	if len(kv) != 2 {
+		t.Fatalf("malformed extraEnv entry: %q", extraEnv[0])
+	}
+	if strings.Contains(gotStdout, kv[1]) {
+		t.Fatalf("stdout must not contain encoded policy payload")
 	}
 }
 
