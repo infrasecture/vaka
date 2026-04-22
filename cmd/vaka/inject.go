@@ -250,9 +250,9 @@ func globalFlags(args []string) []string {
 	return out
 }
 
-// findSubcmd returns the first non-flag, non-value token from args (the compose
-// subcommand). Returns "" if no subcommand is found.
-func findSubcmd(args []string) string {
+// findSubcmdIndex returns the index of the first non-flag, non-value token
+// from args (the compose subcommand). Returns -1 if no subcommand is found.
+func findSubcmdIndex(args []string) int {
 	for i := 0; i < len(args); i++ {
 		tok := args[i]
 		if tok == "--" {
@@ -268,9 +268,19 @@ func findSubcmd(args []string) string {
 		if strings.HasPrefix(tok, "-") {
 			continue // boolean flag
 		}
-		return tok
+		return i
 	}
-	return ""
+	return -1
+}
+
+// findSubcmd returns the first non-flag, non-value token from args (the compose
+// subcommand). Returns "" if no subcommand is found.
+func findSubcmd(args []string) string {
+	idx := findSubcmdIndex(args)
+	if idx < 0 {
+		return ""
+	}
+	return args[idx]
 }
 
 // hasBuildFlag reports whether --build appears among the subcommand's own
