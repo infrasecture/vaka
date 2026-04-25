@@ -43,13 +43,15 @@
 #
 # Environment overrides:
 #   ARCHS          space-separated Go arch names     (default: amd64 arm64)
+#   CLI_TARGETS    space-separated GOOS/GOARCH pairs for vaka CLI
+#                  (default: linux/amd64 linux/arm64 darwin/amd64 darwin/arm64)
 #   GOLANG_IMAGE   builder image                     (default: golang:1.25-alpine)
 #   INIT_IMAGE     vaka-init image name              (default: emsi/vaka-init)
 #   NFT_IMAGE      nft-static image name             (default: emsi/nft-static)
 #   NFPM_IMAGE     nfpm packager image               (default: ghcr.io/goreleaser/nfpm:latest)
 #
 # Output layout in ./dist/:
-#   vaka-linux-<arch>        — vaka host CLI, one per requested arch
+#   vaka-<os>-<arch>         — vaka host CLI (linux + darwin by default)
 #   vaka-init-linux-<arch>   — vaka-init container binary, one per requested arch
 #   nft-linux-<arch>         — static nft binary, one per requested arch
 #
@@ -103,6 +105,7 @@ fi
 
 # ── Native architecture ───────────────────────────────────────────────────────
 NATIVE_ARCH="$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')"
+HOST_OS="$(uname -s)"
 
 # ── nft Dockerfile location ───────────────────────────────────────────────────
 GIT_COMMON_DIR="$(cd "$(git rev-parse --git-common-dir)" && pwd)"
@@ -119,6 +122,7 @@ NFTABLES_VERSION="$(awk -F= '/^ARG NFTABLES_VERSION=/{print $2; exit}' "${NFT_DI
 
 # ── Configurable variables ────────────────────────────────────────────────────
 ARCHS="${ARCHS:-amd64 arm64}"
+CLI_TARGETS="${CLI_TARGETS:-linux/amd64 linux/arm64 darwin/amd64 darwin/arm64}"
 GOLANG_IMAGE="${GOLANG_IMAGE:-golang:1.25-alpine}"
 NFT_IMAGE="${NFT_IMAGE:-emsi/nft-static}"
 INIT_IMAGE="${INIT_IMAGE:-emsi/vaka-init}"
@@ -131,7 +135,7 @@ NFPM_IMAGE="${NFPM_IMAGE:-ghcr.io/goreleaser/nfpm:latest}"
 
 mkdir -p dist
 
-echo "==> vaka ${VERSION} (archs: ${ARCHS})"
+echo "==> vaka ${VERSION} (runtime archs: ${ARCHS}; CLI targets: ${CLI_TARGETS})"
 echo ""
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -180,6 +184,12 @@ docker volume create vaka-gobuildcache >/dev/null
 require_qemu_for_arch() {
     local arch="$1"
     [[ "${arch}" == "${NATIVE_ARCH}" ]] && return 0
+
+    # Non-Linux hosts (e.g. macOS Docker Desktop) do not expose Linux
+    # binfmt handlers under /proc on the host. Let buildx handle emulation.
+    if [[ "${HOST_OS}" != "Linux" ]]; then
+        return 0
+    fi
 
     # Map Go arch names to the qemu-binfmt names used in /proc/sys/fs/binfmt_misc/
     local qemu_arch
@@ -266,29 +276,44 @@ need_go_build=false
 if [[ "${REBUILD_GO}" == "true" ]]; then
     need_go_build=true
 else
-    for ARCH in $ARCHS; do
-        for TARGET in vaka vaka-init; do
-            out="dist/${TARGET}-linux-${ARCH}"
-            if [[ ! -f "${out}" ]]; then
-                need_go_build=true
-                break 2
-            fi
-        done
+    for target in ${CLI_TARGETS}; do
+        GOOS="${target%%/*}"
+        GOARCH="${target##*/}"
+        out="dist/vaka-${GOOS}-${GOARCH}"
+        if [[ ! -f "${out}" ]]; then
+            need_go_build=true
+            break
+        fi
     done
     if [[ "${need_go_build}" == "false" ]]; then
-        oldest_out=""
         for ARCH in $ARCHS; do
-            for TARGET in vaka vaka-init; do
-                out="dist/${TARGET}-linux-${ARCH}"
-                if [[ -z "${oldest_out}" ]] || \
-                   [[ "${out}" -ot "${oldest_out}" ]]; then
-                    oldest_out="${out}"
-                fi
-            done
+            out="dist/vaka-init-linux-${ARCH}"
+            if [[ ! -f "${out}" ]]; then
+                need_go_build=true
+                break
+            fi
         done
-        if find cmd pkg -name '*.go' -newer "${oldest_out}" | grep -q .; then
-            need_go_build=true
+    fi
+fi
+
+if [[ "${need_go_build}" == "false" ]]; then
+    oldest_out=""
+    for target in ${CLI_TARGETS}; do
+        GOOS="${target%%/*}"
+        GOARCH="${target##*/}"
+        out="dist/vaka-${GOOS}-${GOARCH}"
+        if [[ -z "${oldest_out}" ]] || [[ "${out}" -ot "${oldest_out}" ]]; then
+            oldest_out="${out}"
         fi
+    done
+    for ARCH in $ARCHS; do
+        out="dist/vaka-init-linux-${ARCH}"
+        if [[ -z "${oldest_out}" ]] || [[ "${out}" -ot "${oldest_out}" ]]; then
+            oldest_out="${out}"
+        fi
+    done
+    if find cmd pkg -name '*.go' -newer "${oldest_out}" | grep -q .; then
+        need_go_build=true
     fi
 fi
 
@@ -296,31 +321,54 @@ if [[ "${need_go_build}" == "false" ]]; then
     echo "==> Go binaries up to date, skipping build"
     echo "    Use --rebuild-go to force a rebuild."
 else
-    echo "==> Building Go binaries..."
+    echo "==> Building vaka CLI binaries..."
+    for target in ${CLI_TARGETS}; do
+        GOOS="${target%%/*}"
+        GOARCH="${target##*/}"
+        OUT="dist/vaka-${GOOS}-${GOARCH}"
+        printf '    %-36s' "${OUT}"
+        docker run --rm \
+            --volume "${SCRIPT_DIR}:/src:ro" \
+            --volume "${SCRIPT_DIR}/dist:/dist" \
+            --volume "vaka-gomodcache:/go/pkg/mod" \
+            --volume "vaka-gobuildcache:/root/.cache/go/build" \
+            --workdir /src \
+            --env CGO_ENABLED=0 \
+            --env GOOS="${GOOS}" \
+            --env GOARCH="${GOARCH}" \
+            --env GOWORK=off \
+            "${GOLANG_IMAGE}" \
+            go build \
+                -trimpath \
+                -tags "netgo,osusergo" \
+                -ldflags="-s -w -extldflags=-static -X main.version=${VERSION}" \
+                -o "/dist/vaka-${GOOS}-${GOARCH}" \
+                ./cmd/vaka
+        echo "OK"
+    done
+
+    echo "==> Building vaka-init binaries (linux only)..."
     for ARCH in $ARCHS; do
-        for TARGET in vaka vaka-init; do
-            OUT="dist/${TARGET}-linux-${ARCH}"
-            PKG_PATH="./cmd/${TARGET}"
-            printf '    %-36s' "${OUT}"
-            docker run --rm \
-                --volume "${SCRIPT_DIR}:/src:ro" \
-                --volume "${SCRIPT_DIR}/dist:/dist" \
-                --volume "vaka-gomodcache:/go/pkg/mod" \
-                --volume "vaka-gobuildcache:/root/.cache/go/build" \
-                --workdir /src \
-                --env CGO_ENABLED=0 \
-                --env GOOS=linux \
-                --env GOARCH="${ARCH}" \
-                --env GOWORK=off \
-                "${GOLANG_IMAGE}" \
-                go build \
-                    -trimpath \
-                    -tags "netgo,osusergo" \
-                    -ldflags="-s -w -extldflags=-static -X main.version=${VERSION}" \
-                    -o "/dist/${TARGET}-linux-${ARCH}" \
-                    "${PKG_PATH}"
-            echo "OK"
-        done
+        OUT="dist/vaka-init-linux-${ARCH}"
+        printf '    %-36s' "${OUT}"
+        docker run --rm \
+            --volume "${SCRIPT_DIR}:/src:ro" \
+            --volume "${SCRIPT_DIR}/dist:/dist" \
+            --volume "vaka-gomodcache:/go/pkg/mod" \
+            --volume "vaka-gobuildcache:/root/.cache/go/build" \
+            --workdir /src \
+            --env CGO_ENABLED=0 \
+            --env GOOS=linux \
+            --env GOARCH="${ARCH}" \
+            --env GOWORK=off \
+            "${GOLANG_IMAGE}" \
+            go build \
+                -trimpath \
+                -tags "netgo,osusergo" \
+                -ldflags="-s -w -extldflags=-static -X main.version=${VERSION}" \
+                -o "/dist/vaka-init-linux-${ARCH}" \
+                ./cmd/vaka-init
+        echo "OK"
     done
 fi
 echo ""
