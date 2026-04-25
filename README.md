@@ -59,7 +59,7 @@ This is the threat model vaka is built for: a well-behaved process, or an over-r
 ```
 
 - **Applied per service**, inside each container's own network namespace.
-- **Loaded by the kernel**, not the application. Userspace cannot disable it.
+- **Loaded by the kernel**, not the application. Your app is not trusted to enforce its own policy.
 - **Fail-closed**: if the policy is malformed, the application never starts.
 - **No host changes**: the policy is passed as a Docker secret on a tmpfs; your images and compose file are untouched.
 
@@ -93,7 +93,44 @@ YAML
 vaka up
 ```
 
-That's it. No Dockerfile edits, no rebuilds, no agents on the host. `vaka up` is a drop-in replacement for `docker compose up`; every other compose command (`logs`, `exec`, `ps`, …) is forwarded verbatim.
+That's it. No Dockerfile edits, no rebuilds, no agents on the host. `vaka up` is a drop-in replacement for `docker compose up`; commands that do not need policy injection (`logs`, `exec`, `ps`, ...) are forwarded verbatim.
+
+---
+
+## Before you run it
+
+### Requirements
+
+- Docker Engine or Docker Desktop with Docker Compose v2.
+- A normal Compose project using Linux containers.
+- A `vaka.yaml` file next to your compose file.
+- Network access to pull the small `vaka-init` helper image the first time you run `vaka up`.
+
+### Mental model
+
+Think of vaka as `docker compose up` with an outbound firewall step added before your app starts. Your compose file still describes the containers. `vaka.yaml` describes where each service may connect. vaka combines the two at runtime, starts the same containers, loads the firewall inside them, and then hands control to your original application.
+
+### Limits
+
+- vaka controls outbound connections only. It does not change published ports or inbound traffic.
+- Services using `network_mode: host` are not supported.
+- Hostnames are resolved when the container starts. Restart long-running services if their allowed endpoints move.
+- vaka reduces network blast radius; it is not a replacement for VMs or stronger sandboxes when you need to contain hostile root-level code.
+
+---
+
+## Agent stacks this protects
+
+vaka is useful anywhere an agent container has real credentials and a broad tool surface. A few examples where the pattern fits immediately:
+
+- [OpenHands](https://github.com/OpenHands/OpenHands) ships a Compose-based self-hosted coding-agent stack. Add a `vaka.yaml` for the OpenHands app/runtime services so the agent can reach only its model provider, GitHub, package registries, and any internal endpoints you explicitly allow.
+- [OpenClaw](https://github.com/openclaw/openclaw) and adjacent self-hosted agent runtimes are built around long-running agents with access to messaging platforms, files, APIs, and local tools. vaka gives those containers a short egress allowlist instead of full internet access.
+- [SwarmClaw](https://github.com/swarmclawai/swarmclaw) runs with Docker Compose and can delegate to Claude Code, Codex, OpenCode, Gemini CLI, Copilot CLI, Cursor Agent, Qwen Code, Goose, and other providers. Put vaka policies on the orchestrator and delegated-agent services so each one gets only the endpoints it needs.
+- [Claude Code Docker images](https://hub.docker.com/r/gendosu/claude-code-docker) commonly mount workspaces and pass tokens such as `GITHUB_TOKEN`. A vaka policy can allow Anthropic/GitHub/registry traffic while blocking arbitrary exfiltration destinations.
+- Codex container projects such as [codex-cli-docker-mcp](https://github.com/Diatonic-AI/codex-cli-docker-mcp) and [Codex-Wrapper](https://github.com/circlemouth/Codex-Wrapper) run Codex with mounted auth/config volumes. vaka can restrict those containers to OpenAI, GitHub, package registries, MCP servers, and your chosen artifact stores.
+- [Docker Compose for Agents](https://github.com/docker/compose-for-agents) style stacks combine agents, MCP servers, model endpoints, and sandboxes. vaka policies let you express different egress contracts for the agent loop, MCP gateway, browser/sandbox containers, and local-model services.
+
+The adoption pattern is the same for all of them: keep their existing `docker-compose.yaml`, add one service entry to `vaka.yaml`, include DNS plus the exact model/API/package endpoints that service needs, then run `vaka up`.
 
 ---
 
@@ -127,7 +164,7 @@ vaka fills that gap with nftables: a kernel firewall applied inside each contain
 
 ### How vaka starts your containers
 
-vaka reads your policy and compose files, generates a compose override in memory, and pipes it to `docker compose` via stdin. The per-service policy is delivered as a Docker secret — nothing is written to disk on the host.
+vaka reads your policy and compose files, generates a compose override in memory, and pipes it to `docker compose` via stdin. The per-service policy is delivered as a Docker secret rather than as a generated policy file on the host.
 
 ```mermaid
 flowchart LR
@@ -290,16 +327,17 @@ Services carrying this label skip the volume mount and use the baked-in `/opt/va
 
 ### Build-only services
 
-A service that declares only `build:` with no `image:` key must also declare an `entrypoint:` in the compose file. Example:
+A service that declares only `build:` with no `image:` key must include enough runtime metadata in the compose file for vaka to avoid image inspection. In practice, set both `entrypoint:` and `user:`, or add an `image:` name so vaka can inspect the built image. Example:
 
 ```yaml
 services:
   myapp:
     build: .
+    user: "1000:1000"
     entrypoint: ["/usr/local/bin/myapp"]
 ```
 
-Reason: compose-go does not synthesize an image ref at load time, so vaka cannot inspect the Dockerfile's `ENTRYPOINT` before build. Adding `image: myapp:latest` also resolves this (vaka inspects that image after prebuild). If neither is set, `vaka up` fails with a clear error before any container starts.
+Reason: compose-go does not synthesize an image ref at load time, so vaka cannot inspect Dockerfile defaults such as `ENTRYPOINT`, `CMD`, or `USER` before build. Adding `image: myapp:latest` also resolves this because vaka can inspect that image after prebuild. If neither path provides the needed metadata, `vaka up` fails with a clear error before any container starts.
 
 ---
 
@@ -313,9 +351,10 @@ Use `vaka up` wherever you would use `docker compose up`. All compose flags are 
 vaka up               # start with policy enforcement
 vaka up --build -d    # build images first, then start detached
 vaka run llm-gateway bash    # policy is enforced for run too
+vaka create           # create containers with policy injection, but do not start them
 ```
 
-On first start, vaka brings up a short-lived `__vaka-init` helper container that exposes the `vaka-init` and `nft` binaries (under `/opt/vaka`) and shares them read-only with every policy-enforced service via compose `volumes_from`. Your images are unchanged.
+On first start, `vaka up`, `vaka run`, and `vaka create` bring up a short-lived `__vaka-init` helper container that exposes the `vaka-init` and `nft` binaries (under `/opt/vaka`) and shares them read-only with every policy-enforced service via compose `volumes_from`. Your images are unchanged.
 
 ### Tear the stack down
 
@@ -598,6 +637,14 @@ Same injection path as `up` but for `docker compose run`.
 
 ```
 vaka [--vaka-file vaka.yaml] run [--vaka-init-present] [compose-flags...] <service> [command...]
+```
+
+### `vaka create`
+
+Same injection path as `up` but for `docker compose create`. This validates `vaka.yaml`, prepares the helper resources, and creates containers with the `vaka-init` entrypoint override without starting the application services.
+
+```
+vaka [--vaka-file vaka.yaml] create [--vaka-init-present] [compose-flags...]
 ```
 
 ### `vaka volumes`
