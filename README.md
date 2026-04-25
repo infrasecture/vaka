@@ -60,22 +60,6 @@ This is the threat model vaka is built for: a well-behaved process, or an over-r
 
 ## What vaka intercepts
 
-```
-                                ┌────────────────────────────────┐
-                                │  container netns               │
-     ┌──────────┐               │                                │
-     │ your     │  syscalls     │   ┌──────────┐   allowed   ┌──┴──┐
-     │ agent /  │──────────────▶│──▶│ nftables │────────────▶│ eth0│──▶ api.openai.com:443
-     │ tool     │               │   │  egress  │             └──┬──┘    api.github.com:443
-     └──────────┘               │   │   hook   │  blocked       │
-                                │   └──────────┘──┐             │       attacker.example   ✗
-                                │                 ▼             │       169.254.169.254    ✗ (IMDS)
-                                │           TCP RST / drop      │       production-db      ✗
-                                │                               │
-                                └───────────────────────────────┘
-             loaded by vaka-init before the application's first syscall
-```
-
 - **Applied per service**, inside each container's own network namespace.
 - **Loaded by the kernel**, not the application. Your app is not trusted to enforce its own policy.
 - **Fail-closed**: if the policy is malformed, the application never starts.
@@ -86,9 +70,11 @@ This is the threat model vaka is built for: a well-behaved process, or an over-r
 ## 30-second install
 
 ```bash
-# 1. Get the CLI (or: see "Install the vaka CLI" below for packages)
-curl -fsSL https://github.com/infrasecture/vaka/releases/download/v0.1.0/vaka-linux-amd64 -o vaka
-chmod +x vaka && sudo mv vaka /usr/local/bin/
+# 1. Clone the repo
+
+# 2. Build using the ./build.sh script to build binaries or ./build.sh --packages to build packages.
+
+# 3. Install the binaries or packages from the ./dist, put the vak aon the path (e.g. add /opt/vaka/sbin to your PATH if using packages)
 
 # 2. Drop a policy next to your docker-compose.yaml
 cat > vaka.yaml <<'YAML'
