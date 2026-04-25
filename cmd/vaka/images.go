@@ -70,6 +70,12 @@ func NewDockerServices(args []string) (DockerServices, error) {
 	}, nil
 }
 
+// dockerContextFromArgs returns the docker context selected via compose global
+// flags. The last occurrence wins. Returns empty when unset.
+func dockerContextFromArgs(args []string) string {
+	return composeGlobalValue(args, "--context", "-c")
+}
+
 func dockerTargetDescription(args []string) string {
 	if ctxName := dockerContextFromArgs(args); ctxName != "" {
 		return fmt.Sprintf("context %q (from --context)", ctxName)
