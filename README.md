@@ -17,6 +17,24 @@ No image changes. Nothing written to disk on the host. No edits to your `docker-
   ![vaka blocks an agent exfiltration attempt](docs/assets/vaka-demo.gif)
 -->
 
+Contents:
+
+- [Threat model](#your-agent-just-got-prompt-injected-is-your-egress-locked-down)
+- [What vaka intercepts](#what-vaka-intercepts)
+- [30-second install](#30-second-install)
+- [Before you run it](#before-you-run-it)
+- [Agent stacks this protects](#agent-stacks-this-protects)
+- [Why vaka?](#why-vaka)
+- [How it works](#how-it-works)
+- [Getting started](#getting-started)
+- [Usage](#usage)
+- [Configuration reference](#configuration-reference)
+- [CLI reference](#cli-reference)
+- [Security model](#security-model)
+- [Building and releasing](#building-and-releasing)
+- [Status](#status)
+- [License](#license)
+
 ---
 
 ## Your agent just got prompt-injected. Is your egress locked down?
