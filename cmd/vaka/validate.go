@@ -7,7 +7,6 @@ import (
 	"os"
 	"strings"
 
-	composecli "github.com/compose-spec/compose-go/v2/cli"
 	composetypes "github.com/compose-spec/compose-go/v2/types"
 	"github.com/spf13/cobra"
 	"vaka.dev/vaka/pkg/policy"
@@ -21,7 +20,7 @@ func newValidateCmd() *cobra.Command {
 		Use:   "validate",
 		Short: "Validate vaka.yaml and print per-service summary",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			p, _, err := loadAndValidate(vakaFile, composeFiles)
+			p, _, err := loadAndValidate(vakaFile, composeFiles, "")
 			if err != nil {
 				return err
 			}
@@ -59,7 +58,7 @@ func newValidateCmd() *cobra.Command {
 // composeFiles may be empty — compose checks are skipped in that case.
 // Returns the parsed policy and the loaded compose project (nil when no
 // compose files are given).
-func loadAndValidate(vakaFile string, composeFiles []string) (*policy.ServicePolicy, *composetypes.Project, error) {
+func loadAndValidate(vakaFile string, composeFiles []string, workingDir string) (*policy.ServicePolicy, *composetypes.Project, error) {
 	f, err := os.Open(vakaFile)
 	if err != nil {
 		return nil, nil, err
@@ -77,11 +76,7 @@ func loadAndValidate(vakaFile string, composeFiles []string) (*policy.ServicePol
 	var project *composetypes.Project
 	var networkModes map[string]string
 	if len(composeFiles) > 0 {
-		opts, err := composecli.NewProjectOptions(composeFiles,
-			composecli.WithWorkingDirectory("."),
-			composecli.WithOsEnv,
-			composecli.WithDotEnv,
-		)
+		opts, err := newComposeProjectOptions(composeFiles, workingDir, false)
 		if err != nil {
 			return nil, nil, fmt.Errorf("compose project options: %w", err)
 		}

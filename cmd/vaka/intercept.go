@@ -77,7 +77,11 @@ func execDockerCompose(args []string, overrideYAML string, extraEnv []string) er
 	if overrideYAML != "" {
 		defaults := []string{}
 		if len(allFileFlags(args)) == 0 {
-			defaults = discoverComposeFiles(".")
+			resolved, err := resolveComposeInput(args)
+			if err != nil {
+				return err
+			}
+			defaults = resolved.Files
 		}
 		dockerArgs = injectStdinOverride(append([]string{"compose"}, args...), defaults)
 	} else {
@@ -125,15 +129,12 @@ func buildInjectionOverride(
 	args []string,
 	vakaInitPresent bool,
 ) (overrideYAML string, extraEnv []string, err error) {
-	composeFiles := allFileFlags(args)
-	if len(composeFiles) == 0 {
-		composeFiles = discoverComposeFiles(".")
-		if len(composeFiles) == 0 {
-			return "", nil, fmt.Errorf("no compose configuration file found in current directory")
-		}
+	composeInput, err := resolveComposeInput(args)
+	if err != nil {
+		return "", nil, err
 	}
 
-	p, project, err := loadAndValidate(vakaFile, composeFiles)
+	p, project, err := loadAndValidate(vakaFile, composeInput.Files, composeInput.WorkingDir)
 	if err != nil {
 		return "", nil, err
 	}
@@ -164,7 +165,7 @@ func buildInjectionOverride(
 	for svcName, svc := range p.Services {
 		composeSvc, ok := project.Services[svcName]
 		if !ok {
-			return "", nil, fmt.Errorf("service %q: not found in compose files %v", svcName, composeFiles)
+			return "", nil, fmt.Errorf("service %q: not found in compose files %v", svcName, composeInput.Files)
 		}
 
 		rt, err := ds.ResolveRuntime(ctx, svcName, composeSvc)
