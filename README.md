@@ -20,7 +20,6 @@ No image changes. Nothing written to disk on the host. No edits to your `docker-
 Contents:
 
 - [Threat model](#your-agent-just-got-prompt-injected-is-your-egress-locked-down)
-- [What vaka intercepts](#what-vaka-intercepts)
 - [30-second install](#30-second-install)
 - [Before you run it](#before-you-run-it)
 - [Agent stacks this protects](#agent-stacks-this-protects)
@@ -55,15 +54,6 @@ The model complies. `curl` completes. Secrets leave the building. Nobody sees it
 **With vaka in front of the same container** the policy allows `api.anthropic.com:443`, `api.github.com:443`, and the company registry — and nothing else. The TCP handshake to `attacker.example` never completes; the kernel drops or rejects it on the OUTPUT hook inside the container's own netns. The model sees a connection error, not a secret it handed away.
 
 This is the threat model vaka is built for: a well-behaved process, or an over-reaching one, or a compromised one, whose *network* must not exceed a short, auditable allowlist.
-
----
-
-## What vaka intercepts
-
-- **Applied per service**, inside each container's own network namespace.
-- **Loaded by the kernel**, not the application. Your app is not trusted to enforce its own policy.
-- **Fail-closed**: if the policy is malformed, the application never starts.
-- **No host changes**: the policy is passed as a Docker secret on a tmpfs; your images and compose file are untouched.
 
 ---
 
