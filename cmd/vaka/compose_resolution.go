@@ -35,10 +35,11 @@ func resolveComposeInput(args []string) (*composeResolution, error) {
 		return nil, fmt.Errorf("compose project options: %w", err)
 	}
 	if len(opts.ConfigPaths) == 0 {
-		if strings.TrimSpace(workingDir) == "" {
-			return nil, fmt.Errorf("no compose configuration file found (checked COMPOSE_FILE and default compose.yaml/docker-compose.yaml names)")
+		suffix := ""
+		if wd := strings.TrimSpace(workingDir); wd != "" {
+			suffix = fmt.Sprintf(" from %q and parent directories", wd)
 		}
-		return nil, fmt.Errorf("no compose configuration file found (checked COMPOSE_FILE and default compose.yaml/docker-compose.yaml names from %q and parent directories)", workingDir)
+		return nil, fmt.Errorf("no compose configuration file found (checked COMPOSE_FILE and default compose.yaml/docker-compose.yaml names%s)", suffix)
 	}
 
 	return &composeResolution{
