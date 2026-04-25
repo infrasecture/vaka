@@ -23,7 +23,7 @@ AI agentic harnesses. Run 'vaka up' instead of 'docker compose up'.`,
 func main() {
 	rootCmd.AddCommand(
 		newValidateCmd(),
-		newShowCmd(),
+		newShowNftCmd(),
 		// The up/run/create/volumes/down/stop/kill/rm stubs exist only for --help
 		// visibility. Actual execution is handled by the manual dispatch switch
 		// below and never reaches these cobra commands.
@@ -84,6 +84,17 @@ func main() {
 			Run:                func(*cobra.Command, []string) {},
 		},
 		&cobra.Command{
+			Use:   "show-compose [--build] [-o output.yaml]",
+			Short: "Print the generated compose override YAML used by vaka injection",
+			Long: "Uses the exact same override-generation path as up/run/create/volumes. " +
+				"It may pre-build services and pull emsi/vaka-init:<version> when needed to resolve runtime metadata. " +
+				"Output defaults to stdout; use -o, --output <path> to write a file. " +
+				"After show-compose, only --build and -o/--output are accepted; pass compose global flags before the subcommand. " +
+				"VAKA_<SERVICE>_CONF values are not printed.",
+			DisableFlagParsing: true,
+			Run:                func(*cobra.Command, []string) {},
+		},
+		&cobra.Command{
 			Use:   "version",
 			Short: "Print version",
 			Run: func(cmd *cobra.Command, args []string) {
@@ -105,10 +116,10 @@ func main() {
 	// Step 2: Find the subcommand (first non-flag, non-value token).
 	subcmd := findSubcmd(rest)
 
-	// Step 3: Three-path dispatch.
+	// Step 3: dispatch by subcommand path.
 	switch classifySubcmd(subcmd) {
 	case pathCobra:
-		// cobra-handled commands (validate, show, version, empty).
+		// cobra-handled commands (validate, show-nft, version, empty).
 		// SetArgs so cobra sees a clean argv (--vaka-* already stripped).
 		rootCmd.SetArgs(rest)
 		if err := rootCmd.Execute(); err != nil {
@@ -125,6 +136,13 @@ func main() {
 	case pathLifecycle:
 		// Lifecycle path: down, stop, kill, rm.
 		if err := runLifecycle(rest, vakaInitPresent); err != nil {
+			fmt.Fprintln(os.Stderr, "vaka:", err)
+			os.Exit(exitCode(err))
+		}
+
+	case pathShowCompose:
+		// Show-compose path: build and print/write the generated override only.
+		if err := runShowCompose(vakaFile, rest, vakaInitPresent); err != nil {
 			fmt.Fprintln(os.Stderr, "vaka:", err)
 			os.Exit(exitCode(err))
 		}

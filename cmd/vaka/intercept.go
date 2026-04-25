@@ -25,6 +25,12 @@ const vakaInitLabel = "agent.vaka.init"
 // container. The full reference is built by appending ":" + version.
 const vakaInitBaseImage = "emsi/vaka-init"
 
+// Test hooks: overridden in unit tests to avoid real Docker side effects.
+var (
+	newDockerServices   = NewDockerServices
+	execDockerComposeFn = execDockerCompose
+)
+
 // defaultDockerCaps is the set of capabilities present in a default Docker
 // container (no cap_drop, no cap_add). NET_ADMIN is notably absent.
 var defaultDockerCaps = map[string]bool{
@@ -39,21 +45,24 @@ var defaultDockerCaps = map[string]bool{
 type subcmdPath int
 
 const (
-	pathCobra       subcmdPath = iota // validate, show, version — cobra commands
+	pathCobra       subcmdPath = iota // validate, show-nft, version — cobra commands
 	pathFull                          // up, run, create, volumes — full policy + __vaka-init injection
 	pathLifecycle                     // down, stop, kill, rm — __vaka-init container only
+	pathShowCompose                   // show-compose — print generated override only
 	pathPassthrough                   // all others — forwarded unchanged to docker compose
 )
 
 // classifySubcmd maps a compose subcommand name to its dispatch path.
 func classifySubcmd(subcmd string) subcmdPath {
 	switch subcmd {
-	case "validate", "show", "version", "":
+	case "validate", "show-nft", "version", "":
 		return pathCobra
 	case "up", "run", "create", "volumes":
 		return pathFull
 	case "down", "stop", "kill", "rm":
 		return pathLifecycle
+	case "show-compose":
+		return pathShowCompose
 	default:
 		return pathPassthrough
 	}
@@ -92,25 +101,41 @@ func execDockerCompose(args []string, overrideYAML string, extraEnv []string) er
 // It loads and validates vaka.yaml, ensures the __vaka-init image when needed,
 // builds the full compose override, and delegates to execDockerCompose.
 func runFull(vakaFile string, args []string, vakaInitPresent bool) error {
+	ctx := context.Background()
+	ds, err := newDockerServices()
+	if err != nil {
+		return err
+	}
+	overrideYAML, extraEnv, err := buildInjectionOverride(ctx, ds, vakaFile, args, vakaInitPresent)
+	if err != nil {
+		return err
+	}
+	return execDockerComposeFn(args, overrideYAML, extraEnv)
+}
+
+// buildInjectionOverride builds the compose override and per-service secret env
+// payload from the same shared path used by full injection commands.
+//
+// Side effects are intentional and shared with runFull: pre-build and
+// emsi/vaka-init image ensure happen here so show-compose cannot drift.
+func buildInjectionOverride(
+	ctx context.Context,
+	ds DockerServices,
+	vakaFile string,
+	args []string,
+	vakaInitPresent bool,
+) (overrideYAML string, extraEnv []string, err error) {
 	composeFiles := allFileFlags(args)
 	if len(composeFiles) == 0 {
 		composeFiles = discoverComposeFiles(".")
 		if len(composeFiles) == 0 {
-			return fmt.Errorf("no compose configuration file found in current directory")
+			return "", nil, fmt.Errorf("no compose configuration file found in current directory")
 		}
 	}
 
 	p, project, err := loadAndValidate(vakaFile, composeFiles)
 	if err != nil {
-		return err
-	}
-
-	ctx := context.Background()
-
-	// Create ONE Docker client for both entrypoint resolution and image ensuring.
-	ds, err := NewDockerServices()
-	if err != nil {
-		return err
+		return "", nil, err
 	}
 
 	// Pre-build any service whose image must be inspected for ENTRYPOINT/CMD
@@ -122,29 +147,29 @@ func runFull(vakaFile string, args []string, vakaInitPresent bool) error {
 	forceRebuild := hasBuildFlag(args)
 	toBuild, err := servicesNeedingPrebuild(ctx, ds, p.Services, project, forceRebuild)
 	if err != nil {
-		return err
+		return "", nil, err
 	}
 	if len(toBuild) > 0 {
 		fmt.Fprintf(os.Stderr, "vaka: pre-building services to resolve entrypoints: %v\n", toBuild)
 		buildArgs := append(globalFlags(args), "build")
 		buildArgs = append(buildArgs, toBuild...)
-		if err := execDockerCompose(buildArgs, "", nil); err != nil {
-			return fmt.Errorf("pre-build: %w", err)
+		if err := execDockerComposeFn(buildArgs, "", nil); err != nil {
+			return "", nil, fmt.Errorf("pre-build: %w", err)
 		}
 	}
 
 	var entries []compose.ServiceEntry
-	var extraEnv []string
+	extraEnv = nil
 
 	for svcName, svc := range p.Services {
 		composeSvc, ok := project.Services[svcName]
 		if !ok {
-			return fmt.Errorf("service %q: not found in compose files %v", svcName, composeFiles)
+			return "", nil, fmt.Errorf("service %q: not found in compose files %v", svcName, composeFiles)
 		}
 
 		rt, err := ds.ResolveRuntime(ctx, svcName, composeSvc)
 		if err != nil {
-			return err
+			return "", nil, err
 		}
 
 		delta := computeCapDelta(composeSvc)
@@ -158,7 +183,7 @@ func runFull(vakaFile string, args []string, vakaInitPresent bool) error {
 
 		sliced, err := policy.SliceService(p, svcName)
 		if err != nil {
-			return err
+			return "", nil, err
 		}
 		sliced.VakaVersion = version
 		restoreUser := strings.TrimSpace(composeSvc.User)
@@ -169,7 +194,7 @@ func runFull(vakaFile string, args []string, vakaInitPresent bool) error {
 
 		raw, err := yaml.Marshal(sliced)
 		if err != nil {
-			return fmt.Errorf("marshal policy for %s: %w", svcName, err)
+			return "", nil, fmt.Errorf("marshal policy for %s: %w", svcName, err)
 		}
 
 		envKey := "VAKA_" + strings.ToUpper(strings.ReplaceAll(svcName, "-", "_")) + "_CONF"
@@ -197,16 +222,15 @@ func runFull(vakaFile string, args []string, vakaInitPresent bool) error {
 	if !vakaInitPresent && needsInjection {
 		vakaInitImageRef = vakaInitBaseImage + ":" + version
 		if err := ds.EnsureImage(ctx, vakaInitImageRef); err != nil {
-			return err
+			return "", nil, err
 		}
 	}
 
-	overrideYAML, err := compose.BuildOverride(entries, vakaInitImageRef)
+	overrideYAML, err = compose.BuildOverride(entries, vakaInitImageRef)
 	if err != nil {
-		return fmt.Errorf("build override: %w", err)
+		return "", nil, fmt.Errorf("build override: %w", err)
 	}
-
-	return execDockerCompose(args, overrideYAML, extraEnv)
+	return overrideYAML, extraEnv, nil
 }
 
 // lifecycleOverrideYAML returns the minimal compose override YAML declaring the

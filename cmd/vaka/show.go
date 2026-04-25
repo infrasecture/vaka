@@ -8,12 +8,12 @@ import (
 	"vaka.dev/vaka/pkg/nft"
 )
 
-func newShowCmd() *cobra.Command {
+func newShowNftCmd() *cobra.Command {
 	var vakaFile string
 	var composeFiles []string
 
 	cmd := &cobra.Command{
-		Use:   "show <service>",
+		Use:   "show-nft <service>",
 		Short: "Print the nft ruleset that would be applied for a service (dry-run)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
