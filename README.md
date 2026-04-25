@@ -20,7 +20,7 @@ No image changes. Nothing written to disk on the host. No edits to your `docker-
 Contents:
 
 - [Threat model](#your-agent-just-got-prompt-injected-is-your-egress-locked-down)
-- [30-second install](#30-second-install)
+- [Quick start from source](#quick-start-from-source)
 - [Before you run it](#before-you-run-it)
 - [Agent stacks this protects](#agent-stacks-this-protects)
 - [Why vaka?](#why-vaka)
@@ -57,7 +57,7 @@ This is the threat model vaka is built for: a well-behaved process, or an over-r
 
 ---
 
-## 30-second install
+## Quick start from source
 
 ```bash
 # 1. Clone the repo
