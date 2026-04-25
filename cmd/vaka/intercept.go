@@ -109,7 +109,7 @@ func execDockerCompose(args []string, overrideYAML string, extraEnv []string) er
 // builds the full compose override, and delegates to execDockerCompose.
 func runFull(vakaFile string, args []string, vakaInitPresent bool) error {
 	ctx := context.Background()
-	ds, err := newDockerServices()
+	ds, err := newDockerServices(args)
 	if err != nil {
 		return err
 	}

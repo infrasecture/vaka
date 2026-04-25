@@ -1,18 +1,20 @@
-// cmd/vaka/images.go
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strings"
 
 	composetypes "github.com/compose-spec/compose-go/v2/types"
-	dockerimage "github.com/docker/docker/api/types/image"
-	"github.com/docker/docker/client"
-	"github.com/docker/docker/errdefs"
 )
+
+var errImageNotFound = errors.New("image not found")
 
 // DockerServices is the interface for all Docker daemon interactions in vaka.
 // A single implementation is created per runFull invocation; a test double can
@@ -38,59 +40,132 @@ type ResolvedRuntime struct {
 	ImageUser string
 }
 
-// dockerClient is a narrow interface over the Docker API operations used by
-// dockerServices. *client.Client satisfies it; tests inject a stub.
-type dockerClient interface {
-	ImageInspect(ctx context.Context, ref string, opts ...client.ImageInspectOption) (dockerimage.InspectResponse, error)
-	ImagePull(ctx context.Context, ref string, opts dockerimage.PullOptions) (io.ReadCloser, error)
-}
+type dockerExecFn func(ctx context.Context, dockerGlobalArgs []string, args []string, stdout, stderr io.Writer) error
+type dockerOutputFn func(ctx context.Context, dockerGlobalArgs []string, args []string) ([]byte, []byte, error)
 
-// dockerServices is the production DockerServices backed by the Docker daemon.
+// dockerServices is the production DockerServices backed by the Docker CLI.
+// Using the CLI guarantees context/daemon parity with compose invocations.
 type dockerServices struct {
-	c dockerClient
+	dockerGlobalArgs []string
+	targetDesc       string
+	execFn           dockerExecFn
+	outputFn         dockerOutputFn
 }
 
-// NewDockerServices creates a DockerServices using the Docker environment
-// (DOCKER_HOST, TLS settings, active context). The underlying client is
-// created once and reused for all operations. Close is intentionally omitted:
-// this is a short-lived CLI process that exits immediately after the operation,
-// so the OS reclaims all resources without an explicit teardown.
-func NewDockerServices() (DockerServices, error) {
-	c, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-	if err != nil {
-		return nil, fmt.Errorf("create Docker client: %w", err)
+// NewDockerServices creates DockerServices for one vaka invocation. Docker
+// target precedence is:
+//   - explicit compose/global --context flag
+//   - DOCKER_CONTEXT environment
+//   - DOCKER_HOST/default Docker context
+func NewDockerServices(args []string) (DockerServices, error) {
+	dockerGlobals := []string{}
+	if ctxName := dockerContextFromArgs(args); ctxName != "" {
+		dockerGlobals = append(dockerGlobals, "--context", ctxName)
 	}
-	return &dockerServices{c: c}, nil
+	return &dockerServices{
+		dockerGlobalArgs: dockerGlobals,
+		targetDesc:       dockerTargetDescription(args),
+		execFn:           runDockerCommand,
+		outputFn:         runDockerCommandOutput,
+	}, nil
+}
+
+func dockerTargetDescription(args []string) string {
+	if ctxName := dockerContextFromArgs(args); ctxName != "" {
+		return fmt.Sprintf("context %q (from --context)", ctxName)
+	}
+	if ctxName := strings.TrimSpace(os.Getenv("DOCKER_CONTEXT")); ctxName != "" {
+		return fmt.Sprintf("context %q (from DOCKER_CONTEXT)", ctxName)
+	}
+	if host := strings.TrimSpace(os.Getenv("DOCKER_HOST")); host != "" {
+		return fmt.Sprintf("daemon %q (from DOCKER_HOST)", host)
+	}
+	return "default Docker context"
+}
+
+func runDockerCommand(ctx context.Context, dockerGlobalArgs []string, args []string, stdout, stderr io.Writer) error {
+	cmdArgs := append(append([]string{}, dockerGlobalArgs...), args...)
+	c := exec.CommandContext(ctx, "docker", cmdArgs...)
+	c.Stdout = stdout
+	c.Stderr = stderr
+	return c.Run()
+}
+
+func runDockerCommandOutput(ctx context.Context, dockerGlobalArgs []string, args []string) ([]byte, []byte, error) {
+	var outBuf bytes.Buffer
+	var errBuf bytes.Buffer
+	err := runDockerCommand(ctx, dockerGlobalArgs, args, &outBuf, &errBuf)
+	return outBuf.Bytes(), errBuf.Bytes(), err
+}
+
+func dockerErr(runErr error, stderr, stdout []byte) string {
+	if msg := strings.TrimSpace(string(stderr)); msg != "" {
+		return msg
+	}
+	if msg := strings.TrimSpace(string(stdout)); msg != "" {
+		return msg
+	}
+	if runErr != nil {
+		return runErr.Error()
+	}
+	return "unknown docker error"
+}
+
+func isNoSuchImage(stdout, stderr []byte) bool {
+	msg := strings.ToLower(string(stdout) + "\n" + string(stderr))
+	return strings.Contains(msg, "no such image")
 }
 
 // ImageExists returns true if ref is present in the local image store.
 func (d *dockerServices) ImageExists(ctx context.Context, ref string) (bool, error) {
-	_, err := d.c.ImageInspect(ctx, ref)
+	stdout, stderr, err := d.outputFn(ctx, d.dockerGlobalArgs, []string{"image", "inspect", ref})
 	if err == nil {
 		return true, nil
 	}
-	if errdefs.IsNotFound(err) {
+	if isNoSuchImage(stdout, stderr) {
 		return false, nil
 	}
-	return false, fmt.Errorf("inspect %s: %w", ref, err)
+	return false, fmt.Errorf("inspect %s on %s: %s", ref, d.targetDesc, dockerErr(err, stderr, stdout))
 }
 
 // EnsureImage inspects ref locally; pulls it if absent.
 func (d *dockerServices) EnsureImage(ctx context.Context, ref string) error {
-	_, err := d.c.ImageInspect(ctx, ref)
-	if err == nil {
+	ok, err := d.ImageExists(ctx, ref)
+	if err != nil {
+		return err
+	}
+	if ok {
 		return nil
 	}
-	if !errdefs.IsNotFound(err) {
-		return fmt.Errorf("inspect %s: %w", ref, err)
+	if err := d.execFn(ctx, d.dockerGlobalArgs, []string{"pull", ref}, os.Stderr, os.Stderr); err != nil {
+		return fmt.Errorf("failed to pull %s on %s — check network connectivity or use --vaka-init-present if binaries are baked into the image: %w", ref, d.targetDesc, err)
 	}
-	rc, pullErr := d.c.ImagePull(ctx, ref, dockerimage.PullOptions{})
-	if pullErr != nil {
-		return fmt.Errorf("failed to pull %s — check network connectivity or use --vaka-init-present if binaries are baked into the image: %w", ref, pullErr)
+	return nil
+}
+
+type inspectedImageConfig struct {
+	Entrypoint []string `json:"Entrypoint"`
+	Cmd        []string `json:"Cmd"`
+	User       string   `json:"User"`
+}
+
+func (d *dockerServices) inspectImageConfig(ctx context.Context, ref string) (*inspectedImageConfig, error) {
+	stdout, stderr, err := d.outputFn(ctx, d.dockerGlobalArgs, []string{"image", "inspect", "--format", "{{json .Config}}", ref})
+	if err != nil {
+		if isNoSuchImage(stdout, stderr) {
+			return nil, errImageNotFound
+		}
+		return nil, fmt.Errorf("inspect %q on %s: %s", ref, d.targetDesc, dockerErr(err, stderr, stdout))
 	}
-	defer rc.Close()
-	_, err = io.Copy(os.Stderr, rc)
-	return err
+	raw := strings.TrimSpace(string(stdout))
+	if raw == "" || raw == "null" {
+		return nil, nil
+	}
+	var cfg inspectedImageConfig
+	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+		return nil, fmt.Errorf("decode image config for %q: %w", ref, err)
+	}
+	return &cfg, nil
 }
 
 // ResolveRuntime resolves effective runtime metadata for svc, following
@@ -125,27 +200,29 @@ func (d *dockerServices) ResolveRuntime(ctx context.Context, svcName string, svc
 			svcName, missingRuntimeFieldsHint(needImageEntrypoint, needImageUser),
 		)
 	}
-	inspect, err := d.c.ImageInspect(ctx, svc.Image)
+
+	cfg, err := d.inspectImageConfig(ctx, svc.Image)
 	if err != nil {
-		if errdefs.IsNotFound(err) {
+		if errors.Is(err, errImageNotFound) {
 			return ResolvedRuntime{}, fmt.Errorf(
-				"service %s: image %q not available locally — pull/build it first, or set compose user/entrypoint so image defaults are not needed",
-				svcName, svc.Image)
+				"service %s: image %q not available locally on %s — pull/build it first, or set compose user/entrypoint so image defaults are not needed",
+				svcName, svc.Image, d.targetDesc,
+			)
 		}
-		return ResolvedRuntime{}, fmt.Errorf("service %s: inspect %q: %w", svcName, svc.Image, err)
+		return ResolvedRuntime{}, fmt.Errorf("service %s: %w", svcName, err)
 	}
-	if inspect.Config == nil {
+	if cfg == nil {
 		return ResolvedRuntime{}, fmt.Errorf("service %s: image %q has no Config", svcName, svc.Image)
 	}
 
 	if needImageEntrypoint {
-		resolved.Entrypoint = inspect.Config.Entrypoint
+		resolved.Entrypoint = cfg.Entrypoint
 		if len(resolved.Command) == 0 {
-			resolved.Command = inspect.Config.Cmd
+			resolved.Command = cfg.Cmd
 		}
 	}
 	if needImageUser {
-		resolved.ImageUser = inspect.Config.User
+		resolved.ImageUser = cfg.User
 	}
 	return resolved, nil
 }

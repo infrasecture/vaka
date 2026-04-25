@@ -17,7 +17,7 @@ func runShowCompose(vakaFile string, args []string, vakaInitPresent bool) error 
 	}
 
 	ctx := context.Background()
-	ds, err := newDockerServices()
+	ds, err := newDockerServices(passthrough)
 	if err != nil {
 		return err
 	}

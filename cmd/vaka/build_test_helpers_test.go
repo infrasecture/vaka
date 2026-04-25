@@ -63,7 +63,7 @@ func chdirForTest(t *testing.T, dir string) {
 func setDockerServicesFactoryForTest(t *testing.T, ds DockerServices) {
 	t.Helper()
 	old := newDockerServices
-	newDockerServices = func() (DockerServices, error) {
+	newDockerServices = func(_ []string) (DockerServices, error) {
 		return ds, nil
 	}
 	t.Cleanup(func() {
