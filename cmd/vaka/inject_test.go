@@ -2,8 +2,6 @@
 package main
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 )
 
@@ -136,31 +134,6 @@ func TestExtractVakaFlags(t *testing.T) {
 		}
 		want := []string{"up"}
 		assertArgv(t, want, rest)
-	})
-}
-
-func TestDiscoverComposeFiles(t *testing.T) {
-	dir := t.TempDir()
-
-	t.Run("yaml primary + override.yml", func(t *testing.T) {
-		primary := filepath.Join(dir, "docker-compose.yaml")
-		override := filepath.Join(dir, "docker-compose.override.yml")
-		os.WriteFile(primary, []byte("version: '3'"), 0644)
-		os.WriteFile(override, []byte("version: '3'"), 0644)
-
-		got := discoverComposeFiles(dir)
-		want := []string{primary, override}
-		assertArgv(t, want, got)
-
-		os.Remove(primary)
-		os.Remove(override)
-	})
-
-	t.Run("neither exists: empty", func(t *testing.T) {
-		got := discoverComposeFiles(dir)
-		if len(got) != 0 {
-			t.Fatalf("expected empty, got %v", got)
-		}
 	})
 }
 

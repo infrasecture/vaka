@@ -19,7 +19,7 @@ func newShowNftCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			service := args[0]
 
-			p, _, err := loadAndValidate(vakaFile, composeFiles)
+			p, _, err := loadAndValidate(vakaFile, composeFiles, "")
 			if err != nil {
 				return err
 			}

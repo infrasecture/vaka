@@ -2,8 +2,6 @@
 package main
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 )
 
@@ -76,33 +74,6 @@ func extractVakaFlags(argv []string) (flags map[string]string, rest []string) {
 		rest = append(rest, tok)
 	}
 	return flags, rest
-}
-
-// discoverComposeFiles returns the default compose files that Docker Compose
-// would load from dir when no explicit -f flags are given, in the order they
-// would be merged (primary first, then override).
-func discoverComposeFiles(dir string) []string {
-	var found []string
-
-	primaries := []string{"docker-compose.yaml", "docker-compose.yml"}
-	for _, name := range primaries {
-		p := filepath.Join(dir, name)
-		if _, err := os.Stat(p); err == nil {
-			found = append(found, p)
-			break
-		}
-	}
-
-	overrides := []string{"docker-compose.override.yaml", "docker-compose.override.yml"}
-	for _, name := range overrides {
-		p := filepath.Join(dir, name)
-		if _, err := os.Stat(p); err == nil {
-			found = append(found, p)
-			break
-		}
-	}
-
-	return found
 }
 
 // injectStdinOverride takes dockerArgs (already prefixed with "compose") and
