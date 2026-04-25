@@ -129,17 +129,6 @@ func TestProjectDirectoryFromArgs(t *testing.T) {
 	}
 }
 
-func TestDockerContextFromArgs(t *testing.T) {
-	got := dockerContextFromArgs([]string{"--context", "desktop-linux", "up"})
-	if got != "desktop-linux" {
-		t.Fatalf("dockerContextFromArgs=%q, want desktop-linux", got)
-	}
-	got = dockerContextFromArgs([]string{"-c=prod", "up"})
-	if got != "prod" {
-		t.Fatalf("dockerContextFromArgs=%q, want prod", got)
-	}
-}
-
 func writeComposeFile(t *testing.T, path string) {
 	t.Helper()
 	const yaml = "services:\n  app:\n    image: alpine:3.20\n"

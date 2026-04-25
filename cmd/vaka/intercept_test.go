@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 
@@ -60,6 +61,28 @@ func TestLifecycleOverrideYAMLInjectsContainer(t *testing.T) {
 	}
 	if !strings.Contains(yaml, "emsi/vaka-init:v0.1.0") {
 		t.Errorf("injection: expected image ref in YAML, got:\n%s", yaml)
+	}
+}
+
+func TestExecDockerComposeLifecycleRequiresComposeConfig(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	oldComposeFile, hadComposeFile := os.LookupEnv("COMPOSE_FILE")
+	_ = os.Unsetenv("COMPOSE_FILE")
+	t.Cleanup(func() {
+		if hadComposeFile {
+			_ = os.Setenv("COMPOSE_FILE", oldComposeFile)
+			return
+		}
+		_ = os.Unsetenv("COMPOSE_FILE")
+	})
+
+	err := execDockerCompose([]string{"down"}, "services: {}\n", nil)
+	if err == nil {
+		t.Fatal("expected error when compose config is missing")
+	}
+	if !strings.Contains(err.Error(), "lifecycle command requires compose configuration") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

@@ -79,6 +79,9 @@ func execDockerCompose(args []string, overrideYAML string, extraEnv []string) er
 		if len(allFileFlags(args)) == 0 {
 			resolved, err := resolveComposeInput(args)
 			if err != nil {
+				if classifySubcmd(findSubcmd(args)) == pathLifecycle {
+					return fmt.Errorf("lifecycle command requires compose configuration (%w); run from the project directory or pass -f/--project-directory", err)
+				}
 				return err
 			}
 			defaults = resolved.Files

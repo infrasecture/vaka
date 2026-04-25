@@ -76,12 +76,6 @@ func projectDirectoryFromArgs(args []string) string {
 	return composeGlobalValue(args, "--project-directory", "")
 }
 
-// dockerContextFromArgs returns the context selected via compose global flags.
-// The last occurrence wins. Returns empty when unset.
-func dockerContextFromArgs(args []string) string {
-	return composeGlobalValue(args, "--context", "-c")
-}
-
 func composeGlobalValue(args []string, longFlag, shortFlag string) string {
 	var value string
 	for i := 0; i < len(args); i++ {
