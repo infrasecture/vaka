@@ -11,7 +11,7 @@
 #
 # Build behavior:
 #   - Calls build.sh exactly once:
-#       ./build.sh --release --packages
+#       ./build.sh --release --packages --push
 #   - Generates SHA256SUMS for this release's artifacts only.
 #
 # Requirements:
@@ -36,7 +36,7 @@ Options:
 
 Behavior:
   - Default mode requires a release tag (vX.Y.Z) on HEAD; otherwise exits non-zero.
-  - Build is executed once via: ./build.sh --release --packages
+  - Build is executed once via: ./build.sh --release --packages --push
 EOF
 }
 
@@ -111,17 +111,18 @@ class ${class_name} < Formula
   license "LGPL-2.1-only"
 
   on_arm do
-    url "https://github.com/infrasecture/vaka/releases/download/${tag}/vaka-darwin-arm64"
+    url "https://github.com/infrasecture/vaka/releases/download/${tag}/vaka-brew-darwin-arm64.tar.gz"
     sha256 "${arm_sha}"
   end
 
   on_intel do
-    url "https://github.com/infrasecture/vaka/releases/download/${tag}/vaka-darwin-amd64"
+    url "https://github.com/infrasecture/vaka/releases/download/${tag}/vaka-brew-darwin-amd64.tar.gz"
     sha256 "${amd_sha}"
   end
 
   def install
-    bin.install Dir["vaka-darwin-*"].first => "vaka"
+    bin.install "vaka"
+    bin.install "vaka-init"
   end
 
   test do
@@ -130,6 +131,19 @@ class ${class_name} < Formula
   end
 end
 EOF
+}
+
+make_brew_bundle() {
+    local darwin_bin="$1"
+    local init_bin="$2"
+    local out_tar="$3"
+    local tmp
+    tmp="$(mktemp -d)"
+    cp "${darwin_bin}" "${tmp}/vaka"
+    cp "${init_bin}" "${tmp}/vaka-init"
+    chmod 0755 "${tmp}/vaka" "${tmp}/vaka-init"
+    tar -C "${tmp}" -czf "${out_tar}" vaka vaka-init
+    rm -rf -- "${tmp}"
 }
 
 require_cmd git
@@ -228,16 +242,17 @@ if [[ -z "${release_title}" ]]; then
     fi
 fi
 
-echo "==> Building release artifacts with VERSION=${release_tag} (no registry publish)"
-VERSION="${release_tag}" ./build.sh --release --packages
+echo "==> Building release artifacts and publishing container images with VERSION=${release_tag}"
+VERSION="${release_tag}" ./build.sh --release --packages --push
 
 artifacts=()
 artifact_names=()
 pkg_version="${release_tag#v}"
 
 # GitHub release payload policy:
-#   - include package artifacts only (.deb/.rpm/.pkg.tar.*)
-#   - include macOS vaka binaries only
+#   - include package artifacts (.deb/.rpm/.pkg.tar.*)
+#   - include macOS vaka binaries
+#   - include Homebrew bundles containing both vaka + vaka-init
 #   - exclude nft/vaka-init artifacts and Linux raw vaka binaries
 required_macos=(
     "dist/vaka-darwin-amd64"
@@ -251,6 +266,24 @@ for path in "${required_macos[@]}"; do
     artifacts+=("${path}")
     artifact_names+=("$(basename "${path}")")
 done
+
+required_runtime=(
+    "dist/vaka-init-linux-amd64"
+    "dist/vaka-init-linux-arm64"
+)
+for path in "${required_runtime[@]}"; do
+    if [[ ! -f "${path}" ]]; then
+        echo "ERROR: missing required runtime binary: ${path}" >&2
+        exit 1
+    fi
+done
+
+brew_bundle_amd="dist/vaka-brew-darwin-amd64.tar.gz"
+brew_bundle_arm="dist/vaka-brew-darwin-arm64.tar.gz"
+make_brew_bundle "dist/vaka-darwin-amd64" "dist/vaka-init-linux-amd64" "${brew_bundle_amd}"
+make_brew_bundle "dist/vaka-darwin-arm64" "dist/vaka-init-linux-arm64" "${brew_bundle_arm}"
+artifacts+=("${brew_bundle_amd}" "${brew_bundle_arm}")
+artifact_names+=("$(basename "${brew_bundle_amd}")" "$(basename "${brew_bundle_arm}")")
 
 shopt -s nullglob
 deb_pkgs=(dist/vaka_"${pkg_version}"_*.deb)
@@ -344,8 +377,8 @@ fi
 gh "${gh_args[@]}"
 
 echo "==> Updating Homebrew tap formulas..."
-amd_sha="$(sha256_of dist/vaka-darwin-amd64)"
-arm_sha="$(sha256_of dist/vaka-darwin-arm64)"
+amd_sha="$(sha256_of "${brew_bundle_amd}")"
+arm_sha="$(sha256_of "${brew_bundle_arm}")"
 
 if [[ "${is_prerelease}" == "true" ]]; then
     formula_rel_path="Formula/vaka-nightly.rb"
