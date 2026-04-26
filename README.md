@@ -371,7 +371,7 @@ If a check fails, vaka prints a direct remediation hint. To attempt automatic fi
 vaka doctor --fix
 ```
 
-Currently, the helper-image check is fixable and `--fix` pulls `emsi/vaka-init:<vaka-version>` when missing.
+Currently, the helper-image check is fixable and `--fix` pulls `emsi/vaka-init:<vaka-version>` when missing. Unstamped dev builds (`version=dev`) are explicitly non-fixable for this check because `emsi/vaka-init:dev` is not published.
 
 Desktop-focused reproducible smoke path:
 
@@ -746,7 +746,7 @@ Runs preflight diagnostics for Docker/Compose compatibility and prints remediati
 vaka doctor [--fix]
 ```
 
-- `--fix`: attempt automatic fixes for fixable failing checks, then re-run those checks. Currently this auto-pulls missing required `emsi/vaka-init:<vaka-version>` into the resolved Docker target.
+- `--fix`: attempt automatic fixes for fixable failing checks, then re-run those checks. Currently this auto-pulls missing required `emsi/vaka-init:<vaka-version>` into the resolved Docker target (except unstamped `version=dev` builds, which are non-fixable for this check).
 
 ### `vaka show-nft <service>`
 

@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -185,6 +186,42 @@ func doctorResultDetail(r doctorResult) string {
 
 func defaultDoctorChecks() []doctorCheck {
 	vakaInitImageRef := vakaInitBaseImage + ":" + version
+	isDevBuild := strings.TrimSpace(version) == "dev"
+
+	var (
+		dsOnce sync.Once
+		ds     DockerServices
+		dsErr  error
+	)
+	getDockerServices := func() (DockerServices, error) {
+		dsOnce.Do(func() {
+			ds, dsErr = newDoctorDockerServices(nil)
+		})
+		if dsErr != nil {
+			return nil, dsErr
+		}
+		return ds, nil
+	}
+
+	imageRemediation := fmt.Sprintf("Run `vaka doctor --fix` to auto-fix this check, or `docker pull %s`.", vakaInitImageRef)
+	var imageFix func(context.Context) (string, error)
+	if isDevBuild {
+		imageRemediation = fmt.Sprintf(
+			"Not auto-fixable on unstamped dev builds (version=%q). Build with a stamped VERSION (tag/SHA) so the required helper image tag resolves.",
+			version,
+		)
+	} else {
+		imageFix = func(ctx context.Context) (string, error) {
+			ds, err := getDockerServices()
+			if err != nil {
+				return "", err
+			}
+			if err := ds.EnsureImage(ctx, vakaInitImageRef); err != nil {
+				return "", err
+			}
+			return "pulled " + vakaInitImageRef, nil
+		}
+	}
 
 	return []doctorCheck{
 		{
@@ -258,9 +295,15 @@ func defaultDoctorChecks() []doctorCheck {
 			required:    true,
 			timeout:     doctorProbeTimeout,
 			fixTimeout:  doctorFixTimeout,
-			remediation: fmt.Sprintf("Run `vaka doctor --fix` to auto-fix this check, or `docker pull %s`.", vakaInitImageRef),
+			remediation: imageRemediation,
 			run: func(ctx context.Context) (string, error) {
-				ds, err := newDoctorDockerServices(nil)
+				if isDevBuild {
+					return "", fmt.Errorf(
+						"unstamped dev build (version=%q) resolves helper image to %s, which is not published (not auto-fixable)",
+						version, vakaInitImageRef,
+					)
+				}
+				ds, err := getDockerServices()
 				if err != nil {
 					return "", err
 				}
@@ -273,16 +316,7 @@ func defaultDoctorChecks() []doctorCheck {
 				}
 				return vakaInitImageRef, nil
 			},
-			fix: func(ctx context.Context) (string, error) {
-				ds, err := newDoctorDockerServices(nil)
-				if err != nil {
-					return "", err
-				}
-				if err := ds.EnsureImage(ctx, vakaInitImageRef); err != nil {
-					return "", err
-				}
-				return "pulled " + vakaInitImageRef, nil
-			},
+			fix: imageFix,
 		},
 		{
 			name:     "resolved docker context",

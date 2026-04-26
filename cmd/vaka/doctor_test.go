@@ -169,6 +169,9 @@ type fakeDoctorDockerServices struct {
 func (f *fakeDoctorDockerServices) EnsureImage(_ context.Context, ref string) error {
 	f.ensureCalled++
 	f.lastEnsureRef = ref
+	if f.ensureErr == nil {
+		f.imageExists = true
+	}
 	return f.ensureErr
 }
 
@@ -196,6 +199,9 @@ func mustDoctorCheckByName(t *testing.T, checks []doctorCheck, name string) doct
 func TestDoctorCheckRequiredVakaInitImageMissing(t *testing.T) {
 	origNewDoctorDockerServices := newDoctorDockerServices
 	defer func() { newDoctorDockerServices = origNewDoctorDockerServices }()
+	origVersion := version
+	version = "v0.1.0"
+	defer func() { version = origVersion }()
 
 	fake := &fakeDoctorDockerServices{imageExists: false}
 	newDoctorDockerServices = func(args []string) (DockerServices, error) {
@@ -225,6 +231,9 @@ func TestDoctorCheckRequiredVakaInitImageMissing(t *testing.T) {
 func TestDoctorFixPullsRequiredVakaInitImage(t *testing.T) {
 	origNewDoctorDockerServices := newDoctorDockerServices
 	defer func() { newDoctorDockerServices = origNewDoctorDockerServices }()
+	origVersion := version
+	version = "v0.1.0"
+	defer func() { version = origVersion }()
 
 	fake := &fakeDoctorDockerServices{}
 	newDoctorDockerServices = func(args []string) (DockerServices, error) {
@@ -252,5 +261,82 @@ func TestDoctorFixPullsRequiredVakaInitImage(t *testing.T) {
 	}
 	if fake.imageExistsCalled != 0 {
 		t.Fatalf("ImageExists called %d times, want 0", fake.imageExistsCalled)
+	}
+}
+
+func TestDoctorRequiredVakaInitImageDevBuildNonFixable(t *testing.T) {
+	origNewDoctorDockerServices := newDoctorDockerServices
+	defer func() { newDoctorDockerServices = origNewDoctorDockerServices }()
+	origVersion := version
+	version = "dev"
+	defer func() { version = origVersion }()
+
+	ctorCount := 0
+	newDoctorDockerServices = func(args []string) (DockerServices, error) {
+		ctorCount++
+		return &fakeDoctorDockerServices{}, nil
+	}
+
+	check := mustDoctorCheckByName(t, defaultDoctorChecks(), "required vaka-init image present")
+	if check.fix != nil {
+		t.Fatal("dev build check should be non-fixable (fix must be nil)")
+	}
+	_, err := check.run(context.Background())
+	if err == nil {
+		t.Fatal("expected dev non-fixable error, got nil")
+	}
+	if !strings.Contains(err.Error(), "not auto-fixable") {
+		t.Fatalf("error = %q, want contains %q", err.Error(), "not auto-fixable")
+	}
+	if ctorCount != 0 {
+		t.Fatalf("docker services constructor called %d times, want 0", ctorCount)
+	}
+
+	results := runDoctorChecks(context.Background(), []doctorCheck{check}, true)
+	if len(results) != 1 {
+		t.Fatalf("results len = %d, want 1", len(results))
+	}
+	if results[0].fixAttempted {
+		t.Fatal("fixAttempted=true, want false for non-fixable dev check")
+	}
+}
+
+func TestDoctorRequiredVakaInitImageFixReusesDockerServicesCache(t *testing.T) {
+	origNewDoctorDockerServices := newDoctorDockerServices
+	defer func() { newDoctorDockerServices = origNewDoctorDockerServices }()
+	origVersion := version
+	version = "v0.1.0"
+	defer func() { version = origVersion }()
+
+	fake := &fakeDoctorDockerServices{imageExists: false}
+	ctorCount := 0
+	newDoctorDockerServices = func(args []string) (DockerServices, error) {
+		if len(args) != 0 {
+			t.Fatalf("newDoctorDockerServices args = %v, want empty", args)
+		}
+		ctorCount++
+		return fake, nil
+	}
+
+	check := mustDoctorCheckByName(t, defaultDoctorChecks(), "required vaka-init image present")
+	results := runDoctorChecks(context.Background(), []doctorCheck{check}, true)
+	if len(results) != 1 {
+		t.Fatalf("results len = %d, want 1", len(results))
+	}
+	r := results[0]
+	if !r.ok {
+		t.Fatalf("expected check to pass after fix, got fail: %s", r.errText)
+	}
+	if !r.fixAttempted || !r.fixApplied {
+		t.Fatalf("expected fixAttempted=true and fixApplied=true, got attempted=%v applied=%v", r.fixAttempted, r.fixApplied)
+	}
+	if ctorCount != 1 {
+		t.Fatalf("newDoctorDockerServices called %d times, want 1", ctorCount)
+	}
+	if fake.ensureCalled != 1 {
+		t.Fatalf("EnsureImage called %d times, want 1", fake.ensureCalled)
+	}
+	if fake.imageExistsCalled != 2 {
+		t.Fatalf("ImageExists called %d times, want 2 (probe + post-fix re-probe)", fake.imageExistsCalled)
 	}
 }
