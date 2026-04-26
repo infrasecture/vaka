@@ -365,11 +365,13 @@ vaka doctor
 - required helper image `emsi/vaka-init:<vaka-version>` is present in the resolved Docker target
 - resolved Docker context (informational)
 
-If a check fails, vaka prints a direct remediation hint. To auto-pull a missing helper image:
+If a check fails, vaka prints a direct remediation hint. To attempt automatic fixes for any fixable failing checks:
 
 ```bash
 vaka doctor --fix
 ```
+
+Currently, the helper-image check is fixable and `--fix` pulls `emsi/vaka-init:<vaka-version>` when missing.
 
 Desktop-focused reproducible smoke path:
 
@@ -744,7 +746,7 @@ Runs preflight diagnostics for Docker/Compose compatibility and prints remediati
 vaka doctor [--fix]
 ```
 
-- `--fix`: pull missing required `emsi/vaka-init:<vaka-version>` into the resolved Docker target
+- `--fix`: attempt automatic fixes for fixable failing checks, then re-run those checks. Currently this auto-pulls missing required `emsi/vaka-init:<vaka-version>` into the resolved Docker target.
 
 ### `vaka show-nft <service>`
 

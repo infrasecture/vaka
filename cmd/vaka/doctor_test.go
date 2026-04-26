@@ -53,7 +53,7 @@ func TestRunDoctorChecksTimeout(t *testing.T) {
 				return "", ctx.Err()
 			},
 		},
-	})
+	}, false)
 	if len(results) != 1 {
 		t.Fatalf("results len = %d, want 1", len(results))
 	}
@@ -74,7 +74,7 @@ func TestRunDoctorChecksInformationalResult(t *testing.T) {
 				return "", errors.New("probe unavailable")
 			},
 		},
-	})
+	}, false)
 	if len(results) != 1 {
 		t.Fatalf("results len = %d, want 1", len(results))
 	}
@@ -83,6 +83,76 @@ func TestRunDoctorChecksInformationalResult(t *testing.T) {
 	}
 	if results[0].ok {
 		t.Fatalf("expected failed informational probe")
+	}
+}
+
+func TestRunDoctorChecksFixesThenPasses(t *testing.T) {
+	fixed := false
+	results := runDoctorChecks(context.Background(), []doctorCheck{
+		{
+			name:     "fixable",
+			required: true,
+			run: func(context.Context) (string, error) {
+				if !fixed {
+					return "", errors.New("broken")
+				}
+				return "ok now", nil
+			},
+			fix: func(context.Context) (string, error) {
+				fixed = true
+				return "applied fix", nil
+			},
+		},
+	}, true)
+	if len(results) != 1 {
+		t.Fatalf("results len = %d, want 1", len(results))
+	}
+	r := results[0]
+	if !r.ok {
+		t.Fatalf("expected check to pass after fix, got fail: %s", r.errText)
+	}
+	if !r.fixAttempted || !r.fixApplied {
+		t.Fatalf("expected fixAttempted=true and fixApplied=true, got attempted=%v applied=%v", r.fixAttempted, r.fixApplied)
+	}
+	if r.fixErrText != "" {
+		t.Fatalf("unexpected fixErrText: %q", r.fixErrText)
+	}
+	if r.detail != "ok now" {
+		t.Fatalf("detail = %q, want %q", r.detail, "ok now")
+	}
+	if r.fixDetail != "applied fix" {
+		t.Fatalf("fixDetail = %q, want %q", r.fixDetail, "applied fix")
+	}
+}
+
+func TestRunDoctorChecksFixAttemptFails(t *testing.T) {
+	results := runDoctorChecks(context.Background(), []doctorCheck{
+		{
+			name:     "fixable-fails",
+			required: true,
+			run: func(context.Context) (string, error) {
+				return "", errors.New("broken")
+			},
+			fix: func(context.Context) (string, error) {
+				return "", errors.New("cannot auto-fix")
+			},
+		},
+	}, true)
+	if len(results) != 1 {
+		t.Fatalf("results len = %d, want 1", len(results))
+	}
+	r := results[0]
+	if r.ok {
+		t.Fatalf("expected failed result")
+	}
+	if !r.fixAttempted {
+		t.Fatalf("expected fixAttempted=true")
+	}
+	if r.fixApplied {
+		t.Fatalf("expected fixApplied=false")
+	}
+	if !strings.Contains(r.fixErrText, "cannot auto-fix") {
+		t.Fatalf("fixErrText = %q, want contains %q", r.fixErrText, "cannot auto-fix")
 	}
 }
 
@@ -135,7 +205,7 @@ func TestDoctorCheckRequiredVakaInitImageMissing(t *testing.T) {
 		return fake, nil
 	}
 
-	check := mustDoctorCheckByName(t, defaultDoctorChecks(doctorOptions{}), "required vaka-init image present")
+	check := mustDoctorCheckByName(t, defaultDoctorChecks(), "required vaka-init image present")
 	_, err := check.run(context.Background())
 	if err == nil {
 		t.Fatal("expected missing-image error, got nil")
@@ -164,14 +234,15 @@ func TestDoctorFixPullsRequiredVakaInitImage(t *testing.T) {
 		return fake, nil
 	}
 
-	check := mustDoctorCheckByName(t, defaultDoctorChecks(doctorOptions{fix: true}), "required vaka-init image present")
-	gotDetail, err := check.run(context.Background())
+	check := mustDoctorCheckByName(t, defaultDoctorChecks(), "required vaka-init image present")
+	gotDetail, err := check.fix(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	expectedRef := vakaInitBaseImage + ":" + version
-	if gotDetail != expectedRef {
-		t.Fatalf("detail = %q, want %q", gotDetail, expectedRef)
+	wantFixDetail := "pulled " + expectedRef
+	if gotDetail != wantFixDetail {
+		t.Fatalf("detail = %q, want %q", gotDetail, wantFixDetail)
 	}
 	if fake.ensureCalled != 1 {
 		t.Fatalf("EnsureImage called %d times, want 1", fake.ensureCalled)

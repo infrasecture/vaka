@@ -32,8 +32,10 @@ type doctorCheck struct {
 	name        string
 	required    bool
 	timeout     time.Duration
+	fixTimeout  time.Duration
 	remediation string
 	run         func(context.Context) (string, error)
+	fix         func(context.Context) (string, error)
 }
 
 type doctorResult struct {
@@ -43,6 +45,11 @@ type doctorResult struct {
 	detail   string
 	errText  string
 	fix      string
+
+	fixAttempted bool
+	fixApplied   bool
+	fixDetail    string
+	fixErrText   string
 }
 
 func newDoctorCmd() *cobra.Command {
@@ -51,32 +58,40 @@ func newDoctorCmd() *cobra.Command {
 		Use:   "doctor",
 		Short: "Run preflight checks for Docker/Compose compatibility",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			results := runDoctorChecks(context.Background(), defaultDoctorChecks(opts))
+			results := runDoctorChecks(context.Background(), defaultDoctorChecks(), opts.fix)
 			failed := 0
 			for _, r := range results {
 				if !r.required {
 					if r.ok {
-						if strings.TrimSpace(r.detail) == "" {
+						detail := doctorResultDetail(r)
+						if strings.TrimSpace(detail) == "" {
 							fmt.Printf("INFO %s\n", r.name)
 						} else {
-							fmt.Printf("INFO %s: %s\n", r.name, r.detail)
+							fmt.Printf("INFO %s: %s\n", r.name, detail)
 						}
 					} else {
 						fmt.Printf("INFO %s: unavailable (%s)\n", r.name, r.errText)
+						if strings.TrimSpace(r.fixErrText) != "" {
+							fmt.Printf("  fix attempt failed: %s\n", r.fixErrText)
+						}
 					}
 					continue
 				}
 
 				if r.ok {
-					if strings.TrimSpace(r.detail) == "" {
+					detail := doctorResultDetail(r)
+					if strings.TrimSpace(detail) == "" {
 						fmt.Printf("PASS %s\n", r.name)
 					} else {
-						fmt.Printf("PASS %s: %s\n", r.name, r.detail)
+						fmt.Printf("PASS %s: %s\n", r.name, detail)
 					}
 					continue
 				}
 				failed++
 				fmt.Printf("FAIL %s: %s\n", r.name, r.errText)
+				if strings.TrimSpace(r.fixErrText) != "" {
+					fmt.Printf("  fix attempt failed: %s\n", r.fixErrText)
+				}
 				if strings.TrimSpace(r.fix) != "" {
 					fmt.Printf("  fix: %s\n", r.fix)
 				}
@@ -87,51 +102,89 @@ func newDoctorCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&opts.fix, "fix", false, "Pull missing required vaka-init image into the resolved Docker target.")
+	cmd.Flags().BoolVar(&opts.fix, "fix", false, "Attempt available auto-fixes for failing checks, then re-run those checks.")
 	return cmd
 }
 
-func runDoctorChecks(ctx context.Context, checks []doctorCheck) []doctorResult {
+func runDoctorChecks(ctx context.Context, checks []doctorCheck, applyFix bool) []doctorResult {
 	results := make([]doctorResult, 0, len(checks))
 	for _, c := range checks {
-		checkCtx := ctx
-		cancel := func() {}
-		if c.timeout > 0 {
-			checkCtx, cancel = context.WithTimeout(ctx, c.timeout)
-		}
-		detail, err := c.run(checkCtx)
-		cancel()
-
-		if c.timeout > 0 && errors.Is(checkCtx.Err(), context.DeadlineExceeded) {
-			err = fmt.Errorf("timed out after %s", c.timeout.Round(time.Second))
-		}
-
-		if err != nil {
-			results = append(results, doctorResult{
-				name:     c.name,
-				required: c.required,
-				ok:       false,
-				errText:  strings.TrimSpace(err.Error()),
-				fix:      c.remediation,
-			})
-			continue
-		}
-		results = append(results, doctorResult{
+		detail, err := runDoctorStep(ctx, c.timeout, c.run)
+		r := doctorResult{
 			name:     c.name,
 			required: c.required,
-			ok:       true,
-			detail:   strings.TrimSpace(detail),
-		})
+			fix:      c.remediation,
+		}
+		if err == nil {
+			r.ok = true
+			r.detail = strings.TrimSpace(detail)
+			results = append(results, r)
+			continue
+		}
+		r.errText = strings.TrimSpace(err.Error())
+
+		if applyFix && c.fix != nil {
+			r.fixAttempted = true
+			fixTimeout := c.fixTimeout
+			if fixTimeout <= 0 {
+				fixTimeout = c.timeout
+			}
+			fixDetail, fixErr := runDoctorStep(ctx, fixTimeout, c.fix)
+			if fixErr != nil {
+				r.fixErrText = strings.TrimSpace(fixErr.Error())
+				results = append(results, r)
+				continue
+			}
+			r.fixApplied = true
+			r.fixDetail = strings.TrimSpace(fixDetail)
+
+			// Re-run the probe after a successful fix to ensure the check now passes.
+			detail, err = runDoctorStep(ctx, c.timeout, c.run)
+			if err != nil {
+				r.errText = strings.TrimSpace(err.Error())
+				results = append(results, r)
+				continue
+			}
+			r.ok = true
+			r.detail = strings.TrimSpace(detail)
+		}
+
+		results = append(results, r)
 	}
 	return results
 }
 
-func defaultDoctorChecks(opts doctorOptions) []doctorCheck {
-	vakaInitImageRef := vakaInitBaseImage + ":" + version
-	imageTimeout := doctorProbeTimeout
-	if opts.fix {
-		imageTimeout = doctorFixTimeout
+func runDoctorStep(ctx context.Context, timeout time.Duration, run func(context.Context) (string, error)) (string, error) {
+	stepCtx := ctx
+	cancel := func() {}
+	if timeout > 0 {
+		stepCtx, cancel = context.WithTimeout(ctx, timeout)
 	}
+	detail, err := run(stepCtx)
+	cancel()
+	if timeout > 0 && errors.Is(stepCtx.Err(), context.DeadlineExceeded) {
+		err = fmt.Errorf("timed out after %s", timeout.Round(time.Second))
+	}
+	return detail, err
+}
+
+func doctorResultDetail(r doctorResult) string {
+	detail := strings.TrimSpace(r.detail)
+	if !r.fixApplied {
+		return detail
+	}
+	fixInfo := "fixed"
+	if strings.TrimSpace(r.fixDetail) != "" {
+		fixInfo = "fixed: " + strings.TrimSpace(r.fixDetail)
+	}
+	if detail == "" {
+		return fixInfo
+	}
+	return detail + " (" + fixInfo + ")"
+}
+
+func defaultDoctorChecks() []doctorCheck {
+	vakaInitImageRef := vakaInitBaseImage + ":" + version
 
 	return []doctorCheck{
 		{
@@ -203,18 +256,13 @@ func defaultDoctorChecks(opts doctorOptions) []doctorCheck {
 		{
 			name:        "required vaka-init image present",
 			required:    true,
-			timeout:     imageTimeout,
-			remediation: fmt.Sprintf("Run `vaka doctor --fix` to pull it, or `docker pull %s`.", vakaInitImageRef),
+			timeout:     doctorProbeTimeout,
+			fixTimeout:  doctorFixTimeout,
+			remediation: fmt.Sprintf("Run `vaka doctor --fix` to auto-fix this check, or `docker pull %s`.", vakaInitImageRef),
 			run: func(ctx context.Context) (string, error) {
 				ds, err := newDoctorDockerServices(nil)
 				if err != nil {
 					return "", err
-				}
-				if opts.fix {
-					if err := ds.EnsureImage(ctx, vakaInitImageRef); err != nil {
-						return "", err
-					}
-					return vakaInitImageRef, nil
 				}
 				ok, err := ds.ImageExists(ctx, vakaInitImageRef)
 				if err != nil {
@@ -224,6 +272,16 @@ func defaultDoctorChecks(opts doctorOptions) []doctorCheck {
 					return "", fmt.Errorf("%s is missing in the selected Docker target", vakaInitImageRef)
 				}
 				return vakaInitImageRef, nil
+			},
+			fix: func(ctx context.Context) (string, error) {
+				ds, err := newDoctorDockerServices(nil)
+				if err != nil {
+					return "", err
+				}
+				if err := ds.EnsureImage(ctx, vakaInitImageRef); err != nil {
+					return "", err
+				}
+				return "pulled " + vakaInitImageRef, nil
 			},
 		},
 		{
