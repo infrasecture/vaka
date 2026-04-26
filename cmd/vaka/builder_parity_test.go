@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 func TestRunFullAndShowComposeUseSameOverrideBuilder(t *testing.T) {
 	tests := []struct {
@@ -56,7 +59,8 @@ services:
 			writeFixtureFiles(t, dir, policyYAML, tc.composeYML)
 
 			ds := &fakeBuilderDockerServices{runtimes: tc.runtimes}
-			setDockerServicesFactoryForTest(t, ds)
+			var gotFactoryArgs [][]string
+			setDockerServicesFactoryForTest(t, ds, &gotFactoryArgs)
 
 			var runFullYAML string
 			setExecDockerComposeForTest(t, func(args []string, overrideYAML string, extraEnv []string) error {
@@ -82,6 +86,15 @@ services:
 
 			if showComposeYAML != runFullYAML {
 				t.Fatalf("override mismatch\n--- runFull ---\n%s\n--- show-compose ---\n%s", runFullYAML, showComposeYAML)
+			}
+			if len(gotFactoryArgs) != 2 {
+				t.Fatalf("newDockerServices called %d times, want 2", len(gotFactoryArgs))
+			}
+			if !reflect.DeepEqual(gotFactoryArgs[0], tc.runFullArg) {
+				t.Fatalf("runFull factory args = %v, want %v", gotFactoryArgs[0], tc.runFullArg)
+			}
+			if !reflect.DeepEqual(gotFactoryArgs[1], tc.showArg) {
+				t.Fatalf("runShowCompose factory args = %v, want %v", gotFactoryArgs[1], tc.showArg)
 			}
 		})
 	}

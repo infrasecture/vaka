@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	composetypes "github.com/compose-spec/compose-go/v2/types"
@@ -15,10 +16,10 @@ import (
 	dockerimage "github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/errdefs"
+	"github.com/docker/docker/pkg/jsonmessage"
+	"github.com/moby/term"
 	"github.com/spf13/pflag"
 )
-
-const dockerConfigPathHint = "~/.docker/config.json"
 
 // DockerServices is the interface for all Docker daemon interactions in vaka.
 // A single implementation is created per runFull invocation; a test double can
@@ -67,10 +68,10 @@ var loadDockerConfigFile = dockerconfig.LoadDefaultConfigFile
 //  1. explicit --context/-c from compose global flags
 //  2. DOCKER_HOST fallback to default context endpoint
 //  3. DOCKER_CONTEXT
-//  4. currentContext from ~/.docker/config.json
+//  4. currentContext from Docker config (DOCKER_CONFIG/config.json)
 //  5. default context
 func NewDockerServices(args []string) (DockerServices, error) {
-	cfg := loadDockerConfigFile(io.Discard)
+	cfg := loadDockerConfigFile(os.Stderr)
 	opts := newDockerClientOptions(args)
 	targetDesc := dockerTargetDescription(args, cfg)
 
@@ -95,11 +96,18 @@ func newDockerClientOptions(args []string) *dockerflags.ClientOptions {
 	fs := pflag.NewFlagSet("vaka-docker", pflag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	opts.InstallFlags(fs)
+	// We do not parse compose argv into this docker client flagset because
+	// compose global flags are not docker client flags. The only shared target
+	// selector is --context/-c, extracted from compose globals below.
 	if ctxName := dockerContextFromArgs(args); ctxName != "" {
 		opts.Context = ctxName
 	}
 	opts.SetDefaultOptions(fs)
 	return opts
+}
+
+func dockerConfigFilePathHint() string {
+	return filepath.Join(dockerconfig.Dir(), dockerconfig.ConfigFileName)
 }
 
 func dockerTargetDescription(args []string, cfg *configfile.ConfigFile) string {
@@ -113,7 +121,7 @@ func dockerTargetDescription(args []string, cfg *configfile.ConfigFile) string {
 		return fmt.Sprintf("context %q (from %s)", ctxName, dockercli.EnvOverrideContext)
 	}
 	if cfg != nil && strings.TrimSpace(cfg.CurrentContext) != "" {
-		return fmt.Sprintf("context %q (from %s)", strings.TrimSpace(cfg.CurrentContext), dockerConfigPathHint)
+		return fmt.Sprintf("context %q (from %s)", strings.TrimSpace(cfg.CurrentContext), dockerConfigFilePathHint())
 	}
 	return "default Docker context"
 }
@@ -144,8 +152,9 @@ func (d *dockerServices) EnsureImage(ctx context.Context, ref string) error {
 		return fmt.Errorf("failed to pull %s on %s — check network connectivity or use --vaka-init-present if binaries are baked into the image: %w", ref, d.targetDesc, pullErr)
 	}
 	defer rc.Close()
-	if _, err := io.Copy(os.Stderr, rc); err != nil {
-		return fmt.Errorf("read pull stream for %s on %s: %w", ref, d.targetDesc, err)
+	stderrFD, isTerminal := term.GetFdInfo(os.Stderr)
+	if err := jsonmessage.DisplayJSONMessagesStream(rc, os.Stderr, stderrFD, isTerminal, nil); err != nil {
+		return fmt.Errorf("display pull stream for %s on %s: %w", ref, d.targetDesc, err)
 	}
 	return nil
 }

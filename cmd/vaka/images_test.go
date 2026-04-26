@@ -2,13 +2,16 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	dockercli "github.com/docker/cli/cli/command"
+	dockerconfig "github.com/docker/cli/cli/config"
 	"github.com/docker/cli/cli/config/configfile"
 	dockerimage "github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
@@ -41,7 +44,7 @@ func (f *fakeDockerClient) ImagePull(_ context.Context, _ string, _ dockerimage.
 	if f.pullErr != nil {
 		return nil, f.pullErr
 	}
-	return io.NopCloser(&bytes.Buffer{}), nil
+	return io.NopCloser(strings.NewReader("{\"status\":\"Pulling from emsi/vaka-init\"}\n")), nil
 }
 
 // imageConfig builds a fake inspect result with ENTRYPOINT/CMD/USER defaults.
@@ -106,7 +109,15 @@ func TestDockerTargetDescriptionPrecedence(t *testing.T) {
 	t.Setenv(client.EnvOverrideHost, "")
 	t.Setenv(dockercli.EnvOverrideContext, "")
 
+	oldConfigDir := dockerconfig.Dir()
+	configDir := t.TempDir()
+	dockerconfig.SetDir(configDir)
+	t.Cleanup(func() {
+		dockerconfig.SetDir(oldConfigDir)
+	})
+
 	cfg := &configfile.ConfigFile{CurrentContext: "cfg-context"}
+	configPath := filepath.Join(configDir, dockerconfig.ConfigFileName)
 	tests := []struct {
 		name      string
 		args      []string
@@ -145,7 +156,7 @@ func TestDockerTargetDescriptionPrecedence(t *testing.T) {
 			host:      "",
 			envCtx:    "",
 			cfg:       cfg,
-			wantDescr: `context "cfg-context" (from ~/.docker/config.json)`,
+			wantDescr: fmt.Sprintf(`context "cfg-context" (from %s)`, configPath),
 		},
 		{
 			name:      "default context fallback",
