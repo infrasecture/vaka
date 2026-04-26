@@ -247,8 +247,20 @@ Established connections are always accepted so in-flight requests are not droppe
 Download the binary for your platform from the [releases page](https://github.com/infrasecture/vaka/releases) and place it on your `PATH`:
 
 ```bash
+# Pick one binary for your platform:
+
 # Linux amd64
 curl -fsSL https://github.com/infrasecture/vaka/releases/download/v0.1.0/vaka-linux-amd64 -o vaka
+
+# Linux arm64
+curl -fsSL https://github.com/infrasecture/vaka/releases/download/v0.1.0/vaka-linux-arm64 -o vaka
+
+# macOS arm64 (Apple Silicon)
+curl -fsSL https://github.com/infrasecture/vaka/releases/download/v0.1.0/vaka-darwin-arm64 -o vaka
+
+# macOS amd64 (Intel)
+curl -fsSL https://github.com/infrasecture/vaka/releases/download/v0.1.0/vaka-darwin-amd64 -o vaka
+
 chmod +x vaka
 sudo mv vaka /usr/local/bin/vaka
 ```
@@ -765,29 +777,49 @@ vaka is designed to contain well-behaved but potentially over-reaching software:
 ./build.sh
 ```
 
-This builds fully static binaries for `linux/amd64` and `linux/arm64` inside a `golang:1.25-alpine` container and produces arch-specific `emsi/vaka-init` Docker images. Output lands in `./dist/`:
+This builds `vaka` CLI binaries for Linux and macOS (`amd64` + `arm64`) and Linux-only `vaka-init`/`nft` runtime binaries. It also produces arch-specific `emsi/vaka-init` Docker images. Output lands in `./dist/`:
 
 ```
 dist/vaka-linux-amd64
 dist/vaka-linux-arm64
+dist/vaka-darwin-amd64
+dist/vaka-darwin-arm64
 dist/vaka-init-linux-amd64
 dist/vaka-init-linux-arm64
 dist/nft-linux-amd64
 dist/nft-linux-arm64
 ```
 
-The script verifies that each binary is statically linked and that the Docker image contains exactly `nft` and `vaka-init`.
+The script verifies that Linux binaries are statically linked, darwin binaries are Mach-O executables, and that the Docker image contains exactly `nft` and `vaka-init`.
 
-To build for a single architecture:
+To build only Linux runtime artifacts for a single architecture:
 
 ```bash
 ARCHS=amd64 ./build.sh
 ```
 
+To customize CLI output targets:
+
+```bash
+CLI_TARGETS="linux/amd64 darwin/arm64" ./build.sh
+```
+
 ### Install the CLI binary
 
 ```bash
+# Pick one binary matching your host:
+
+# Linux amd64
 sudo install -m 0755 dist/vaka-linux-amd64 /usr/local/bin/vaka
+
+# Linux arm64
+sudo install -m 0755 dist/vaka-linux-arm64 /usr/local/bin/vaka
+
+# macOS amd64 (Intel)
+sudo install -m 0755 dist/vaka-darwin-amd64 /usr/local/bin/vaka
+
+# macOS Apple Silicon
+sudo install -m 0755 dist/vaka-darwin-arm64 /usr/local/bin/vaka
 ```
 
 ### Build Linux packages
