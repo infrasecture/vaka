@@ -102,7 +102,8 @@ services:
 	writeFixtureFiles(t, dir, policyYAML, composeYAML)
 
 	ds := &fakeBuilderDockerServices{}
-	setDockerServicesFactoryForTest(t, ds)
+	var gotFactoryArgs [][]string
+	setDockerServicesFactoryForTest(t, ds, &gotFactoryArgs)
 
 	wantYAML, extraEnv, err := buildInjectionOverride(context.Background(), ds, "vaka.yaml", []string{"show-compose"}, true)
 	if err != nil {
@@ -132,6 +133,13 @@ services:
 	if strings.Contains(gotStdout, kv[1]) {
 		t.Fatalf("stdout must not contain encoded policy payload")
 	}
+	if len(gotFactoryArgs) != 1 {
+		t.Fatalf("newDockerServices called %d times, want 1", len(gotFactoryArgs))
+	}
+	wantFactoryArgs := []string{"show-compose"}
+	if !reflect.DeepEqual(gotFactoryArgs[0], wantFactoryArgs) {
+		t.Fatalf("runShowCompose factory args = %v, want %v", gotFactoryArgs[0], wantFactoryArgs)
+	}
 }
 
 func TestRunShowComposeWritesOutputFile(t *testing.T) {
@@ -158,7 +166,8 @@ services:
 	writeFixtureFiles(t, dir, policyYAML, composeYAML)
 
 	ds := &fakeBuilderDockerServices{}
-	setDockerServicesFactoryForTest(t, ds)
+	var gotFactoryArgs [][]string
+	setDockerServicesFactoryForTest(t, ds, &gotFactoryArgs)
 
 	wantYAML, _, err := buildInjectionOverride(context.Background(), ds, "vaka.yaml", []string{"show-compose"}, true)
 	if err != nil {
@@ -177,5 +186,12 @@ services:
 
 	if string(got) != wantYAML {
 		t.Fatalf("file output mismatch\n--- got ---\n%s\n--- want ---\n%s", string(got), wantYAML)
+	}
+	if len(gotFactoryArgs) != 1 {
+		t.Fatalf("newDockerServices called %d times, want 1", len(gotFactoryArgs))
+	}
+	wantFactoryArgs := []string{"show-compose"}
+	if !reflect.DeepEqual(gotFactoryArgs[0], wantFactoryArgs) {
+		t.Fatalf("runShowCompose factory args = %v, want %v", gotFactoryArgs[0], wantFactoryArgs)
 	}
 }

@@ -2,12 +2,17 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"path/filepath"
+	"strings"
 	"testing"
 
+	dockercli "github.com/docker/cli/cli/command"
+	dockerconfig "github.com/docker/cli/cli/config"
+	"github.com/docker/cli/cli/config/configfile"
 	dockerimage "github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/errdefs"
@@ -39,47 +44,8 @@ func (f *fakeDockerClient) ImagePull(_ context.Context, _ string, _ dockerimage.
 	if f.pullErr != nil {
 		return nil, f.pullErr
 	}
-	return io.NopCloser(&bytes.Buffer{}), nil
+	return io.NopCloser(strings.NewReader("{\"status\":\"Pulling from emsi/vaka-init\"}\n")), nil
 }
-
-// --- EnsureImage tests ---
-
-func TestEnsureImagePresent(t *testing.T) {
-	dc := &fakeDockerClient{notFound: false}
-	e := &dockerServices{c: dc}
-	if err := e.EnsureImage(context.Background(), "emsi/vaka-init:v0.1.0"); err != nil {
-		t.Fatalf("present: unexpected error: %v", err)
-	}
-	if dc.pullCalled {
-		t.Error("present: pull must not be called when image is already present")
-	}
-}
-
-func TestEnsureImageAbsentPullSucceeds(t *testing.T) {
-	dc := &fakeDockerClient{notFound: true}
-	e := &dockerServices{c: dc}
-	if err := e.EnsureImage(context.Background(), "emsi/vaka-init:v0.1.0"); err != nil {
-		t.Fatalf("absent+pull succeeds: unexpected error: %v", err)
-	}
-	if !dc.pullCalled {
-		t.Error("absent+pull succeeds: pull must be called when image is absent")
-	}
-}
-
-func TestEnsureImageAbsentPullFails(t *testing.T) {
-	pullErr := errors.New("network unreachable")
-	dc := &fakeDockerClient{notFound: true, pullErr: pullErr}
-	e := &dockerServices{c: dc}
-	err := e.EnsureImage(context.Background(), "emsi/vaka-init:v0.1.0")
-	if err == nil {
-		t.Fatal("pull fails: expected error, got nil")
-	}
-	if !errors.Is(err, pullErr) {
-		t.Errorf("pull fails: expected %v wrapped, got %v", pullErr, err)
-	}
-}
-
-// --- ResolveRuntime tests ---
 
 // imageConfig builds a fake inspect result with ENTRYPOINT/CMD/USER defaults.
 func imageConfig(entrypoint, cmd []string, user string) dockerimage.InspectResponse {
@@ -106,6 +72,153 @@ func strEq(a, b []string) bool {
 	return true
 }
 
+func TestNewDockerClientOptionsUsesContextFlag(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    []string
+		wantCtx string
+	}{
+		{
+			name:    "long context flag",
+			args:    []string{"--context", "desktop-linux", "up"},
+			wantCtx: "desktop-linux",
+		},
+		{
+			name:    "short context flag",
+			args:    []string{"-c", "desktop-linux", "up"},
+			wantCtx: "desktop-linux",
+		},
+		{
+			name:    "last context flag wins",
+			args:    []string{"--context", "ctx-a", "-c", "ctx-b", "up"},
+			wantCtx: "ctx-b",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := newDockerClientOptions(tc.args)
+			if opts.Context != tc.wantCtx {
+				t.Fatalf("Context=%q, want %q", opts.Context, tc.wantCtx)
+			}
+		})
+	}
+}
+
+func TestDockerTargetDescriptionPrecedence(t *testing.T) {
+	t.Setenv(client.EnvOverrideHost, "")
+	t.Setenv(dockercli.EnvOverrideContext, "")
+
+	oldConfigDir := dockerconfig.Dir()
+	configDir := t.TempDir()
+	dockerconfig.SetDir(configDir)
+	t.Cleanup(func() {
+		dockerconfig.SetDir(oldConfigDir)
+	})
+
+	cfg := &configfile.ConfigFile{CurrentContext: "cfg-context"}
+	configPath := filepath.Join(configDir, dockerconfig.ConfigFileName)
+	tests := []struct {
+		name      string
+		args      []string
+		host      string
+		envCtx    string
+		cfg       *configfile.ConfigFile
+		wantDescr string
+	}{
+		{
+			name:      "explicit context wins over host env",
+			args:      []string{"--context", "ctx-flag", "up"},
+			host:      "tcp://remote:2376",
+			envCtx:    "ctx-env",
+			cfg:       cfg,
+			wantDescr: `context "ctx-flag" (from --context)`,
+		},
+		{
+			name:      "docker host wins over docker context env",
+			args:      []string{"up"},
+			host:      "tcp://remote:2376",
+			envCtx:    "ctx-env",
+			cfg:       cfg,
+			wantDescr: `daemon "tcp://remote:2376" (from DOCKER_HOST)`,
+		},
+		{
+			name:      "docker context env when no host",
+			args:      []string{"up"},
+			host:      "",
+			envCtx:    "ctx-env",
+			cfg:       cfg,
+			wantDescr: `context "ctx-env" (from DOCKER_CONTEXT)`,
+		},
+		{
+			name:      "config current context fallback",
+			args:      []string{"up"},
+			host:      "",
+			envCtx:    "",
+			cfg:       cfg,
+			wantDescr: fmt.Sprintf(`context "cfg-context" (from %s)`, configPath),
+		},
+		{
+			name:      "default context fallback",
+			args:      []string{"up"},
+			host:      "",
+			envCtx:    "",
+			cfg:       &configfile.ConfigFile{},
+			wantDescr: "default Docker context",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(client.EnvOverrideHost, tc.host)
+			t.Setenv(dockercli.EnvOverrideContext, tc.envCtx)
+			got := dockerTargetDescription(tc.args, tc.cfg)
+			if got != tc.wantDescr {
+				t.Fatalf("dockerTargetDescription()=%q, want %q", got, tc.wantDescr)
+			}
+		})
+	}
+}
+
+// --- EnsureImage tests ---
+
+func TestEnsureImagePresent(t *testing.T) {
+	dc := &fakeDockerClient{notFound: false}
+	e := &dockerServices{c: dc, targetDesc: "test-context"}
+	if err := e.EnsureImage(context.Background(), "emsi/vaka-init:v0.1.0"); err != nil {
+		t.Fatalf("present: unexpected error: %v", err)
+	}
+	if dc.pullCalled {
+		t.Error("present: pull must not be called when image is already present")
+	}
+}
+
+func TestEnsureImageAbsentPullSucceeds(t *testing.T) {
+	dc := &fakeDockerClient{notFound: true}
+	e := &dockerServices{c: dc, targetDesc: "test-context"}
+	if err := e.EnsureImage(context.Background(), "emsi/vaka-init:v0.1.0"); err != nil {
+		t.Fatalf("absent+pull succeeds: unexpected error: %v", err)
+	}
+	if !dc.pullCalled {
+		t.Error("absent+pull succeeds: pull must be called when image is absent")
+	}
+}
+
+func TestEnsureImageAbsentPullFails(t *testing.T) {
+	pullErr := errors.New("network unreachable")
+	dc := &fakeDockerClient{notFound: true, pullErr: pullErr}
+	e := &dockerServices{c: dc, targetDesc: "test-context"}
+	err := e.EnsureImage(context.Background(), "emsi/vaka-init:v0.1.0")
+	if err == nil {
+		t.Fatal("pull fails: expected error, got nil")
+	}
+	if !errors.Is(err, pullErr) {
+		t.Errorf("pull fails: expected %v wrapped, got %v", pullErr, err)
+	}
+}
+
+// --- ResolveRuntime tests ---
+
 // TestResolveRuntimeMatrix exercises compose/image runtime resolution for
 // entrypoint/cmd and user fallback.
 func TestResolveRuntimeMatrix(t *testing.T) {
@@ -124,7 +237,7 @@ func TestResolveRuntimeMatrix(t *testing.T) {
 		wantInspect   bool
 	}{
 		{
-			name:          "entrypoint and user set — no inspect",
+			name:          "entrypoint and user set no inspect",
 			composeEP:     []string{"/app"},
 			composeCmd:    []string{"--flag"},
 			composeUser:   "app",
@@ -134,7 +247,7 @@ func TestResolveRuntimeMatrix(t *testing.T) {
 			wantInspect:   false,
 		},
 		{
-			name:          "entrypoint only with compose user set — no inspect",
+			name:          "entrypoint only with compose user set no inspect",
 			composeEP:     []string{"/app"},
 			composeCmd:    nil,
 			composeUser:   "1000:1000",
@@ -144,7 +257,7 @@ func TestResolveRuntimeMatrix(t *testing.T) {
 			wantInspect:   false,
 		},
 		{
-			name:          "command only with compose user set — image entrypoint needed",
+			name:          "command only with compose user set needs image entrypoint",
 			composeEP:     nil,
 			composeCmd:    []string{"worker"},
 			composeUser:   "1000",
@@ -154,7 +267,7 @@ func TestResolveRuntimeMatrix(t *testing.T) {
 			wantInspect:   true,
 		},
 		{
-			name:          "neither entrypoint nor user set — both from image",
+			name:          "neither entrypoint nor user set",
 			composeEP:     nil,
 			composeCmd:    nil,
 			composeUser:   "",
@@ -164,7 +277,7 @@ func TestResolveRuntimeMatrix(t *testing.T) {
 			wantInspect:   true,
 		},
 		{
-			name:          "entrypoint set and user empty — image user fallback only",
+			name:          "entrypoint set and user empty image user fallback",
 			composeEP:     []string{"/app"},
 			composeCmd:    []string{"serve"},
 			composeUser:   "",
@@ -178,7 +291,7 @@ func TestResolveRuntimeMatrix(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			dc := &fakeDockerClient{inspectResult: imageConfig(imgEP, imgCmd, imgUser)}
-			ds := &dockerServices{c: dc}
+			ds := &dockerServices{c: dc, targetDesc: "test-context"}
 			svc := composetypes.ServiceConfig{
 				Image:      "nginx:latest",
 				Entrypoint: tc.composeEP,
@@ -187,7 +300,7 @@ func TestResolveRuntimeMatrix(t *testing.T) {
 			}
 			got, err := ds.ResolveRuntime(context.Background(), "web", svc)
 			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
+				t.Fatalf("ResolveRuntime unexpected error: %v", err)
 			}
 			if !strEq(got.Entrypoint, tc.wantEP) {
 				t.Errorf("entrypoint = %v, want %v", got.Entrypoint, tc.wantEP)
@@ -212,7 +325,7 @@ func TestResolveRuntimeMatrix(t *testing.T) {
 
 func TestImageExistsPresent(t *testing.T) {
 	dc := &fakeDockerClient{notFound: false}
-	ds := &dockerServices{c: dc}
+	ds := &dockerServices{c: dc, targetDesc: "test-context"}
 	ok, err := ds.ImageExists(context.Background(), "nginx:latest")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -224,7 +337,7 @@ func TestImageExistsPresent(t *testing.T) {
 
 func TestImageExistsAbsent(t *testing.T) {
 	dc := &fakeDockerClient{notFound: true}
-	ds := &dockerServices{c: dc}
+	ds := &dockerServices{c: dc, targetDesc: "test-context"}
 	ok, err := ds.ImageExists(context.Background(), "nginx:latest")
 	if err != nil {
 		t.Fatalf("unexpected error on NotFound: %v", err)
@@ -236,7 +349,7 @@ func TestImageExistsAbsent(t *testing.T) {
 
 func TestResolveRuntimeImageNotFound(t *testing.T) {
 	dc := &fakeDockerClient{notFound: true}
-	ds := &dockerServices{c: dc}
+	ds := &dockerServices{c: dc, targetDesc: `context "dev" (from --context)`}
 	svc := composetypes.ServiceConfig{Image: "myapp:latest"}
 	_, err := ds.ResolveRuntime(context.Background(), "myapp", svc)
 	if err == nil {
@@ -246,7 +359,7 @@ func TestResolveRuntimeImageNotFound(t *testing.T) {
 
 func TestResolveRuntimeNoImageNeedsFallback(t *testing.T) {
 	dc := &fakeDockerClient{}
-	ds := &dockerServices{c: dc}
+	ds := &dockerServices{c: dc, targetDesc: "test-context"}
 	svc := composetypes.ServiceConfig{Command: []string{"worker"}}
 	_, err := ds.ResolveRuntime(context.Background(), "svc", svc)
 	if err == nil {
@@ -259,7 +372,7 @@ func TestResolveRuntimeNoImageNeedsFallback(t *testing.T) {
 
 func TestResolveRuntimeNoImageButComposeHasAllRuntimeFields(t *testing.T) {
 	dc := &fakeDockerClient{}
-	ds := &dockerServices{c: dc}
+	ds := &dockerServices{c: dc, targetDesc: "test-context"}
 	svc := composetypes.ServiceConfig{
 		Entrypoint: []string{"/usr/local/bin/app"},
 		Command:    []string{"serve"},

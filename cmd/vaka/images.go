@@ -1,4 +1,3 @@
-// cmd/vaka/images.go
 package main
 
 import (
@@ -6,12 +5,20 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	composetypes "github.com/compose-spec/compose-go/v2/types"
+	dockercli "github.com/docker/cli/cli/command"
+	dockerconfig "github.com/docker/cli/cli/config"
+	"github.com/docker/cli/cli/config/configfile"
+	dockerflags "github.com/docker/cli/cli/flags"
 	dockerimage "github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/errdefs"
+	"github.com/docker/docker/pkg/jsonmessage"
+	"github.com/moby/term"
+	"github.com/spf13/pflag"
 )
 
 // DockerServices is the interface for all Docker daemon interactions in vaka.
@@ -45,22 +52,78 @@ type dockerClient interface {
 	ImagePull(ctx context.Context, ref string, opts dockerimage.PullOptions) (io.ReadCloser, error)
 }
 
-// dockerServices is the production DockerServices backed by the Docker daemon.
+// dockerServices is the production DockerServices backed by the Docker API.
+// The API client is initialized through docker/cli flag/env/config resolution
+// so it targets the same backend Docker CLI would use for this invocation.
 type dockerServices struct {
-	c dockerClient
+	c          dockerClient
+	targetDesc string
 }
 
-// NewDockerServices creates a DockerServices using the Docker environment
-// (DOCKER_HOST, TLS settings, active context). The underlying client is
-// created once and reused for all operations. Close is intentionally omitted:
-// this is a short-lived CLI process that exits immediately after the operation,
-// so the OS reclaims all resources without an explicit teardown.
-func NewDockerServices() (DockerServices, error) {
-	c, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+var loadDockerConfigFile = dockerconfig.LoadDefaultConfigFile
+
+// NewDockerServices creates a DockerServices for one vaka invocation using
+// docker/cli target resolution semantics:
+//
+//  1. explicit --context/-c from compose global flags
+//  2. DOCKER_HOST fallback to default context endpoint
+//  3. DOCKER_CONTEXT
+//  4. currentContext from Docker config (DOCKER_CONFIG/config.json)
+//  5. default context
+func NewDockerServices(args []string) (DockerServices, error) {
+	cfg := loadDockerConfigFile(os.Stderr)
+	opts := newDockerClientOptions(args)
+	targetDesc := dockerTargetDescription(args, cfg)
+
+	apiClient, err := dockercli.NewAPIClientFromFlags(opts, cfg)
 	if err != nil {
-		return nil, fmt.Errorf("create Docker client: %w", err)
+		return nil, fmt.Errorf("create Docker client for %s: %w", targetDesc, err)
 	}
-	return &dockerServices{c: c}, nil
+	return &dockerServices{
+		c:          apiClient,
+		targetDesc: targetDesc,
+	}, nil
+}
+
+// dockerContextFromArgs returns the docker context selected via compose global
+// flags. The last occurrence wins. Returns empty when unset.
+func dockerContextFromArgs(args []string) string {
+	return composeGlobalValue(args, "--context", "-c")
+}
+
+func newDockerClientOptions(args []string) *dockerflags.ClientOptions {
+	opts := dockerflags.NewClientOptions()
+	fs := pflag.NewFlagSet("vaka-docker", pflag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	opts.InstallFlags(fs)
+	// We do not parse compose argv into this docker client flagset because
+	// compose global flags are not docker client flags. The only shared target
+	// selector is --context/-c, extracted from compose globals below.
+	if ctxName := dockerContextFromArgs(args); ctxName != "" {
+		opts.Context = ctxName
+	}
+	opts.SetDefaultOptions(fs)
+	return opts
+}
+
+func dockerConfigFilePathHint() string {
+	return filepath.Join(dockerconfig.Dir(), dockerconfig.ConfigFileName)
+}
+
+func dockerTargetDescription(args []string, cfg *configfile.ConfigFile) string {
+	if ctxName := dockerContextFromArgs(args); ctxName != "" {
+		return fmt.Sprintf("context %q (from --context)", ctxName)
+	}
+	if host := strings.TrimSpace(os.Getenv(client.EnvOverrideHost)); host != "" {
+		return fmt.Sprintf("daemon %q (from %s)", host, client.EnvOverrideHost)
+	}
+	if ctxName := strings.TrimSpace(os.Getenv(dockercli.EnvOverrideContext)); ctxName != "" {
+		return fmt.Sprintf("context %q (from %s)", ctxName, dockercli.EnvOverrideContext)
+	}
+	if cfg != nil && strings.TrimSpace(cfg.CurrentContext) != "" {
+		return fmt.Sprintf("context %q (from %s)", strings.TrimSpace(cfg.CurrentContext), dockerConfigFilePathHint())
+	}
+	return "default Docker context"
 }
 
 // ImageExists returns true if ref is present in the local image store.
@@ -72,7 +135,7 @@ func (d *dockerServices) ImageExists(ctx context.Context, ref string) (bool, err
 	if errdefs.IsNotFound(err) {
 		return false, nil
 	}
-	return false, fmt.Errorf("inspect %s: %w", ref, err)
+	return false, fmt.Errorf("inspect %s on %s: %w", ref, d.targetDesc, err)
 }
 
 // EnsureImage inspects ref locally; pulls it if absent.
@@ -82,15 +145,18 @@ func (d *dockerServices) EnsureImage(ctx context.Context, ref string) error {
 		return nil
 	}
 	if !errdefs.IsNotFound(err) {
-		return fmt.Errorf("inspect %s: %w", ref, err)
+		return fmt.Errorf("inspect %s on %s: %w", ref, d.targetDesc, err)
 	}
 	rc, pullErr := d.c.ImagePull(ctx, ref, dockerimage.PullOptions{})
 	if pullErr != nil {
-		return fmt.Errorf("failed to pull %s — check network connectivity or use --vaka-init-present if binaries are baked into the image: %w", ref, pullErr)
+		return fmt.Errorf("failed to pull %s on %s — check network connectivity or use --vaka-init-present if binaries are baked into the image: %w", ref, d.targetDesc, pullErr)
 	}
 	defer rc.Close()
-	_, err = io.Copy(os.Stderr, rc)
-	return err
+	stderrFD, isTerminal := term.GetFdInfo(os.Stderr)
+	if err := jsonmessage.DisplayJSONMessagesStream(rc, os.Stderr, stderrFD, isTerminal, nil); err != nil {
+		return fmt.Errorf("display pull stream for %s on %s: %w", ref, d.targetDesc, err)
+	}
+	return nil
 }
 
 // ResolveRuntime resolves effective runtime metadata for svc, following
@@ -129,10 +195,11 @@ func (d *dockerServices) ResolveRuntime(ctx context.Context, svcName string, svc
 	if err != nil {
 		if errdefs.IsNotFound(err) {
 			return ResolvedRuntime{}, fmt.Errorf(
-				"service %s: image %q not available locally — pull/build it first, or set compose user/entrypoint so image defaults are not needed",
-				svcName, svc.Image)
+				"service %s: image %q not available locally on %s — pull/build it first, or set compose user/entrypoint so image defaults are not needed",
+				svcName, svc.Image, d.targetDesc,
+			)
 		}
-		return ResolvedRuntime{}, fmt.Errorf("service %s: inspect %q: %w", svcName, svc.Image, err)
+		return ResolvedRuntime{}, fmt.Errorf("service %s: inspect %q on %s: %w", svcName, svc.Image, d.targetDesc, err)
 	}
 	if inspect.Config == nil {
 		return ResolvedRuntime{}, fmt.Errorf("service %s: image %q has no Config", svcName, svc.Image)
