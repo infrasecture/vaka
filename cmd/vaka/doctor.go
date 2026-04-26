@@ -199,10 +199,7 @@ func resolveDoctorFixTimeout(c doctorCheck) time.Duration {
 	if c.fixTimeout > 0 {
 		return c.fixTimeout
 	}
-	if doctorDefaultFixTimeout > 0 {
-		return doctorDefaultFixTimeout
-	}
-	return c.timeout
+	return doctorDefaultFixTimeout
 }
 
 func failedDependency(dependsOn []string, byName map[string]doctorResult) (name string, errText string, failed bool) {
