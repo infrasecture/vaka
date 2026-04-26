@@ -13,6 +13,8 @@
 #   - Calls build.sh exactly once:
 #       ./build.sh --release --packages --push
 #   - Generates SHA256SUMS for this release's artifacts only.
+#   - Updates Homebrew tap formulas, then commits + pushes the superproject
+#     submodule pointer bump when changed.
 #
 # Requirements:
 #   - git
@@ -37,6 +39,8 @@ Options:
 Behavior:
   - Default mode requires a release tag (vX.Y.Z) on HEAD; otherwise exits non-zero.
   - Build is executed once via: ./build.sh --release --packages --push
+  - If Homebrew formula changes, script updates and pushes homebrew-tap,
+    then commits and pushes the superproject submodule pointer bump.
 EOF
 }
 
@@ -412,10 +416,22 @@ else
 fi
 
 git add homebrew-tap
+superproject_commit_created=false
 if ! git diff --cached --quiet -- homebrew-tap; then
     git commit -m "chore(submodule): bump homebrew-tap after ${release_tag} release"
+    superproject_commit_created=true
 else
     echo "    Submodule pointer unchanged; no superproject commit needed."
+fi
+
+if [[ "${superproject_commit_created}" == "true" ]]; then
+    current_branch="$(git symbolic-ref --quiet --short HEAD || true)"
+    if [[ -z "${current_branch}" ]]; then
+        echo "ERROR: created a superproject commit on detached HEAD; cannot auto-push." >&2
+        echo "       Push it manually, e.g.: git push origin HEAD:<branch>" >&2
+        exit 1
+    fi
+    git push origin "${current_branch}"
 fi
 
 echo ""
