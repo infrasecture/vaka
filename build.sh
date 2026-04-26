@@ -12,6 +12,10 @@
 #   ./build.sh --rebuild-nft    force rebuild of emsi/nft-static images
 #   ./build.sh --rebuild-go     force rebuild of Go binaries even if up to date
 #   ARCHS="amd64" ./build.sh    restrict to one architecture
+#   CLI_TARGETS="darwin/amd64 darwin/arm64" ARCHS="$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')" ./build.sh
+#                               build Darwin CLI binaries only, keep runtime on native arch
+#   ARCHS="amd64 arm64" CLI_TARGETS="linux/amd64 linux/arm64 darwin/amd64 darwin/arm64" ./build.sh
+#                               build complete matrix explicitly (same targets as --release defaults)
 #
 # Multi-arch publishing — single host (QEMU handles foreign-arch nft C build):
 #   sudo apt-get install -y qemu-user-static   # Debian/Ubuntu

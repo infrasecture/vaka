@@ -846,6 +846,22 @@ To customize CLI output targets explicitly:
 CLI_TARGETS="linux/amd64 darwin/arm64" ./build.sh
 ```
 
+To build Darwin CLI binaries only (without cross-arch runtime builds):
+
+```bash
+ARCHS=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/') \
+CLI_TARGETS="darwin/amd64 darwin/arm64" \
+./build.sh
+```
+
+To build the complete matrix explicitly:
+
+```bash
+ARCHS="amd64 arm64" \
+CLI_TARGETS="linux/amd64 linux/arm64 darwin/amd64 darwin/arm64" \
+./build.sh
+```
+
 ### Install the CLI binary
 
 ```bash
