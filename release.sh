@@ -12,7 +12,7 @@
 # Build behavior:
 #   - Calls build.sh exactly once:
 #       ./build.sh --release --packages --push
-#   - Generates SHA256SUMS for all non-hidden dist/ files.
+#   - Generates SHA256SUMS for this release's artifacts only.
 #
 # Requirements:
 #   - git
@@ -156,26 +156,44 @@ if [[ -z "${release_title}" ]]; then
     fi
 fi
 
-mkdir -p dist
-find dist -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
-
 echo "==> Building and publishing artifacts/images with VERSION=${release_tag}"
 VERSION="${release_tag}" ./build.sh --release --packages --push
 
-shopt -s nullglob
+pkg_version="${release_tag#v}"
+expected=(
+    "dist/nft-linux-amd64"
+    "dist/nft-linux-arm64"
+    "dist/vaka-linux-amd64"
+    "dist/vaka-linux-arm64"
+    "dist/vaka-darwin-amd64"
+    "dist/vaka-darwin-arm64"
+    "dist/vaka-init-linux-amd64"
+    "dist/vaka-init-linux-arm64"
+    "dist/vaka_${pkg_version}_amd64.deb"
+    "dist/vaka_${pkg_version}_arm64.deb"
+    "dist/vaka-${pkg_version}-1.x86_64.rpm"
+    "dist/vaka-${pkg_version}-1.aarch64.rpm"
+)
+
 artifacts=()
 artifact_names=()
-for path in dist/*; do
-    [[ -f "${path}" ]] || continue
-    name="$(basename "${path}")"
-    [[ "${name}" == .* ]] && continue
-    artifacts+=("${path}")
-    artifact_names+=("${name}")
+missing=()
+for path in "${expected[@]}"; do
+    if [[ -f "${path}" ]]; then
+        artifacts+=("${path}")
+        artifact_names+=("$(basename "${path}")")
+    else
+        missing+=("${path}")
+    fi
 done
-shopt -u nullglob
 
 if [[ "${#artifacts[@]}" -eq 0 ]]; then
     echo "ERROR: no release artifacts found in dist/" >&2
+    exit 1
+fi
+if [[ "${#missing[@]}" -gt 0 ]]; then
+    echo "ERROR: missing expected release artifacts:" >&2
+    printf '  %s\n' "${missing[@]}" >&2
     exit 1
 fi
 
@@ -189,6 +207,24 @@ else
 fi
 artifacts+=("dist/SHA256SUMS")
 
+if [[ "${is_prerelease}" == "true" ]]; then
+    # Pre-create and push the nightly tag so release creation can use --verify-tag
+    # and avoid API-side auto-tag creation edge cases.
+    if git rev-parse -q --verify "refs/tags/${release_tag}" >/dev/null 2>&1; then
+        tag_target="$(git rev-list -n1 "${release_tag}")"
+        if [[ "${tag_target}" != "${head_commit}" ]]; then
+            echo "ERROR: local tag ${release_tag} points to ${tag_target}, expected ${head_commit}" >&2
+            exit 1
+        fi
+    else
+        git tag "${release_tag}" "${head_commit}"
+    fi
+    if ! git ls-remote --exit-code --tags origin "refs/tags/${release_tag}" >/dev/null 2>&1; then
+        echo "==> Pushing nightly tag ${release_tag}"
+        git push origin "refs/tags/${release_tag}:refs/tags/${release_tag}"
+    fi
+fi
+
 echo "==> Creating GitHub release ${release_tag}"
 gh_args=(release create "${release_tag}")
 gh_args+=("${artifacts[@]}")
@@ -197,11 +233,15 @@ gh_args+=(--title "${release_title}")
 if [[ -n "${notes_file}" ]]; then
     gh_args+=(--notes-file "${notes_file}")
 else
-    gh_args+=(--generate-notes)
+    if [[ "${is_prerelease}" == "true" ]]; then
+        gh_args+=(--notes "Nightly build for commit ${head_commit}")
+    else
+        gh_args+=(--generate-notes)
+    fi
 fi
 
 if [[ "${is_prerelease}" == "true" ]]; then
-    gh_args+=(--prerelease --target "${head_commit}")
+    gh_args+=(--prerelease --verify-tag)
 else
     gh_args+=(--verify-tag)
 fi
