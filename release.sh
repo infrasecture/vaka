@@ -6,7 +6,7 @@
 #   - Fails if no release tag is found.
 #
 # Nightly mode:
-#   - Uses the full commit SHA as the release tag.
+#   - Uses short commit SHA (12 chars) as the release tag.
 #   - Marks the release as a pre-release.
 #
 # Build behavior:
@@ -29,7 +29,7 @@ Usage:
   ./release.sh [--nightly] [--title TITLE] [--notes-file PATH]
 
 Options:
-  --nightly          Create a nightly pre-release tagged with full git SHA.
+  --nightly          Create a nightly pre-release tagged with short git SHA.
   --title TITLE      Override GitHub release title (default: tag).
   --notes-file PATH  Use explicit release notes file (otherwise --generate-notes).
   -h, --help         Show this help.
@@ -123,7 +123,7 @@ release_tag=""
 is_prerelease=false
 
 if [[ "${nightly}" == "true" ]]; then
-    release_tag="${head_commit}"
+    release_tag="${head_short}"
     is_prerelease=true
 else
     mapfile -t release_tags < <(git tag --points-at HEAD | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$' || true)
@@ -147,7 +147,13 @@ if gh release view "${release_tag}" >/dev/null 2>&1; then
 fi
 
 if [[ -z "${release_title}" ]]; then
-    release_title="${release_tag}"
+    if [[ "${nightly}" == "true" ]]; then
+        # GitHub disallows 40-hex ref names (object-ID-like), so nightly tags
+        # use short SHA while the release title keeps the full commit SHA.
+        release_title="${head_commit}"
+    else
+        release_title="${release_tag}"
+    fi
 fi
 
 mkdir -p dist
