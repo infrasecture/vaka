@@ -790,7 +790,7 @@ dist/nft-linux-amd64
 dist/nft-linux-arm64
 ```
 
-The script verifies that each binary is statically linked and that the Docker image contains exactly `nft` and `vaka-init`.
+The script verifies that Linux binaries are statically linked, darwin binaries are Mach-O executables, and that the Docker image contains exactly `nft` and `vaka-init`.
 
 To build only Linux runtime artifacts for a single architecture:
 
@@ -807,7 +807,16 @@ CLI_TARGETS="linux/amd64 darwin/arm64" ./build.sh
 ### Install the CLI binary
 
 ```bash
+# Pick one binary matching your host:
+
+# Linux amd64
 sudo install -m 0755 dist/vaka-linux-amd64 /usr/local/bin/vaka
+
+# Linux arm64
+sudo install -m 0755 dist/vaka-linux-arm64 /usr/local/bin/vaka
+
+# macOS amd64 (Intel)
+sudo install -m 0755 dist/vaka-darwin-amd64 /usr/local/bin/vaka
 
 # macOS Apple Silicon
 sudo install -m 0755 dist/vaka-darwin-arm64 /usr/local/bin/vaka

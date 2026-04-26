@@ -373,19 +373,53 @@ else
 fi
 echo ""
 
-# ── Verify static linking ─────────────────────────────────────────────────────
-echo "==> Verifying static linking..."
+# ── Verify binary outputs and formats ─────────────────────────────────────────
+echo "==> Verifying binary outputs and formats..."
+# Fail fast if expected binaries are missing.
+for target in ${CLI_TARGETS}; do
+    GOOS="${target%%/*}"
+    GOARCH="${target##*/}"
+    out="dist/vaka-${GOOS}-${GOARCH}"
+    if [[ ! -f "${out}" ]]; then
+        echo "ERROR: missing expected CLI binary: ${out}" >&2
+        exit 1
+    fi
+done
+for ARCH in $ARCHS; do
+    out="dist/vaka-init-linux-${ARCH}"
+    if [[ ! -f "${out}" ]]; then
+        echo "ERROR: missing expected runtime binary: ${out}" >&2
+        exit 1
+    fi
+done
+
 docker run --rm \
     --volume "${SCRIPT_DIR}/dist:/check:ro" \
     alpine:3.21 \
     sh -c '
         apk add --no-cache --quiet file
         ok=true
+
+        # Linux binaries must be statically linked ELF.
         for f in /check/vaka-linux-* /check/vaka-init-linux-*; do
             [ -f "$f" ] || continue
             name="${f##*/}"
             result=$(file "$f")
             if echo "$result" | grep -qi "statically linked"; then
+                printf "    %-36s OK\n" "$name"
+            else
+                printf "    %-36s FAIL\n" "$name"
+                echo "$result" >&2
+                ok=false
+            fi
+        done
+
+        # Darwin binaries should be Mach-O executables.
+        for f in /check/vaka-darwin-*; do
+            [ -f "$f" ] || continue
+            name="${f##*/}"
+            result=$(file "$f")
+            if echo "$result" | grep -Eqi "Mach-O .* executable"; then
                 printf "    %-36s OK\n" "$name"
             else
                 printf "    %-36s FAIL\n" "$name"
