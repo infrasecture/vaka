@@ -94,9 +94,25 @@ if [[ -n "$(git status --porcelain)" ]]; then
     exit 1
 fi
 
-if ! gh auth status >/dev/null 2>&1; then
-    echo "ERROR: gh is not authenticated; run: gh auth login" >&2
-    exit 1
+origin_url="$(git config --get remote.origin.url || true)"
+repo_slug=""
+if [[ -n "${origin_url}" ]]; then
+    repo_slug="$(printf '%s' "${origin_url}" | sed -E \
+        -e 's#^git@github\.com:([^[:space:]]+?)(\.git)?$#\1#' \
+        -e 's#^https://github\.com/([^[:space:]]+?)(\.git)?$#\1#')"
+fi
+
+if [[ -n "${repo_slug}" && "${repo_slug}" != "${origin_url}" ]]; then
+    if ! gh repo view "${repo_slug}" >/dev/null 2>&1; then
+        echo "ERROR: gh cannot access GitHub repository ${repo_slug}." >&2
+        echo "       Check active account/token with: gh auth status" >&2
+        exit 1
+    fi
+else
+    if ! gh auth token >/dev/null 2>&1; then
+        echo "ERROR: gh has no active auth token; run: gh auth login" >&2
+        exit 1
+    fi
 fi
 
 head_commit="$(git rev-parse --verify HEAD)"
