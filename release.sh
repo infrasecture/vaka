@@ -80,6 +80,58 @@ require_cmd() {
     }
 }
 
+sha256_of() {
+    local path="$1"
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "${path}" | awk '{print $1}'
+        return
+    fi
+    if command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "${path}" | awk '{print $1}'
+        return
+    fi
+    echo "ERROR: neither sha256sum nor shasum is available" >&2
+    exit 1
+}
+
+write_formula_file() {
+    local formula_path="$1"
+    local class_name="$2"
+    local formula_version="$3"
+    local tag="$4"
+    local amd_sha="$5"
+    local arm_sha="$6"
+    local desc_suffix="$7"
+
+    cat > "${formula_path}" <<EOF
+class ${class_name} < Formula
+  desc "Declarative egress firewall for Docker containers${desc_suffix}"
+  homepage "https://github.com/infrasecture/vaka"
+  version "${formula_version}"
+  license "LGPL-2.1-only"
+
+  on_arm do
+    url "https://github.com/infrasecture/vaka/releases/download/${tag}/vaka-darwin-arm64"
+    sha256 "${arm_sha}"
+  end
+
+  on_intel do
+    url "https://github.com/infrasecture/vaka/releases/download/${tag}/vaka-darwin-amd64"
+    sha256 "${amd_sha}"
+  end
+
+  def install
+    bin.install Dir["vaka-darwin-*"].first => "vaka"
+  end
+
+  test do
+    output = shell_output("#{bin}/vaka version")
+    assert_match "vaka ", output
+  end
+end
+EOF
+}
+
 require_cmd git
 require_cmd docker
 require_cmd gh
@@ -93,6 +145,28 @@ if [[ -n "$(git status --porcelain)" ]]; then
     echo "ERROR: working tree is not clean; commit/stash changes before release" >&2
     exit 1
 fi
+
+if ! git config --file .gitmodules --get "submodule.homebrew-tap.path" >/dev/null 2>&1; then
+    echo "ERROR: homebrew-tap submodule is not configured in .gitmodules" >&2
+    exit 1
+fi
+
+echo "==> Ensuring homebrew-tap submodule checkout..."
+git submodule update --init --checkout -- homebrew-tap
+tap_path="${SCRIPT_DIR}/homebrew-tap"
+if [[ ! -d "${tap_path}" ]]; then
+    echo "ERROR: homebrew-tap submodule directory is missing at ${tap_path}" >&2
+    exit 1
+fi
+if [[ -n "$(git -C "${tap_path}" status --porcelain)" ]]; then
+    echo "ERROR: homebrew-tap submodule has uncommitted changes; clean it first" >&2
+    exit 1
+fi
+
+# Keep tap branch current before writing formulas.
+git -C "${tap_path}" fetch origin main
+git -C "${tap_path}" checkout main
+git -C "${tap_path}" pull --ff-only origin main
 
 origin_url="$(git config --get remote.origin.url || true)"
 repo_slug=""
@@ -268,6 +342,48 @@ else
 fi
 
 gh "${gh_args[@]}"
+
+echo "==> Updating Homebrew tap formulas..."
+amd_sha="$(sha256_of dist/vaka-darwin-amd64)"
+arm_sha="$(sha256_of dist/vaka-darwin-arm64)"
+
+if [[ "${is_prerelease}" == "true" ]]; then
+    formula_rel_path="Formula/vaka-nightly.rb"
+    formula_class="VakaNightly"
+    formula_version="0.0.0-nightly.$(git show -s --date=format:%Y%m%d%H%M --format=%cd HEAD).${head_short}"
+    formula_desc_suffix=" (nightly)"
+    tap_commit_msg="chore(formula): update vaka-nightly to ${release_tag}"
+else
+    formula_rel_path="Formula/vaka.rb"
+    formula_class="Vaka"
+    formula_version="${pkg_version}"
+    formula_desc_suffix=""
+    tap_commit_msg="chore(formula): update vaka to ${release_tag}"
+fi
+
+write_formula_file \
+    "${tap_path}/${formula_rel_path}" \
+    "${formula_class}" \
+    "${formula_version}" \
+    "${release_tag}" \
+    "${amd_sha}" \
+    "${arm_sha}" \
+    "${formula_desc_suffix}"
+
+git -C "${tap_path}" add "${formula_rel_path}"
+if ! git -C "${tap_path}" diff --cached --quiet; then
+    git -C "${tap_path}" commit -m "${tap_commit_msg}"
+    git -C "${tap_path}" push origin HEAD
+else
+    echo "    Homebrew formula unchanged; skipping tap commit/push."
+fi
+
+git add homebrew-tap
+if ! git diff --cached --quiet -- homebrew-tap; then
+    git commit -m "chore(submodule): bump homebrew-tap after ${release_tag} release"
+else
+    echo "    Submodule pointer unchanged; no superproject commit needed."
+fi
 
 echo ""
 echo "Release complete:"
