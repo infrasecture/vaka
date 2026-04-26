@@ -178,9 +178,9 @@ if [[ -n "$(git -C "${tap_path}" status --porcelain)" ]]; then
 fi
 
 # Keep tap branch current before writing formulas.
+# Single-network-step sync: fetch once, then set local main to origin/main.
 git -C "${tap_path}" fetch origin main
-git -C "${tap_path}" checkout main
-git -C "${tap_path}" pull --ff-only origin main
+git -C "${tap_path}" checkout -B main origin/main
 
 origin_url="$(git config --get remote.origin.url || true)"
 repo_slug=""
