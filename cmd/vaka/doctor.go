@@ -14,11 +14,19 @@ import (
 )
 
 var (
-	doctorLookPath    = exec.LookPath
-	doctorDockerProbe = runDoctorDockerCommand
+	doctorLookPath          = exec.LookPath
+	doctorDockerProbe       = runDoctorDockerCommand
+	newDoctorDockerServices = NewDockerServices
 )
 
-const doctorProbeTimeout = 10 * time.Second
+const (
+	doctorProbeTimeout = 10 * time.Second
+	doctorFixTimeout   = 5 * time.Minute
+)
+
+type doctorOptions struct {
+	fix bool
+}
 
 type doctorCheck struct {
 	name        string
@@ -38,11 +46,12 @@ type doctorResult struct {
 }
 
 func newDoctorCmd() *cobra.Command {
-	return &cobra.Command{
+	opts := doctorOptions{}
+	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Run preflight checks for Docker/Compose compatibility",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			results := runDoctorChecks(context.Background(), defaultDoctorChecks())
+			results := runDoctorChecks(context.Background(), defaultDoctorChecks(opts))
 			failed := 0
 			for _, r := range results {
 				if !r.required {
@@ -78,6 +87,8 @@ func newDoctorCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&opts.fix, "fix", false, "Pull missing required vaka-init image into the resolved Docker target.")
+	return cmd
 }
 
 func runDoctorChecks(ctx context.Context, checks []doctorCheck) []doctorResult {
@@ -115,7 +126,13 @@ func runDoctorChecks(ctx context.Context, checks []doctorCheck) []doctorResult {
 	return results
 }
 
-func defaultDoctorChecks() []doctorCheck {
+func defaultDoctorChecks(opts doctorOptions) []doctorCheck {
+	vakaInitImageRef := vakaInitBaseImage + ":" + version
+	imageTimeout := doctorProbeTimeout
+	if opts.fix {
+		imageTimeout = doctorFixTimeout
+	}
+
 	return []doctorCheck{
 		{
 			name:        "docker CLI available",
@@ -181,6 +198,32 @@ func defaultDoctorChecks() []doctorCheck {
 					return "", fmt.Errorf("docker daemon reports OSType=%q", osType)
 				}
 				return "OSType=linux", nil
+			},
+		},
+		{
+			name:        "required vaka-init image present",
+			required:    true,
+			timeout:     imageTimeout,
+			remediation: fmt.Sprintf("Run `vaka doctor --fix` to pull it, or `docker pull %s`.", vakaInitImageRef),
+			run: func(ctx context.Context) (string, error) {
+				ds, err := newDoctorDockerServices(nil)
+				if err != nil {
+					return "", err
+				}
+				if opts.fix {
+					if err := ds.EnsureImage(ctx, vakaInitImageRef); err != nil {
+						return "", err
+					}
+					return vakaInitImageRef, nil
+				}
+				ok, err := ds.ImageExists(ctx, vakaInitImageRef)
+				if err != nil {
+					return "", err
+				}
+				if !ok {
+					return "", fmt.Errorf("%s is missing in the selected Docker target", vakaInitImageRef)
+				}
+				return vakaInitImageRef, nil
 			},
 		},
 		{
