@@ -26,6 +26,7 @@ func TestClassifySubcmd(t *testing.T) {
 		{"rm", pathLifecycle},
 		{"validate", pathCobra},
 		{"show-nft", pathCobra},
+		{"doctor", pathCobra},
 		{"show-compose", pathShowCompose},
 		{"version", pathCobra},
 		{"", pathCobra},

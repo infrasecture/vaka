@@ -26,6 +26,7 @@ Contents:
 - [Why vaka?](#why-vaka)
 - [How it works](#how-it-works)
 - [Getting started](#getting-started)
+- [Preflight and troubleshooting](#preflight-and-troubleshooting)
 - [Usage](#usage)
 - [Configuration reference](#configuration-reference)
 - [CLI reference](#cli-reference)
@@ -344,6 +345,39 @@ services:
 ```
 
 Reason: compose-go does not synthesize an image ref at load time, so vaka cannot inspect Dockerfile defaults such as `ENTRYPOINT`, `CMD`, or `USER` before build. Adding `image: myapp:latest` also resolves this because vaka can inspect that image after prebuild. If neither path provides the needed metadata, `vaka up` fails with a clear error before any container starts.
+
+---
+
+## Preflight and troubleshooting
+
+Run preflight checks before first use or when migrating contexts/hosts:
+
+```bash
+vaka doctor
+```
+
+`vaka doctor` checks:
+
+- Docker CLI availability
+- Docker daemon reachability
+- Docker Compose v2 availability
+- Linux container backend (`docker info` reports `OSType=linux`)
+- resolved Docker context (informational)
+
+If a check fails, vaka prints a direct remediation hint.
+
+Desktop-focused reproducible smoke path:
+
+1. `vaka doctor`
+2. `vaka create`
+3. `vaka volumes`
+4. `vaka down`
+
+Optional preview-only step:
+
+```bash
+vaka show-compose > /tmp/vaka-override.yaml
+```
 
 ---
 
@@ -695,6 +729,14 @@ Parses and validates `vaka.yaml`. Pass `--compose` to also cross-check service n
 
 ```
 vaka validate [-f vaka.yaml] [--compose docker-compose.yaml]
+```
+
+### `vaka doctor`
+
+Runs preflight diagnostics for Docker/Compose compatibility and prints remediation hints for failures.
+
+```bash
+vaka doctor
 ```
 
 ### `vaka show-nft <service>`

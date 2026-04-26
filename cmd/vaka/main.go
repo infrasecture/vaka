@@ -24,6 +24,7 @@ func main() {
 	rootCmd.AddCommand(
 		newValidateCmd(),
 		newShowNftCmd(),
+		newDoctorCmd(),
 		// The up/run/create/volumes/down/stop/kill/rm stubs exist only for --help
 		// visibility. Actual execution is handled by the manual dispatch switch
 		// below and never reaches these cobra commands.
