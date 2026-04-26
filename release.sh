@@ -98,8 +98,9 @@ origin_url="$(git config --get remote.origin.url || true)"
 repo_slug=""
 if [[ -n "${origin_url}" ]]; then
     repo_slug="$(printf '%s' "${origin_url}" | sed -E \
-        -e 's#^git@github\.com:([^[:space:]]+?)(\.git)?$#\1#' \
-        -e 's#^https://github\.com/([^[:space:]]+?)(\.git)?$#\1#')"
+        -e 's#^git@github\.com:##' \
+        -e 's#^https://github\.com/##' \
+        -e 's#\.git$##')"
 fi
 
 if [[ -n "${repo_slug}" && "${repo_slug}" != "${origin_url}" ]]; then
