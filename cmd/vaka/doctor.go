@@ -21,8 +21,8 @@ var (
 )
 
 const (
-	doctorProbeTimeout = 10 * time.Second
-	doctorFixTimeout   = 5 * time.Minute
+	doctorProbeTimeout      = 10 * time.Second
+	doctorDefaultFixTimeout = 5 * time.Minute
 )
 
 type doctorOptions struct {
@@ -34,6 +34,7 @@ type doctorCheck struct {
 	required    bool
 	timeout     time.Duration
 	fixTimeout  time.Duration
+	dependsOn   []string
 	remediation string
 	run         func(context.Context) (string, error)
 	fix         func(context.Context) (string, error)
@@ -43,6 +44,8 @@ type doctorResult struct {
 	name     string
 	required bool
 	ok       bool
+	skipped  bool
+	skipText string
 	detail   string
 	errText  string
 	fix      string
@@ -51,6 +54,7 @@ type doctorResult struct {
 	fixApplied   bool
 	fixDetail    string
 	fixErrText   string
+	postFixErr   string
 }
 
 func newDoctorCmd() *cobra.Command {
@@ -62,6 +66,15 @@ func newDoctorCmd() *cobra.Command {
 			results := runDoctorChecks(context.Background(), defaultDoctorChecks(), opts.fix)
 			failed := 0
 			for _, r := range results {
+				if r.skipped {
+					if r.required {
+						fmt.Printf("SKIP %s: %s\n", r.name, r.skipText)
+					} else {
+						fmt.Printf("INFO %s: skipped (%s)\n", r.name, r.skipText)
+					}
+					continue
+				}
+
 				if !r.required {
 					if r.ok {
 						detail := doctorResultDetail(r)
@@ -90,6 +103,16 @@ func newDoctorCmd() *cobra.Command {
 				}
 				failed++
 				fmt.Printf("FAIL %s: %s\n", r.name, r.errText)
+				if r.fixApplied {
+					if strings.TrimSpace(r.fixDetail) == "" {
+						fmt.Printf("  fix applied\n")
+					} else {
+						fmt.Printf("  fix applied: %s\n", r.fixDetail)
+					}
+				}
+				if strings.TrimSpace(r.postFixErr) != "" {
+					fmt.Printf("  fix applied but check still failing: %s\n", r.postFixErr)
+				}
 				if strings.TrimSpace(r.fixErrText) != "" {
 					fmt.Printf("  fix attempt failed: %s\n", r.fixErrText)
 				}
@@ -109,7 +132,24 @@ func newDoctorCmd() *cobra.Command {
 
 func runDoctorChecks(ctx context.Context, checks []doctorCheck, applyFix bool) []doctorResult {
 	results := make([]doctorResult, 0, len(checks))
+	byName := make(map[string]doctorResult, len(checks))
 	for _, c := range checks {
+		if dep, depErr, failed := failedDependency(c.dependsOn, byName); failed {
+			skip := doctorResult{
+				name:     c.name,
+				required: c.required,
+				skipped:  true,
+				fix:      c.remediation,
+				skipText: fmt.Sprintf("prerequisite %q failed", dep),
+			}
+			if strings.TrimSpace(depErr) != "" {
+				skip.skipText = fmt.Sprintf("prerequisite %q failed: %s", dep, depErr)
+			}
+			results = append(results, skip)
+			byName[c.name] = skip
+			continue
+		}
+
 		detail, err := runDoctorStep(ctx, c.timeout, c.run)
 		r := doctorResult{
 			name:     c.name,
@@ -126,13 +166,11 @@ func runDoctorChecks(ctx context.Context, checks []doctorCheck, applyFix bool) [
 
 		if applyFix && c.fix != nil {
 			r.fixAttempted = true
-			fixTimeout := c.fixTimeout
-			if fixTimeout <= 0 {
-				fixTimeout = c.timeout
-			}
+			fixTimeout := resolveDoctorFixTimeout(c)
 			fixDetail, fixErr := runDoctorStep(ctx, fixTimeout, c.fix)
 			if fixErr != nil {
 				r.fixErrText = strings.TrimSpace(fixErr.Error())
+				byName[c.name] = r
 				results = append(results, r)
 				continue
 			}
@@ -142,7 +180,8 @@ func runDoctorChecks(ctx context.Context, checks []doctorCheck, applyFix bool) [
 			// Re-run the probe after a successful fix to ensure the check now passes.
 			detail, err = runDoctorStep(ctx, c.timeout, c.run)
 			if err != nil {
-				r.errText = strings.TrimSpace(err.Error())
+				r.postFixErr = strings.TrimSpace(err.Error())
+				byName[c.name] = r
 				results = append(results, r)
 				continue
 			}
@@ -151,8 +190,32 @@ func runDoctorChecks(ctx context.Context, checks []doctorCheck, applyFix bool) [
 		}
 
 		results = append(results, r)
+		byName[c.name] = r
 	}
 	return results
+}
+
+func resolveDoctorFixTimeout(c doctorCheck) time.Duration {
+	if c.fixTimeout > 0 {
+		return c.fixTimeout
+	}
+	if doctorDefaultFixTimeout > 0 {
+		return doctorDefaultFixTimeout
+	}
+	return c.timeout
+}
+
+func failedDependency(dependsOn []string, byName map[string]doctorResult) (name string, errText string, failed bool) {
+	for _, dep := range dependsOn {
+		r, ok := byName[dep]
+		if !ok {
+			continue
+		}
+		if !r.ok {
+			return dep, strings.TrimSpace(r.errText), true
+		}
+	}
+	return "", "", false
 }
 
 func runDoctorStep(ctx context.Context, timeout time.Duration, run func(context.Context) (string, error)) (string, error) {
@@ -203,7 +266,10 @@ func defaultDoctorChecks() []doctorCheck {
 		return ds, nil
 	}
 
-	imageRemediation := fmt.Sprintf("Run `vaka doctor --fix` to auto-fix this check, or `docker pull %s`.", vakaInitImageRef)
+	imageRemediation := fmt.Sprintf(
+		"If the image is missing, `vaka doctor --fix` can pull it. Otherwise verify Docker target reachability/auth, or pull manually: `docker pull %s`.",
+		vakaInitImageRef,
+	)
 	var imageFix func(context.Context) (string, error)
 	if isDevBuild {
 		imageRemediation = fmt.Sprintf(
@@ -294,7 +360,8 @@ func defaultDoctorChecks() []doctorCheck {
 			name:        "required vaka-init image present",
 			required:    true,
 			timeout:     doctorProbeTimeout,
-			fixTimeout:  doctorFixTimeout,
+			fixTimeout:  doctorDefaultFixTimeout,
+			dependsOn:   []string{"docker daemon reachable"},
 			remediation: imageRemediation,
 			run: func(ctx context.Context) (string, error) {
 				if isDevBuild {

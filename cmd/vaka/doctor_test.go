@@ -156,6 +156,94 @@ func TestRunDoctorChecksFixAttemptFails(t *testing.T) {
 	}
 }
 
+func TestRunDoctorChecksPreservesOriginalErrorWhenPostFixStillFails(t *testing.T) {
+	runCalls := 0
+	results := runDoctorChecks(context.Background(), []doctorCheck{
+		{
+			name:     "fixable-still-fails",
+			required: true,
+			run: func(context.Context) (string, error) {
+				runCalls++
+				if runCalls == 1 {
+					return "", errors.New("initial probe failure")
+				}
+				return "", errors.New("post-fix probe failure")
+			},
+			fix: func(context.Context) (string, error) {
+				return "fix applied", nil
+			},
+		},
+	}, true)
+	if len(results) != 1 {
+		t.Fatalf("results len = %d, want 1", len(results))
+	}
+	r := results[0]
+	if r.ok {
+		t.Fatal("expected failed result")
+	}
+	if r.errText != "initial probe failure" {
+		t.Fatalf("errText = %q, want %q", r.errText, "initial probe failure")
+	}
+	if r.postFixErr != "post-fix probe failure" {
+		t.Fatalf("postFixErr = %q, want %q", r.postFixErr, "post-fix probe failure")
+	}
+	if !r.fixApplied {
+		t.Fatal("expected fixApplied=true")
+	}
+}
+
+func TestRunDoctorChecksSkipsWhenPrerequisiteFails(t *testing.T) {
+	imageRunCalled := 0
+	results := runDoctorChecks(context.Background(), []doctorCheck{
+		{
+			name:     "docker daemon reachable",
+			required: true,
+			run: func(context.Context) (string, error) {
+				return "", errors.New("daemon unavailable")
+			},
+		},
+		{
+			name:      "required vaka-init image present",
+			required:  true,
+			dependsOn: []string{"docker daemon reachable"},
+			run: func(context.Context) (string, error) {
+				imageRunCalled++
+				return "should not run", nil
+			},
+			fix: func(context.Context) (string, error) {
+				t.Fatal("fix should not run when prerequisite fails")
+				return "", nil
+			},
+		},
+	}, true)
+	if len(results) != 2 {
+		t.Fatalf("results len = %d, want 2", len(results))
+	}
+	if imageRunCalled != 0 {
+		t.Fatalf("image check run called %d times, want 0", imageRunCalled)
+	}
+	r := results[1]
+	if !r.skipped {
+		t.Fatal("expected second check to be skipped")
+	}
+	if !strings.Contains(r.skipText, "prerequisite") {
+		t.Fatalf("skipText = %q, want contains %q", r.skipText, "prerequisite")
+	}
+	if r.fixAttempted {
+		t.Fatal("fixAttempted=true, want false for skipped check")
+	}
+}
+
+func TestResolveDoctorFixTimeoutDefaultsToGlobalFixTimeout(t *testing.T) {
+	got := resolveDoctorFixTimeout(doctorCheck{
+		timeout:    doctorProbeTimeout,
+		fixTimeout: 0,
+	})
+	if got != doctorDefaultFixTimeout {
+		t.Fatalf("resolveDoctorFixTimeout = %s, want %s", got, doctorDefaultFixTimeout)
+	}
+}
+
 type fakeDoctorDockerServices struct {
 	imageExists       bool
 	imageExistsErr    error
@@ -219,6 +307,38 @@ func TestDoctorCheckRequiredVakaInitImageMissing(t *testing.T) {
 	expectedRef := vakaInitBaseImage + ":" + version
 	if !strings.Contains(err.Error(), expectedRef) {
 		t.Fatalf("error %q does not contain image ref %q", err.Error(), expectedRef)
+	}
+	if fake.imageExistsCalled != 1 {
+		t.Fatalf("ImageExists called %d times, want 1", fake.imageExistsCalled)
+	}
+	if fake.ensureCalled != 0 {
+		t.Fatalf("EnsureImage called %d times, want 0", fake.ensureCalled)
+	}
+}
+
+func TestDoctorCheckRequiredVakaInitImagePresent(t *testing.T) {
+	origNewDoctorDockerServices := newDoctorDockerServices
+	defer func() { newDoctorDockerServices = origNewDoctorDockerServices }()
+	origVersion := version
+	version = "v0.1.0"
+	defer func() { version = origVersion }()
+
+	fake := &fakeDoctorDockerServices{imageExists: true}
+	newDoctorDockerServices = func(args []string) (DockerServices, error) {
+		if len(args) != 0 {
+			t.Fatalf("newDoctorDockerServices args = %v, want empty", args)
+		}
+		return fake, nil
+	}
+
+	check := mustDoctorCheckByName(t, defaultDoctorChecks(), "required vaka-init image present")
+	gotDetail, err := check.run(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	expectedRef := vakaInitBaseImage + ":" + version
+	if gotDetail != expectedRef {
+		t.Fatalf("detail = %q, want %q", gotDetail, expectedRef)
 	}
 	if fake.imageExistsCalled != 1 {
 		t.Fatalf("ImageExists called %d times, want 1", fake.imageExistsCalled)
