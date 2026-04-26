@@ -4,23 +4,28 @@
 # Requires: docker (with buildx)
 #
 # Usage:
-#   ./build.sh                  build for all ARCHS locally (arch-specific tags)
+#   ./build.sh                  build native host targets (fast local loop)
+#   ./build.sh --release        build full release matrix (all arch targets)
 #   ./build.sh --push           build, push arch tags, create manifest lists
 #   ./build.sh --manifest       create manifest lists from already-pushed arch images
 #   ./build.sh --packages       also produce .deb and .rpm packages via nfpm
 #   ./build.sh --rebuild-nft    force rebuild of emsi/nft-static images
 #   ./build.sh --rebuild-go     force rebuild of Go binaries even if up to date
 #   ARCHS="amd64" ./build.sh    restrict to one architecture
+#   CLI_TARGETS="darwin/amd64 darwin/arm64" ARCHS="$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')" ./build.sh
+#                               build Darwin CLI binaries only, keep runtime on native arch
+#   ARCHS="amd64 arm64" CLI_TARGETS="linux/amd64 linux/arm64 darwin/amd64 darwin/arm64" ./build.sh
+#                               build complete matrix explicitly (same targets as --release defaults)
 #
 # Multi-arch publishing — single host (QEMU handles foreign-arch nft C build):
 #   sudo apt-get install -y qemu-user-static   # Debian/Ubuntu
 #   # or: docker run --rm --privileged tonistiigi/binfmt --install all
-#   ./build.sh --push
+#   ./build.sh --release --push
 #
 # Multi-arch publishing — separate native hosts (no QEMU needed):
 #   ARCHS=amd64 ./build.sh --push   # on amd64 host
 #   ARCHS=arm64 ./build.sh --push   # on arm64 host
-#   ./build.sh --manifest            # on any host after both are pushed
+#   ./build.sh --release --manifest  # on any host after both are pushed
 #
 # Image tagging model:
 #   Arch-specific (local + push staging):
@@ -42,16 +47,16 @@
 #     emsi/vaka-init:latest    → auto-selects amd64 or arm64 at pull time
 #
 # Environment overrides:
-#   ARCHS          space-separated Go arch names     (default: amd64 arm64)
+#   ARCHS          space-separated Go arch names     (default: native host arch; --release: amd64 arm64)
 #   CLI_TARGETS    space-separated GOOS/GOARCH pairs for vaka CLI
-#                  (default: linux/amd64 linux/arm64 darwin/amd64 darwin/arm64)
+#                  (default: native host target; --release: linux/amd64 linux/arm64 darwin/amd64 darwin/arm64)
 #   GOLANG_IMAGE   builder image                     (default: golang:1.25-alpine)
 #   INIT_IMAGE     vaka-init image name              (default: emsi/vaka-init)
 #   NFT_IMAGE      nft-static image name             (default: emsi/nft-static)
 #   NFPM_IMAGE     nfpm packager image               (default: ghcr.io/goreleaser/nfpm:latest)
 #
 # Output layout in ./dist/:
-#   vaka-<os>-<arch>         — vaka host CLI (linux + darwin by default)
+#   vaka-<os>-<arch>         — vaka host CLI (native host target by default)
 #   vaka-init-linux-<arch>   — vaka-init container binary, one per requested arch
 #   nft-linux-<arch>         — static nft binary, one per requested arch
 #
@@ -70,6 +75,7 @@ cd "$SCRIPT_DIR"
 BUILD_PACKAGES=false
 REBUILD_NFT=false
 REBUILD_GO=false
+RELEASE_MODE=false
 DO_PUSH=false
 DO_MANIFEST_ONLY=false
 
@@ -78,10 +84,11 @@ for arg in "$@"; do
         --packages)    BUILD_PACKAGES=true ;;
         --rebuild-nft) REBUILD_NFT=true ;;
         --rebuild-go)  REBUILD_GO=true ;;
+        --release)     RELEASE_MODE=true ;;
         --push)        DO_PUSH=true ;;
         --manifest)    DO_MANIFEST_ONLY=true ;;
         *)
-            printf 'Unknown argument: %s\nUsage: %s [--push] [--manifest] [--packages] [--rebuild-nft] [--rebuild-go]\n' "$arg" "$0" >&2
+            printf 'Unknown argument: %s\nUsage: %s [--release] [--push] [--manifest] [--packages] [--rebuild-nft] [--rebuild-go]\n' "$arg" "$0" >&2
             exit 1
             ;;
     esac
@@ -121,8 +128,21 @@ NFTABLES_VERSION="$(awk -F= '/^ARG NFTABLES_VERSION=/{print $2; exit}' "${NFT_DI
 : "${NFTABLES_VERSION:?could not detect NFTABLES_VERSION from nft/Dockerfile}"
 
 # ── Configurable variables ────────────────────────────────────────────────────
-ARCHS="${ARCHS:-amd64 arm64}"
-CLI_TARGETS="${CLI_TARGETS:-linux/amd64 linux/arm64 darwin/amd64 darwin/arm64}"
+if [[ "${RELEASE_MODE}" == "true" ]]; then
+    default_archs="amd64 arm64"
+    default_cli_targets="linux/amd64 linux/arm64 darwin/amd64 darwin/arm64"
+else
+    default_archs="${NATIVE_ARCH}"
+    if [[ "${HOST_OS}" == "Darwin" ]]; then
+        default_cli_targets="darwin/${NATIVE_ARCH}"
+    else
+        # Linux and other non-Darwin hosts default to Linux CLI outputs.
+        default_cli_targets="linux/${NATIVE_ARCH}"
+    fi
+fi
+
+ARCHS="${ARCHS:-${default_archs}}"
+CLI_TARGETS="${CLI_TARGETS:-${default_cli_targets}}"
 GOLANG_IMAGE="${GOLANG_IMAGE:-golang:1.25-alpine}"
 NFT_IMAGE="${NFT_IMAGE:-emsi/nft-static}"
 INIT_IMAGE="${INIT_IMAGE:-emsi/vaka-init}"
@@ -626,7 +646,7 @@ fi
 echo ""
 
 if [[ "${DO_PUSH}" == "true" ]]; then
-    echo "Registry manifest lists (multi-arch, auto-selected by 'docker pull'):"
+    echo "Registry manifest tags (resolve to requested ARCHS at pull time):"
     echo "  ${NFT_IMAGE}:${NFTABLES_VERSION}"
     echo "  ${NFT_IMAGE}:latest"
     echo "  ${INIT_IMAGE}:${VERSION}"
@@ -635,10 +655,10 @@ else
     echo "To publish (single host with QEMU):"
     echo "  sudo apt-get install -y qemu-user-static   # Debian/Ubuntu"
     echo "  # or: docker run --rm --privileged tonistiigi/binfmt --install all"
-    echo "  ./build.sh --push"
+    echo "  ./build.sh --release --push"
     echo ""
     echo "To publish (native hosts, no QEMU needed):"
     echo "  ARCHS=amd64 ./build.sh --push   # on amd64 host"
     echo "  ARCHS=arm64 ./build.sh --push   # on arm64 host"
-    echo "  ./build.sh --manifest            # on any host after both are pushed"
+    echo "  ./build.sh --release --manifest  # on any host after both are pushed"
 fi

@@ -819,31 +819,47 @@ vaka is designed to contain well-behaved but potentially over-reaching software:
 ./build.sh
 ```
 
-This builds `vaka` CLI binaries for Linux and macOS (`amd64` + `arm64`) and Linux-only `vaka-init`/`nft` runtime binaries. It also produces arch-specific `emsi/vaka-init` Docker images. Output lands in `./dist/`:
+By default, this builds only native host artifacts (fast local mode):
 
-```
-dist/vaka-linux-amd64
-dist/vaka-linux-arm64
-dist/vaka-darwin-amd64
-dist/vaka-darwin-arm64
-dist/vaka-init-linux-amd64
-dist/vaka-init-linux-arm64
-dist/nft-linux-amd64
-dist/nft-linux-arm64
+- `ARCHS` defaults to your host architecture (`amd64` or `arm64`)
+- `CLI_TARGETS` defaults to your host OS/arch (`linux/<arch>` on Linux, `darwin/<arch>` on macOS)
+
+On Linux arm64 hosts this means `./build.sh` builds `arm64` runtime artifacts only, so no QEMU setup is required for the default path.
+
+For full release artifacts (Linux + macOS CLI binaries for both arches, plus runtime `amd64` + `arm64`), run explicit release mode:
+
+```bash
+./build.sh --release
 ```
 
 The script verifies that Linux binaries are statically linked, darwin binaries are Mach-O executables, and that the Docker image contains exactly `nft` and `vaka-init`.
 
-To build only Linux runtime artifacts for a single architecture:
+To override runtime architectures explicitly:
 
 ```bash
 ARCHS=amd64 ./build.sh
 ```
 
-To customize CLI output targets:
+To customize CLI output targets explicitly:
 
 ```bash
 CLI_TARGETS="linux/amd64 darwin/arm64" ./build.sh
+```
+
+To build Darwin CLI binaries only (without cross-arch runtime builds):
+
+```bash
+ARCHS=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/') \
+CLI_TARGETS="darwin/amd64 darwin/arm64" \
+./build.sh
+```
+
+To build the complete matrix explicitly:
+
+```bash
+ARCHS="amd64 arm64" \
+CLI_TARGETS="linux/amd64 linux/arm64 darwin/amd64 darwin/arm64" \
+./build.sh
 ```
 
 ### Install the CLI binary
@@ -902,13 +918,13 @@ Then run `./build.sh`. The script reads `git describe --tags --always` and stamp
 - the `emsi/vaka-init` OCI image label (`org.opencontainers.image.version`)
 - `.deb` and `.rpm` package metadata
 
-Publish the Docker images. The build produces arch-specific staging tags locally; `--push` pushes those and assembles multi-arch manifest lists in the registry:
+Publish the Docker images. The build produces arch-specific staging tags locally; `--push` pushes those and assembles registry manifests for the requested `ARCHS`:
 
 **Single host with QEMU** (builds and pushes all arches in one step):
 
 ```bash
 sudo apt-get install -y qemu-user-static   # Debian/Ubuntu — one-time setup
-./build.sh --push
+./build.sh --release --push
 ```
 
 **Separate native hosts** (no QEMU needed — run each on its matching hardware):
@@ -916,7 +932,7 @@ sudo apt-get install -y qemu-user-static   # Debian/Ubuntu — one-time setup
 ```bash
 ARCHS=amd64 ./build.sh --push   # on amd64 host
 ARCHS=arm64 ./build.sh --push   # on arm64 host
-./build.sh --manifest            # on any host after both arch pushes complete
+./build.sh --release --manifest  # on any host after both arch pushes complete
 ```
 
 Both workflows produce the same registry result:
