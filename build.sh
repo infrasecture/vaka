@@ -529,7 +529,7 @@ if [[ -n "${verify_arch}" ]]; then
     echo ""
 fi
 
-# ── Phase 6: Linux packages (.deb / .rpm) ────────────────────────────────────
+# ── Phase 6: Linux packages (.deb / .rpm / .pkg.tar.zst) ─────────────────────
 if [[ "${BUILD_PACKAGES}" == "true" ]]; then
     echo "==> Building Linux packages (using ${NFPM_IMAGE})..."
 
@@ -569,7 +569,7 @@ contents:
 ${nft_entry}
 NFPM
 
-        for PKG_TYPE in deb rpm; do
+        for PKG_TYPE in deb rpm archlinux; do
             printf '    %-6s (%s)  ' "${PKG_TYPE}" "${ARCH}"
             docker run --rm \
                 --volume "${SCRIPT_DIR}:/src:ro" \

@@ -11,12 +11,12 @@
 #
 # Build behavior:
 #   - Calls build.sh exactly once:
-#       ./build.sh --release --packages --push
+#       ./build.sh --release --packages
 #   - Generates SHA256SUMS for this release's artifacts only.
 #
 # Requirements:
 #   - git
-#   - docker (authenticated for push destination)
+#   - docker
 #   - gh (authenticated to target repo)
 set -euo pipefail
 
@@ -36,7 +36,7 @@ Options:
 
 Behavior:
   - Default mode requires a release tag (vX.Y.Z) on HEAD; otherwise exits non-zero.
-  - Build is executed once via: ./build.sh --release --packages --push
+  - Build is executed once via: ./build.sh --release --packages
 EOF
 }
 
@@ -148,54 +148,66 @@ fi
 
 if [[ -z "${release_title}" ]]; then
     if [[ "${nightly}" == "true" ]]; then
-        # GitHub disallows 40-hex ref names (object-ID-like), so nightly tags
-        # use short SHA while the release title keeps the full commit SHA.
-        release_title="${head_commit}"
+        release_title="vaka-${head_short}"
     else
         release_title="${release_tag}"
     fi
 fi
 
-echo "==> Building and publishing artifacts/images with VERSION=${release_tag}"
-VERSION="${release_tag}" ./build.sh --release --packages --push
-
-pkg_version="${release_tag#v}"
-expected=(
-    "dist/nft-linux-amd64"
-    "dist/nft-linux-arm64"
-    "dist/vaka-linux-amd64"
-    "dist/vaka-linux-arm64"
-    "dist/vaka-darwin-amd64"
-    "dist/vaka-darwin-arm64"
-    "dist/vaka-init-linux-amd64"
-    "dist/vaka-init-linux-arm64"
-    "dist/vaka_${pkg_version}_amd64.deb"
-    "dist/vaka_${pkg_version}_arm64.deb"
-    "dist/vaka-${pkg_version}-1.x86_64.rpm"
-    "dist/vaka-${pkg_version}-1.aarch64.rpm"
-)
+echo "==> Building release artifacts with VERSION=${release_tag} (no registry publish)"
+VERSION="${release_tag}" ./build.sh --release --packages
 
 artifacts=()
 artifact_names=()
-missing=()
-for path in "${expected[@]}"; do
-    if [[ -f "${path}" ]]; then
-        artifacts+=("${path}")
-        artifact_names+=("$(basename "${path}")")
-    else
-        missing+=("${path}")
+pkg_version="${release_tag#v}"
+
+# GitHub release payload policy:
+#   - include package artifacts only (.deb/.rpm/.pkg.tar.*)
+#   - include macOS vaka binaries only
+#   - exclude nft/vaka-init artifacts and Linux raw vaka binaries
+required_macos=(
+    "dist/vaka-darwin-amd64"
+    "dist/vaka-darwin-arm64"
+)
+for path in "${required_macos[@]}"; do
+    if [[ ! -f "${path}" ]]; then
+        echo "ERROR: missing required macOS binary: ${path}" >&2
+        exit 1
     fi
+    artifacts+=("${path}")
+    artifact_names+=("$(basename "${path}")")
 done
 
-if [[ "${#artifacts[@]}" -eq 0 ]]; then
-    echo "ERROR: no release artifacts found in dist/" >&2
+shopt -s nullglob
+deb_pkgs=(dist/vaka_"${pkg_version}"_*.deb)
+rpm_pkgs=(dist/vaka-"${pkg_version}"-*.rpm)
+arch_pkgs=(
+    dist/vaka-"${pkg_version}"-*.pkg.tar.*
+    dist/vaka_"${pkg_version}"_*.pkg.tar.*
+)
+shopt -u nullglob
+
+if [[ "${#deb_pkgs[@]}" -eq 0 ]]; then
+    echo "ERROR: no .deb packages found in dist/" >&2
     exit 1
 fi
-if [[ "${#missing[@]}" -gt 0 ]]; then
-    echo "ERROR: missing expected release artifacts:" >&2
-    printf '  %s\n' "${missing[@]}" >&2
+if [[ "${#rpm_pkgs[@]}" -eq 0 ]]; then
+    echo "ERROR: no .rpm packages found in dist/" >&2
     exit 1
 fi
+if [[ "${#arch_pkgs[@]}" -eq 0 ]]; then
+    echo "ERROR: no Arch Linux packages (.pkg.tar.*) found in dist/" >&2
+    echo "       Ensure build.sh package phase includes archlinux output." >&2
+    exit 1
+fi
+
+declare -A seen_pkg=()
+for path in "${deb_pkgs[@]}" "${rpm_pkgs[@]}" "${arch_pkgs[@]}"; do
+    [[ -n "${seen_pkg[${path}]:-}" ]] && continue
+    seen_pkg["${path}"]=1
+    artifacts+=("${path}")
+    artifact_names+=("$(basename "${path}")")
+done
 
 if command -v sha256sum >/dev/null 2>&1; then
     (cd dist && sha256sum "${artifact_names[@]}" > SHA256SUMS)
@@ -219,7 +231,16 @@ if [[ "${is_prerelease}" == "true" ]]; then
     else
         git tag "${release_tag}" "${head_commit}"
     fi
-    if ! git ls-remote --exit-code --tags origin "refs/tags/${release_tag}" >/dev/null 2>&1; then
+    if git ls-remote --exit-code --tags origin "refs/tags/${release_tag}" >/dev/null 2>&1; then
+        remote_tag_target="$(git ls-remote --tags origin "refs/tags/${release_tag}^{}" | awk '{print $1}' || true)"
+        if [[ -z "${remote_tag_target}" ]]; then
+            remote_tag_target="$(git ls-remote --tags origin "refs/tags/${release_tag}" | awk '{print $1}' || true)"
+        fi
+        if [[ -n "${remote_tag_target}" && "${remote_tag_target}" != "${head_commit}" ]]; then
+            echo "ERROR: remote tag ${release_tag} points to ${remote_tag_target}, expected ${head_commit}" >&2
+            exit 1
+        fi
+    else
         echo "==> Pushing nightly tag ${release_tag}"
         git push origin "refs/tags/${release_tag}:refs/tags/${release_tag}"
     fi
