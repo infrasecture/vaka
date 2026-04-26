@@ -3,12 +3,9 @@ package main
 import (
 	"context"
 	"errors"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
-
-	composetypes "github.com/compose-spec/compose-go/v2/types"
 )
 
 func TestParseComposeMajorVersion(t *testing.T) {
@@ -84,131 +81,5 @@ func TestRunDoctorChecksInformationalResult(t *testing.T) {
 	}
 	if results[0].ok {
 		t.Fatalf("expected failed informational probe")
-	}
-}
-
-type fakeDoctorDockerServices struct {
-	imageExists       bool
-	imageExistsErr    error
-	ensureErr         error
-	imageExistsCalled int
-	ensureCalled      int
-	lastExistsRef     string
-	lastEnsureRef     string
-}
-
-func (f *fakeDoctorDockerServices) EnsureImage(_ context.Context, ref string) error {
-	f.ensureCalled++
-	f.lastEnsureRef = ref
-	return f.ensureErr
-}
-
-func (f *fakeDoctorDockerServices) ImageExists(_ context.Context, ref string) (bool, error) {
-	f.imageExistsCalled++
-	f.lastExistsRef = ref
-	return f.imageExists, f.imageExistsErr
-}
-
-func (f *fakeDoctorDockerServices) ResolveRuntime(_ context.Context, _ string, _ composetypes.ServiceConfig) (ResolvedRuntime, error) {
-	return ResolvedRuntime{}, errors.New("not implemented")
-}
-
-func mustDoctorCheckByName(t *testing.T, checks []doctorCheck, name string) doctorCheck {
-	t.Helper()
-	for _, c := range checks {
-		if c.name == name {
-			return c
-		}
-	}
-	t.Fatalf("doctor check %q not found", name)
-	return doctorCheck{}
-}
-
-func TestDoctorCheckRequiredVakaInitImageMissing(t *testing.T) {
-	origNewDoctorDockerServices := newDoctorDockerServices
-	defer func() { newDoctorDockerServices = origNewDoctorDockerServices }()
-
-	fake := &fakeDoctorDockerServices{imageExists: false}
-	var gotDockerTargetArgs []string
-	newDoctorDockerServices = func(args []string) (DockerServices, error) {
-		gotDockerTargetArgs = append([]string{}, args...)
-		return fake, nil
-	}
-
-	check := mustDoctorCheckByName(t, defaultDoctorChecks(doctorOptions{}), "required vaka-init image present")
-	_, err := check.run(context.Background())
-	if err == nil {
-		t.Fatal("expected missing-image error, got nil")
-	}
-	expectedRef := vakaInitBaseImage + ":" + version
-	if !strings.Contains(err.Error(), expectedRef) {
-		t.Fatalf("error %q does not contain image ref %q", err.Error(), expectedRef)
-	}
-	if fake.imageExistsCalled != 1 {
-		t.Fatalf("ImageExists called %d times, want 1", fake.imageExistsCalled)
-	}
-	if fake.ensureCalled != 0 {
-		t.Fatalf("EnsureImage called %d times, want 0", fake.ensureCalled)
-	}
-	if len(gotDockerTargetArgs) != 0 {
-		t.Fatalf("docker target args = %v, want empty", gotDockerTargetArgs)
-	}
-}
-
-func TestDoctorFixPullsRequiredVakaInitImage(t *testing.T) {
-	origNewDoctorDockerServices := newDoctorDockerServices
-	defer func() { newDoctorDockerServices = origNewDoctorDockerServices }()
-
-	fake := &fakeDoctorDockerServices{}
-	var gotDockerTargetArgs []string
-	newDoctorDockerServices = func(args []string) (DockerServices, error) {
-		gotDockerTargetArgs = append([]string{}, args...)
-		return fake, nil
-	}
-
-	check := mustDoctorCheckByName(t, defaultDoctorChecks(doctorOptions{
-		fix:     true,
-		context: "colima",
-	}), "required vaka-init image present")
-	gotDetail, err := check.run(context.Background())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	expectedRef := vakaInitBaseImage + ":" + version
-	if gotDetail != expectedRef {
-		t.Fatalf("detail = %q, want %q", gotDetail, expectedRef)
-	}
-	if fake.ensureCalled != 1 {
-		t.Fatalf("EnsureImage called %d times, want 1", fake.ensureCalled)
-	}
-	if fake.lastEnsureRef != expectedRef {
-		t.Fatalf("EnsureImage ref = %q, want %q", fake.lastEnsureRef, expectedRef)
-	}
-	if fake.imageExistsCalled != 0 {
-		t.Fatalf("ImageExists called %d times, want 0", fake.imageExistsCalled)
-	}
-	if !reflect.DeepEqual(gotDockerTargetArgs, []string{"--context", "colima"}) {
-		t.Fatalf("docker target args = %v, want [--context colima]", gotDockerTargetArgs)
-	}
-}
-
-func TestDoctorContextIsForwardedToDockerProbeChecks(t *testing.T) {
-	origDoctorDockerProbe := doctorDockerProbe
-	defer func() { doctorDockerProbe = origDoctorDockerProbe }()
-
-	var gotArgs []string
-	doctorDockerProbe = func(_ context.Context, args []string) (string, string, error) {
-		gotArgs = append([]string{}, args...)
-		return "27.0.0", "", nil
-	}
-
-	check := mustDoctorCheckByName(t, defaultDoctorChecks(doctorOptions{context: "colima"}), "docker daemon reachable")
-	_, err := check.run(context.Background())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	want := []string{"--context", "colima", "version", "--format", "{{.Server.Version}}"}
-	if !reflect.DeepEqual(gotArgs, want) {
-		t.Fatalf("docker probe args = %v, want %v", gotArgs, want)
 	}
 }

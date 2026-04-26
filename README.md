@@ -362,14 +362,9 @@ vaka doctor
 - Docker daemon reachability
 - Docker Compose v2 availability
 - Linux container backend (`docker info` reports `OSType=linux`)
-- required helper image `emsi/vaka-init:<vaka-version>` is present in the selected Docker target
 - resolved Docker context (informational)
 
-If a check fails, vaka prints a direct remediation hint. To auto-pull a missing helper image:
-
-```bash
-vaka doctor --fix
-```
+If a check fails, vaka prints a direct remediation hint.
 
 Desktop-focused reproducible smoke path:
 
@@ -741,11 +736,8 @@ vaka validate [-f vaka.yaml] [--compose docker-compose.yaml]
 Runs preflight diagnostics for Docker/Compose compatibility and prints remediation hints for failures.
 
 ```bash
-vaka doctor [--context NAME] [--fix]
+vaka doctor
 ```
-
-- `--fix`: pull missing required `emsi/vaka-init:<vaka-version>` into the selected Docker target
-- `--context`: run doctor checks/fix against a specific Docker context (same meaning as `docker --context`)
 
 ### `vaka show-nft <service>`
 
