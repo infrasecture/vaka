@@ -350,17 +350,22 @@ vaka doctor
 - Docker daemon reachability
 - Docker Compose v2 availability
 - Linux container backend (`docker info` reports `OSType=linux`)
-- active Docker context
+- resolved Docker context (informational)
 
 If a check fails, vaka prints a direct remediation hint.
 
 Desktop-focused reproducible smoke path:
 
 1. `vaka doctor`
-2. `vaka --context desktop-linux show-compose > /tmp/vaka-override.yaml`
-3. `vaka --context desktop-linux create`
-4. `vaka --context desktop-linux volumes`
-5. `vaka --context desktop-linux down`
+2. `vaka create`
+3. `vaka volumes`
+4. `vaka down`
+
+Optional preview-only step:
+
+```bash
+vaka show-compose > /tmp/vaka-override.yaml
+```
 
 ---
 

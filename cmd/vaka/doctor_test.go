@@ -1,6 +1,12 @@
 package main
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+	"time"
+)
 
 func TestParseComposeMajorVersion(t *testing.T) {
 	tests := []struct {
@@ -31,5 +37,49 @@ func TestParseComposeMajorVersion(t *testing.T) {
 				t.Fatalf("got %d, want %d", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestRunDoctorChecksTimeout(t *testing.T) {
+	results := runDoctorChecks(context.Background(), []doctorCheck{
+		{
+			name:     "times out",
+			required: true,
+			timeout:  25 * time.Millisecond,
+			run: func(ctx context.Context) (string, error) {
+				<-ctx.Done()
+				return "", ctx.Err()
+			},
+		},
+	})
+	if len(results) != 1 {
+		t.Fatalf("results len = %d, want 1", len(results))
+	}
+	if results[0].ok {
+		t.Fatalf("expected failed result")
+	}
+	if !strings.Contains(results[0].errText, "timed out after") {
+		t.Fatalf("unexpected err text: %q", results[0].errText)
+	}
+}
+
+func TestRunDoctorChecksInformationalResult(t *testing.T) {
+	results := runDoctorChecks(context.Background(), []doctorCheck{
+		{
+			name:     "info check",
+			required: false,
+			run: func(context.Context) (string, error) {
+				return "", errors.New("probe unavailable")
+			},
+		},
+	})
+	if len(results) != 1 {
+		t.Fatalf("results len = %d, want 1", len(results))
+	}
+	if results[0].required {
+		t.Fatalf("expected informational (required=false) result")
+	}
+	if results[0].ok {
+		t.Fatalf("expected failed informational probe")
 	}
 }

@@ -3,10 +3,12 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -16,18 +18,23 @@ var (
 	doctorDockerProbe = runDoctorDockerCommand
 )
 
+const doctorProbeTimeout = 10 * time.Second
+
 type doctorCheck struct {
 	name        string
+	required    bool
+	timeout     time.Duration
 	remediation string
 	run         func(context.Context) (string, error)
 }
 
 type doctorResult struct {
-	name    string
-	ok      bool
-	detail  string
-	errText string
-	fix     string
+	name     string
+	required bool
+	ok       bool
+	detail   string
+	errText  string
+	fix      string
 }
 
 func newDoctorCmd() *cobra.Command {
@@ -38,6 +45,19 @@ func newDoctorCmd() *cobra.Command {
 			results := runDoctorChecks(context.Background(), defaultDoctorChecks())
 			failed := 0
 			for _, r := range results {
+				if !r.required {
+					if r.ok {
+						if strings.TrimSpace(r.detail) == "" {
+							fmt.Printf("INFO %s\n", r.name)
+						} else {
+							fmt.Printf("INFO %s: %s\n", r.name, r.detail)
+						}
+					} else {
+						fmt.Printf("INFO %s: unavailable (%s)\n", r.name, r.errText)
+					}
+					continue
+				}
+
 				if r.ok {
 					if strings.TrimSpace(r.detail) == "" {
 						fmt.Printf("PASS %s\n", r.name)
@@ -63,20 +83,33 @@ func newDoctorCmd() *cobra.Command {
 func runDoctorChecks(ctx context.Context, checks []doctorCheck) []doctorResult {
 	results := make([]doctorResult, 0, len(checks))
 	for _, c := range checks {
-		detail, err := c.run(ctx)
+		checkCtx := ctx
+		cancel := func() {}
+		if c.timeout > 0 {
+			checkCtx, cancel = context.WithTimeout(ctx, c.timeout)
+		}
+		detail, err := c.run(checkCtx)
+		cancel()
+
+		if c.timeout > 0 && errors.Is(checkCtx.Err(), context.DeadlineExceeded) {
+			err = fmt.Errorf("timed out after %s", c.timeout.Round(time.Second))
+		}
+
 		if err != nil {
 			results = append(results, doctorResult{
-				name:    c.name,
-				ok:      false,
-				errText: strings.TrimSpace(err.Error()),
-				fix:     c.remediation,
+				name:     c.name,
+				required: c.required,
+				ok:       false,
+				errText:  strings.TrimSpace(err.Error()),
+				fix:      c.remediation,
 			})
 			continue
 		}
 		results = append(results, doctorResult{
-			name:   c.name,
-			ok:     true,
-			detail: strings.TrimSpace(detail),
+			name:     c.name,
+			required: c.required,
+			ok:       true,
+			detail:   strings.TrimSpace(detail),
 		})
 	}
 	return results
@@ -86,6 +119,7 @@ func defaultDoctorChecks() []doctorCheck {
 	return []doctorCheck{
 		{
 			name:        "docker CLI available",
+			required:    true,
 			remediation: "Install Docker Engine or Docker Desktop and ensure `docker` is on PATH.",
 			run: func(context.Context) (string, error) {
 				p, err := doctorLookPath("docker")
@@ -97,6 +131,8 @@ func defaultDoctorChecks() []doctorCheck {
 		},
 		{
 			name:        "docker daemon reachable",
+			required:    true,
+			timeout:     doctorProbeTimeout,
 			remediation: "Start Docker and verify your current Docker context/daemon is reachable.",
 			run: func(ctx context.Context) (string, error) {
 				stdout, stderr, err := doctorDockerProbe(ctx, []string{"version", "--format", "{{.Server.Version}}"})
@@ -111,6 +147,8 @@ func defaultDoctorChecks() []doctorCheck {
 		},
 		{
 			name:        "docker compose v2 available",
+			required:    true,
+			timeout:     doctorProbeTimeout,
 			remediation: "Install/enable Docker Compose v2 (`docker compose`).",
 			run: func(ctx context.Context) (string, error) {
 				stdout, stderr, err := doctorDockerProbe(ctx, []string{"compose", "version", "--short"})
@@ -130,6 +168,8 @@ func defaultDoctorChecks() []doctorCheck {
 		},
 		{
 			name:        "linux container backend",
+			required:    true,
+			timeout:     doctorProbeTimeout,
 			remediation: "Use a Docker backend that runs Linux containers (Docker Desktop Linux containers mode or Linux Engine).",
 			run: func(ctx context.Context) (string, error) {
 				stdout, stderr, err := doctorDockerProbe(ctx, []string{"info", "--format", "{{.OSType}}"})
@@ -144,8 +184,9 @@ func defaultDoctorChecks() []doctorCheck {
 			},
 		},
 		{
-			name:        "active docker context",
-			remediation: "Set a valid context (`docker context use <name>`) or pass `--context` to vaka commands.",
+			name:     "resolved docker context",
+			required: false,
+			timeout:  doctorProbeTimeout,
 			run: func(ctx context.Context) (string, error) {
 				stdout, stderr, err := doctorDockerProbe(ctx, []string{"context", "show"})
 				if err != nil {
@@ -153,7 +194,7 @@ func defaultDoctorChecks() []doctorCheck {
 				}
 				name := strings.TrimSpace(stdout)
 				if name == "" {
-					return "", fmt.Errorf("active context name is empty")
+					return "", fmt.Errorf("resolved context name is empty")
 				}
 				return name, nil
 			},
