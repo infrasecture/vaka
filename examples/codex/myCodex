@@ -13,6 +13,7 @@ COMPOSE_FILE="${SCRIPT_DIR}/compose.yaml"
 SERVICE="${CODEX_SERVICE:-codex}"
 SESSION="${CODEX_BYOBU_SESSION:-codex}"
 WAIT_TIMEOUT_SECONDS="${MYCODEX_WAIT_TIMEOUT_SECONDS:-30}"
+COMPOSE_COMMAND=()
 
 RAW_NAME="$(basename -- "${CALLER_DIR}")"
 PROJECT_NAME="$(printf '%s' "${RAW_NAME}" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_-]+/-/g; s/^-+//; s/-+$//')"
@@ -28,12 +29,12 @@ usage() {
 Usage:
   myCodex                      Start stack if needed, then attach
   myCodex attach               Attach to tmux session in codex service
-  myCodex ps [args...]         docker compose ps
-  myCodex start [args...]      docker compose start (defaults to codex)
-  myCodex stop [args...]       docker compose stop (defaults to codex)
-  myCodex restart [args...]    docker compose restart (defaults to codex)
-  myCodex exec <cmd...>        docker compose exec -it codex <cmd...>
-  myCodex <compose-cmd> ...    Pass through to docker compose
+  myCodex ps [args...]         compose ps
+  myCodex start [args...]      Recreate/start stack with a fresh LiteLLM proxy key
+  myCodex stop [args...]       compose stop (defaults to codex)
+  myCodex restart [args...]    Recreate/start stack with a fresh LiteLLM proxy key
+  myCodex exec <cmd...>        compose exec -it codex <cmd...>
+  myCodex <compose-cmd> ...    Pass through to compose
 EOF
 }
 
@@ -91,21 +92,80 @@ ensure_secret_env() {
 
 ensure_start_secrets() {
   ensure_secret_env OPENAI_API_KEY
-  ensure_secret_env LITELLM_MASTER_KEY
+  generate_litellm_proxy_key
+}
+
+generate_litellm_proxy_key() {
+  local proxy_key
+
+  if command -v openssl >/dev/null 2>&1; then
+    proxy_key="$(openssl rand -hex 32)"
+  else
+    proxy_key="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
+  fi
+
+  if [[ -z "${proxy_key}" ]]; then
+    echo "myCodex: failed to generate LiteLLM proxy key" >&2
+    exit 2
+  fi
+
+  export LITELLM_MASTER_KEY="${proxy_key}"
+}
+
+ensure_compose_command() {
+  local answer
+
+  if [[ ${#COMPOSE_COMMAND[@]} -gt 0 ]]; then
+    return
+  fi
+
+  if command -v vaka >/dev/null 2>&1; then
+    COMPOSE_COMMAND=(vaka --vaka-file "${SCRIPT_DIR}/vaka.yaml")
+    return
+  fi
+
+  echo "myCodex: WARNING: vaka is missing; docker compose will run without network policy enforcement." >&2
+
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "myCodex: docker is also missing; cannot run compose command." >&2
+    exit 2
+  fi
+
+  if ! { : < /dev/tty > /dev/tty; } 2>/dev/null; then
+    echo "myCodex: cannot ask whether to use docker compose without a tty." >&2
+    exit 2
+  fi
+
+  printf 'Use docker compose anyway? [y/N] ' > /dev/tty
+  IFS= read -r answer < /dev/tty || answer=
+
+  case "${answer}" in
+    y|Y|yes|YES|Yes)
+      COMPOSE_COMMAND=(docker compose)
+      ;;
+    *)
+      echo "myCodex: refusing to run without vaka network policy enforcement." >&2
+      exit 2
+      ;;
+  esac
 }
 
 compose_run() {
+  ensure_compose_command
   env \
     WORKSPACE_DIR="${CALLER_DIR}" \
     CODEX_CONTAINER_NAME="${CONTAINER_NAME}" \
-    docker compose -p "${PROJECT_NAME}" -f "${COMPOSE_FILE}" "$@"
+    MYCODEX_ATTACH_HINT="${SCRIPT_DIR}/myCodex" \
+    "${COMPOSE_COMMAND[@]}" -p "${PROJECT_NAME}" -f "${COMPOSE_FILE}" "$@"
 }
 
 compose() {
+  ensure_compose_command
   exec env \
     WORKSPACE_DIR="${CALLER_DIR}" \
     CODEX_CONTAINER_NAME="${CONTAINER_NAME}" \
-    docker compose -p "${PROJECT_NAME}" -f "${COMPOSE_FILE}" "$@"
+    MYCODEX_ATTACH_HINT="${SCRIPT_DIR}/myCodex" \
+    "${COMPOSE_COMMAND[@]}" -p "${PROJECT_NAME}" -f "${COMPOSE_FILE}" "$@"
 }
 
 is_running() {
@@ -118,7 +178,7 @@ attach_tmux() {
 
 start_stack() {
   ensure_start_secrets
-  compose_run up -d --build --wait --wait-timeout "${WAIT_TIMEOUT_SECONDS}"
+  compose_run up -d --build --force-recreate --wait --wait-timeout "${WAIT_TIMEOUT_SECONDS}" "$@"
 }
 
 if [[ $# -eq 0 ]]; then
@@ -144,12 +204,7 @@ case "${subcommand}" in
     compose ps "$@"
     ;;
   start)
-    ensure_start_secrets
-    if [[ $# -eq 0 ]]; then
-      compose start "${SERVICE}"
-    else
-      compose start "$@"
-    fi
+    start_stack "$@"
     ;;
   stop)
     if [[ $# -eq 0 ]]; then
@@ -159,16 +214,10 @@ case "${subcommand}" in
     fi
     ;;
   restart)
-    ensure_start_secrets
-    if [[ $# -eq 0 ]]; then
-      compose restart "${SERVICE}"
-    else
-      compose restart "$@"
-    fi
+    start_stack "$@"
     ;;
   up)
-    ensure_start_secrets
-    compose up "$@"
+    start_stack "$@"
     ;;
   exec)
     if [[ $# -eq 0 ]]; then

@@ -1,0 +1,39 @@
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+
+services:
+  codex:
+    network:
+      egress:
+        defaultAction: reject       # accept | reject | drop
+        accept:
+          - dns: {}  # all entries from /etc/resolve.conf
+          - proto: tcp
+            to: [litellm]
+            ports: [4000]
+        drop:
+          - proto: icmp
+            type: echo-request      # named or numeric (8)
+  litellm:
+    network:
+      egress:
+        defaultAction: reject
+        accept:
+          - dns: {}
+          - proto: tcp
+            to: [
+                api.openai.com,
+                auth.openai.com,
+                chatgpt.com,
+                platform.openai.com,
+                api.anthropic.com,
+                claude.ai,
+                platform.claude.com,
+                downloads.claude.ai,
+                storage.googleapis.com,
+                api.github.com,
+                github.com,
+                ]
+            ports: [443]
+          - proto: icmp
+            type: echo-request
