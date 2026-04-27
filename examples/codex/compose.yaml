@@ -1,0 +1,48 @@
+services:
+  codex:
+    image: ghcr.io/infrasecture/harness-workstation
+    container_name: ${CODEX_CONTAINER_NAME:-codex-dev}
+    init: true
+    tty: true
+    stdin_open: true
+    working_dir: /workspace
+
+    environment:
+      # Explicit, but matches the default behavior of Codex anyway
+      CODEX_HOME: /root/.codex
+      CODEX_BYOBU_SESSION: codex
+      MYCODEX_ATTACH_HINT: "${MYCODEX_ATTACH_HINT:-<path_to_myCodex>/myCodex}"
+      OPENAI_API_KEY: ${LITELLM_MASTER_KEY}
+    command: ["bash", "/usr/local/bin/codex-prestart.sh"]
+
+    healthcheck:
+      test: ["CMD-SHELL", "byobu-tmux has-session -t \"$${CODEX_BYOBU_SESSION:-codex}\" >/dev/null 2>&1"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+      start_period: 1s
+
+    volumes:
+      - ${WORKSPACE_DIR:-./}:/workspace
+      - codex_state:/root/
+      - ./codex-prestart.sh:/usr/local/bin/codex-prestart.sh:ro
+
+  litellm:
+    image: docker.litellm.ai/berriai/litellm:main-stable
+    init: true
+    command: ["--config", "/app/config.yaml", "--telemetry", "False", "--debug"]
+    environment:
+      LITELLM_MASTER_KEY:
+      OPENAI_API_KEY:
+      DISABLE_ADMIN_UI: "True"
+      NO_DOCS: "True"
+      NO_REDOC: "True"
+      LITELLM_DONT_SHOW_FEEDBACK_BOX: "true"
+      OTEL_SDK_DISABLED: "true"
+    volumes:
+      - ./litellm.config.yaml:/app/config.yaml:ro
+    expose:
+      - "4000"
+
+volumes:
+  codex_state:

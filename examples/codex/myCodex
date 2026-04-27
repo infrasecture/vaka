@@ -1,0 +1,233 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+CALLER_DIR="$(pwd -P)"
+
+if [[ "${CALLER_DIR}" == "${SCRIPT_DIR}" ]]; then
+  echo "myCodex: running from its own directory exposes secrets inside the container; it should be run from a project dir." >&2
+  exit 2
+fi
+
+COMPOSE_FILE="${SCRIPT_DIR}/compose.yaml"
+SERVICE="${CODEX_SERVICE:-codex}"
+SESSION="${CODEX_BYOBU_SESSION:-codex}"
+WAIT_TIMEOUT_SECONDS="${MYCODEX_WAIT_TIMEOUT_SECONDS:-30}"
+COMPOSE_COMMAND=()
+
+RAW_NAME="$(basename -- "${CALLER_DIR}")"
+PROJECT_NAME="$(printf '%s' "${RAW_NAME}" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_-]+/-/g; s/^-+//; s/-+$//')"
+
+if [[ -z "${PROJECT_NAME}" ]]; then
+  PROJECT_NAME="workspace"
+fi
+
+CONTAINER_NAME="${PROJECT_NAME}-codex"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  myCodex                      Start stack if needed, then attach
+  myCodex attach               Attach to tmux session in codex service
+  myCodex ps [args...]         compose ps
+  myCodex start [args...]      Recreate/start stack with a fresh LiteLLM proxy key
+  myCodex stop [args...]       compose stop (defaults to codex)
+  myCodex restart [args...]    Recreate/start stack with a fresh LiteLLM proxy key
+  myCodex exec <cmd...>        compose exec -it codex <cmd...>
+  myCodex <compose-cmd> ...    Pass through to compose
+EOF
+}
+
+ensure_secret_env() {
+  local env_name="$1"
+  local env_value="${!env_name-}"
+  local secrets_dir="${SCRIPT_DIR}/.secrets"
+  local secret_file="${secrets_dir}/$(printf '%s' "${env_name}" | tr '[:upper:]' '[:lower:]')"
+  local old_umask
+
+  if [[ -n "${env_value}" ]]; then
+    export "${env_name}=${env_value}"
+    return
+  fi
+
+  if [[ -f "${secret_file}" ]]; then
+    IFS= read -r env_value < "${secret_file}" || true
+    if [[ -z "${env_value}" ]]; then
+      echo "myCodex: ${secret_file} is empty; ${env_name} is required." >&2
+      exit 2
+    fi
+    export "${env_name}=${env_value}"
+    return
+  fi
+
+  if ! { : < /dev/tty > /dev/tty; } 2>/dev/null; then
+    echo "myCodex: ${env_name} is not set and ${secret_file} does not exist; cannot prompt without a tty." >&2
+    exit 2
+  fi
+
+  mkdir -p "${secrets_dir}"
+  chmod 700 "${secrets_dir}"
+
+  printf 'Enter %s: ' "${env_name}" > /dev/tty
+  if ! IFS= read -r -s env_value < /dev/tty; then
+    printf '\n' > /dev/tty
+    echo "myCodex: failed to read ${env_name}." >&2
+    exit 2
+  fi
+  printf '\n' > /dev/tty
+
+  if [[ -z "${env_value}" ]]; then
+    echo "myCodex: ${env_name} cannot be empty." >&2
+    exit 2
+  fi
+
+  old_umask="$(umask)"
+  umask 077
+  printf '%s\n' "${env_value}" > "${secret_file}"
+  umask "${old_umask}"
+  chmod 600 "${secret_file}"
+
+  export "${env_name}=${env_value}"
+}
+
+ensure_start_secrets() {
+  ensure_secret_env OPENAI_API_KEY
+  generate_litellm_proxy_key
+}
+
+generate_litellm_proxy_key() {
+  local proxy_key
+
+  if command -v openssl >/dev/null 2>&1; then
+    proxy_key="$(openssl rand -hex 32)"
+  else
+    proxy_key="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
+  fi
+
+  if [[ -z "${proxy_key}" ]]; then
+    echo "myCodex: failed to generate LiteLLM proxy key" >&2
+    exit 2
+  fi
+
+  export LITELLM_MASTER_KEY="${proxy_key}"
+}
+
+ensure_compose_command() {
+  local answer
+
+  if [[ ${#COMPOSE_COMMAND[@]} -gt 0 ]]; then
+    return
+  fi
+
+  if command -v vaka >/dev/null 2>&1; then
+    COMPOSE_COMMAND=(vaka --vaka-file "${SCRIPT_DIR}/vaka.yaml")
+    return
+  fi
+
+  echo "myCodex: WARNING: vaka is missing; docker compose will run without network policy enforcement." >&2
+
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "myCodex: docker is also missing; cannot run compose command." >&2
+    exit 2
+  fi
+
+  if ! { : < /dev/tty > /dev/tty; } 2>/dev/null; then
+    echo "myCodex: cannot ask whether to use docker compose without a tty." >&2
+    exit 2
+  fi
+
+  printf 'Use docker compose anyway? [y/N] ' > /dev/tty
+  IFS= read -r answer < /dev/tty || answer=
+
+  case "${answer}" in
+    y|Y|yes|YES|Yes)
+      COMPOSE_COMMAND=(docker compose)
+      ;;
+    *)
+      echo "myCodex: refusing to run without vaka network policy enforcement." >&2
+      exit 2
+      ;;
+  esac
+}
+
+compose_run() {
+  ensure_compose_command
+  env \
+    WORKSPACE_DIR="${CALLER_DIR}" \
+    CODEX_CONTAINER_NAME="${CONTAINER_NAME}" \
+    MYCODEX_ATTACH_HINT="${SCRIPT_DIR}/myCodex" \
+    "${COMPOSE_COMMAND[@]}" -p "${PROJECT_NAME}" -f "${COMPOSE_FILE}" "$@"
+}
+
+compose() {
+  ensure_compose_command
+  exec env \
+    WORKSPACE_DIR="${CALLER_DIR}" \
+    CODEX_CONTAINER_NAME="${CONTAINER_NAME}" \
+    MYCODEX_ATTACH_HINT="${SCRIPT_DIR}/myCodex" \
+    "${COMPOSE_COMMAND[@]}" -p "${PROJECT_NAME}" -f "${COMPOSE_FILE}" "$@"
+}
+
+is_running() {
+  compose_run ps --status running --services 2>/dev/null | grep -Fxq "${SERVICE}"
+}
+
+attach_tmux() {
+  compose exec -it "${SERVICE}" tmux attach -t "${SESSION}"
+}
+
+start_stack() {
+  ensure_start_secrets
+  compose_run up -d --build --force-recreate --wait --wait-timeout "${WAIT_TIMEOUT_SECONDS}" "$@"
+}
+
+if [[ $# -eq 0 ]]; then
+  if is_running; then
+    attach_tmux
+  fi
+
+  start_stack
+  attach_tmux
+fi
+
+subcommand="$1"
+shift || true
+
+case "${subcommand}" in
+  help|-h|--help)
+    usage
+    ;;
+  attach)
+    attach_tmux
+    ;;
+  ps)
+    compose ps "$@"
+    ;;
+  start)
+    start_stack "$@"
+    ;;
+  stop)
+    if [[ $# -eq 0 ]]; then
+      compose stop "${SERVICE}"
+    else
+      compose stop "$@"
+    fi
+    ;;
+  restart)
+    start_stack "$@"
+    ;;
+  up)
+    start_stack "$@"
+    ;;
+  exec)
+    if [[ $# -eq 0 ]]; then
+      echo "myCodex: exec requires a command" >&2
+      usage >&2
+      exit 2
+    fi
+    compose exec -it "${SERVICE}" "$@"
+    ;;
+  *)
+    compose "${subcommand}" "$@"
+    ;;
+esac
