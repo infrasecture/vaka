@@ -63,14 +63,18 @@ services:
 			setDockerServicesFactoryForTest(t, ds, &gotFactoryArgs)
 
 			var runFullYAML string
-			setExecDockerComposeForTest(t, func(args []string, overrideYAML string, extraEnv []string) error {
+			setExecDockerComposeForTest(t, func(inv *Invocation, overrideYAML string, extraEnv []string) error {
 				if overrideYAML != "" {
 					runFullYAML = overrideYAML
 				}
 				return nil
 			})
 
-			if err := runFull("vaka.yaml", tc.runFullArg, true); err != nil {
+			runInv, err := ParseInvocation(tc.runFullArg)
+			if err != nil {
+				t.Fatalf("ParseInvocation(runFull): %v", err)
+			}
+			if err := runFull("vaka.yaml", runInv, true); err != nil {
 				t.Fatalf("runFull: %v", err)
 			}
 			if runFullYAML == "" {
@@ -78,7 +82,11 @@ services:
 			}
 
 			showComposeYAML, err := captureStdout(t, func() error {
-				return runShowCompose("vaka.yaml", tc.showArg, true)
+				showInv, parseErr := ParseInvocation(tc.showArg)
+				if parseErr != nil {
+					return parseErr
+				}
+				return runShowCompose("vaka.yaml", showInv, true)
 			})
 			if err != nil {
 				t.Fatalf("runShowCompose: %v", err)

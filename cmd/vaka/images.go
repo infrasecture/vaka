@@ -65,15 +65,14 @@ var loadDockerConfigFile = dockerconfig.LoadDefaultConfigFile
 // NewDockerServices creates a DockerServices for one vaka invocation using
 // docker/cli target resolution semantics:
 //
-//  1. explicit --context/-c from compose global flags
-//  2. DOCKER_HOST fallback to default context endpoint
-//  3. DOCKER_CONTEXT
-//  4. currentContext from Docker config (DOCKER_CONFIG/config.json)
-//  5. default context
-func NewDockerServices(args []string) (DockerServices, error) {
+//  1. DOCKER_HOST
+//  2. DOCKER_CONTEXT
+//  3. currentContext from Docker config (DOCKER_CONFIG/config.json)
+//  4. default context
+func NewDockerServices(inv *Invocation) (DockerServices, error) {
 	cfg := loadDockerConfigFile(os.Stderr)
-	opts := newDockerClientOptions(args)
-	targetDesc := dockerTargetDescription(args, cfg)
+	opts := newDockerClientOptions(inv)
+	targetDesc := dockerTargetDescription(cfg)
 
 	apiClient, err := dockercli.NewAPIClientFromFlags(opts, cfg)
 	if err != nil {
@@ -85,23 +84,11 @@ func NewDockerServices(args []string) (DockerServices, error) {
 	}, nil
 }
 
-// dockerContextFromArgs returns the docker context selected via compose global
-// flags. The last occurrence wins. Returns empty when unset.
-func dockerContextFromArgs(args []string) string {
-	return composeGlobalValue(args, "--context", "-c")
-}
-
-func newDockerClientOptions(args []string) *dockerflags.ClientOptions {
+func newDockerClientOptions(_ *Invocation) *dockerflags.ClientOptions {
 	opts := dockerflags.NewClientOptions()
 	fs := pflag.NewFlagSet("vaka-docker", pflag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	opts.InstallFlags(fs)
-	// We do not parse compose argv into this docker client flagset because
-	// compose global flags are not docker client flags. The only shared target
-	// selector is --context/-c, extracted from compose globals below.
-	if ctxName := dockerContextFromArgs(args); ctxName != "" {
-		opts.Context = ctxName
-	}
 	opts.SetDefaultOptions(fs)
 	return opts
 }
@@ -110,10 +97,7 @@ func dockerConfigFilePathHint() string {
 	return filepath.Join(dockerconfig.Dir(), dockerconfig.ConfigFileName)
 }
 
-func dockerTargetDescription(args []string, cfg *configfile.ConfigFile) string {
-	if ctxName := dockerContextFromArgs(args); ctxName != "" {
-		return fmt.Sprintf("context %q (from --context)", ctxName)
-	}
+func dockerTargetDescription(cfg *configfile.ConfigFile) string {
 	if host := strings.TrimSpace(os.Getenv(client.EnvOverrideHost)); host != "" {
 		return fmt.Sprintf("daemon %q (from %s)", host, client.EnvOverrideHost)
 	}

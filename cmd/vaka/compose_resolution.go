@@ -20,12 +20,12 @@ type composeResolution struct {
 //  1. explicit -f/--file flags
 //  2. COMPOSE_FILE (from env / .env via compose-go)
 //  3. default compose file discovery with parent traversal
-func resolveComposeInput(args []string) (*composeResolution, error) {
-	explicitFiles := allFileFlags(args)
-	workingDir := projectDirectoryFromArgs(args)
+func resolveComposeInput(inv *Invocation) (*composeResolution, error) {
+	explicitFiles := inv.GlobalFiles
+	workingDir := inv.ProjectDirectory
 	if len(explicitFiles) > 0 {
 		return &composeResolution{
-			Files:      explicitFiles,
+			Files:      append([]string{}, explicitFiles...),
 			WorkingDir: workingDir,
 		}, nil
 	}
@@ -68,49 +68,4 @@ func newComposeProjectOptions(composeFiles []string, workingDir string, autoDisc
 		)
 	}
 	return composecli.NewProjectOptions(composeFiles, opts...)
-}
-
-// projectDirectoryFromArgs returns --project-directory value from compose
-// global flags (the last occurrence wins). Returns empty when unset.
-func projectDirectoryFromArgs(args []string) string {
-	return composeGlobalValue(args, "--project-directory", "")
-}
-
-func composeGlobalValue(args []string, longFlag, shortFlag string) string {
-	var value string
-	for i := 0; i < len(args); i++ {
-		tok := args[i]
-		if tok == "--" {
-			break
-		}
-
-		if tok == longFlag || (shortFlag != "" && tok == shortFlag) {
-			if i+1 < len(args) {
-				value = args[i+1]
-				i++
-			}
-			continue
-		}
-		if strings.HasPrefix(tok, longFlag+"=") {
-			value = strings.TrimPrefix(tok, longFlag+"=")
-			continue
-		}
-		if shortFlag != "" && strings.HasPrefix(tok, shortFlag+"=") {
-			value = strings.TrimPrefix(tok, shortFlag+"=")
-			continue
-		}
-
-		if composeGlobalFlagsWithValue[tok] {
-			i++
-			continue
-		}
-		if strings.HasPrefix(tok, "--") && strings.Contains(tok, "=") {
-			continue
-		}
-		if strings.HasPrefix(tok, "-") {
-			continue
-		}
-		break
-	}
-	return strings.TrimSpace(value)
 }

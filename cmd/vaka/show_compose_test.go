@@ -55,7 +55,11 @@ func TestParseShowComposeFlags(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			gotOutput, gotPassthrough, err := parseShowComposeFlags(tc.args)
+			inv, err := ParseInvocation(tc.args)
+			if err != nil {
+				t.Fatalf("ParseInvocation: %v", err)
+			}
+			gotOutput, gotPassthrough, err := parseShowComposeFlags(inv)
 			if tc.wantErr != "" {
 				if err == nil {
 					t.Fatalf("expected error containing %q, got nil", tc.wantErr)
@@ -71,8 +75,8 @@ func TestParseShowComposeFlags(t *testing.T) {
 			if gotOutput != tc.wantOutput {
 				t.Fatalf("output = %q, want %q", gotOutput, tc.wantOutput)
 			}
-			if !reflect.DeepEqual(gotPassthrough, tc.wantPassthrough) {
-				t.Fatalf("passthrough = %v, want %v", gotPassthrough, tc.wantPassthrough)
+			if !reflect.DeepEqual(gotPassthrough.ComposeArgs, tc.wantPassthrough) {
+				t.Fatalf("passthrough = %v, want %v", gotPassthrough.ComposeArgs, tc.wantPassthrough)
 			}
 		})
 	}
@@ -105,13 +109,21 @@ services:
 	var gotFactoryArgs [][]string
 	setDockerServicesFactoryForTest(t, ds, &gotFactoryArgs)
 
-	wantYAML, extraEnv, err := buildInjectionOverride(context.Background(), ds, "vaka.yaml", []string{"show-compose"}, true)
+	baseInv, err := ParseInvocation([]string{"show-compose"})
+	if err != nil {
+		t.Fatalf("ParseInvocation: %v", err)
+	}
+	wantYAML, extraEnv, err := buildInjectionOverride(context.Background(), ds, "vaka.yaml", baseInv, true)
 	if err != nil {
 		t.Fatalf("buildInjectionOverride: %v", err)
 	}
 
 	gotStdout, err := captureStdout(t, func() error {
-		return runShowCompose("vaka.yaml", []string{"show-compose"}, true)
+		inv, parseErr := ParseInvocation([]string{"show-compose"})
+		if parseErr != nil {
+			return parseErr
+		}
+		return runShowCompose("vaka.yaml", inv, true)
 	})
 	if err != nil {
 		t.Fatalf("runShowCompose: %v", err)
@@ -169,13 +181,21 @@ services:
 	var gotFactoryArgs [][]string
 	setDockerServicesFactoryForTest(t, ds, &gotFactoryArgs)
 
-	wantYAML, _, err := buildInjectionOverride(context.Background(), ds, "vaka.yaml", []string{"show-compose"}, true)
+	baseInv, err := ParseInvocation([]string{"show-compose"})
+	if err != nil {
+		t.Fatalf("ParseInvocation: %v", err)
+	}
+	wantYAML, _, err := buildInjectionOverride(context.Background(), ds, "vaka.yaml", baseInv, true)
 	if err != nil {
 		t.Fatalf("buildInjectionOverride: %v", err)
 	}
 
 	outPath := filepath.Join(dir, "override.yaml")
-	if err := runShowCompose("vaka.yaml", []string{"show-compose", "-o", outPath}, true); err != nil {
+	inv, err := ParseInvocation([]string{"show-compose", "-o", outPath})
+	if err != nil {
+		t.Fatalf("ParseInvocation: %v", err)
+	}
+	if err := runShowCompose("vaka.yaml", inv, true); err != nil {
 		t.Fatalf("runShowCompose: %v", err)
 	}
 

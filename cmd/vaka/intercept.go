@@ -72,23 +72,23 @@ func classifySubcmd(subcmd string) subcmdPath {
 // When overrideYAML is non-empty it is injected via -f - (with default compose
 // files also passed via -f so compose merges them correctly).
 // extraEnv, when non-nil, is appended to the inherited environment.
-func execDockerCompose(args []string, overrideYAML string, extraEnv []string) error {
+func execDockerCompose(inv *Invocation, overrideYAML string, extraEnv []string) error {
 	var dockerArgs []string
 	if overrideYAML != "" {
 		defaults := []string{}
-		if len(allFileFlags(args)) == 0 {
-			resolved, err := resolveComposeInput(args)
+		if len(inv.GlobalFiles) == 0 {
+			resolved, err := resolveComposeInput(inv)
 			if err != nil {
-				if classifySubcmd(findSubcmd(args)) == pathLifecycle {
+				if classifySubcmd(inv.Subcommand) == pathLifecycle {
 					return fmt.Errorf("lifecycle command requires compose configuration (%w); run from the project directory or pass -f/--project-directory", err)
 				}
 				return err
 			}
 			defaults = resolved.Files
 		}
-		dockerArgs = injectStdinOverride(append([]string{"compose"}, args...), defaults)
+		dockerArgs = injectStdinOverride(inv, defaults)
 	} else {
-		dockerArgs = append([]string{"compose"}, args...)
+		dockerArgs = inv.dockerComposeArgs()
 	}
 	c := exec.Command("docker", dockerArgs...)
 	if overrideYAML != "" {
@@ -107,17 +107,17 @@ func execDockerCompose(args []string, overrideYAML string, extraEnv []string) er
 // runFull handles full-override commands: up, run, create, volumes.
 // It loads and validates vaka.yaml, ensures the __vaka-init image when needed,
 // builds the full compose override, and delegates to execDockerCompose.
-func runFull(vakaFile string, args []string, vakaInitPresent bool) error {
+func runFull(vakaFile string, inv *Invocation, vakaInitPresent bool) error {
 	ctx := context.Background()
-	ds, err := newDockerServices(args)
+	ds, err := newDockerServices(inv)
 	if err != nil {
 		return err
 	}
-	overrideYAML, extraEnv, err := buildInjectionOverride(ctx, ds, vakaFile, args, vakaInitPresent)
+	overrideYAML, extraEnv, err := buildInjectionOverride(ctx, ds, vakaFile, inv, vakaInitPresent)
 	if err != nil {
 		return err
 	}
-	return execDockerComposeFn(args, overrideYAML, extraEnv)
+	return execDockerComposeFn(inv, overrideYAML, extraEnv)
 }
 
 // buildInjectionOverride builds the compose override and per-service secret env
@@ -129,10 +129,10 @@ func buildInjectionOverride(
 	ctx context.Context,
 	ds DockerServices,
 	vakaFile string,
-	args []string,
+	inv *Invocation,
 	vakaInitPresent bool,
 ) (overrideYAML string, extraEnv []string, err error) {
-	composeInput, err := resolveComposeInput(args)
+	composeInput, err := resolveComposeInput(inv)
 	if err != nil {
 		return "", nil, err
 	}
@@ -148,16 +148,20 @@ func buildInjectionOverride(
 	// `vaka up --build` fails for services that rely on Dockerfile defaults.
 	// When the user passes --build, every service with a build: section is
 	// prebuilt so ResolveRuntime inspects the fresh image, not a stale copy.
-	forceRebuild := hasBuildFlag(args)
+	forceRebuild := inv.BuildRequested
 	toBuild, err := servicesNeedingPrebuild(ctx, ds, p.Services, project, forceRebuild)
 	if err != nil {
 		return "", nil, err
 	}
 	if len(toBuild) > 0 {
 		fmt.Fprintf(os.Stderr, "vaka: pre-building services to resolve entrypoints: %v\n", toBuild)
-		buildArgs := append(globalFlags(args), "build")
+		buildArgs := append([]string{}, inv.ComposeGlobals...)
+		buildArgs = append(buildArgs, "build")
 		buildArgs = append(buildArgs, toBuild...)
-		if err := execDockerComposeFn(buildArgs, "", nil); err != nil {
+		buildInv := &Invocation{
+			ComposeArgs: buildArgs,
+		}
+		if err := execDockerComposeFn(buildInv, "", nil); err != nil {
 			return "", nil, fmt.Errorf("pre-build: %w", err)
 		}
 	}
@@ -249,12 +253,12 @@ func lifecycleOverrideYAML(vakaInitPresent bool, imageRef string) (string, error
 }
 
 // runLifecycle handles lifecycle commands: down, stop, kill, rm.
-func runLifecycle(args []string, vakaInitPresent bool) error {
+func runLifecycle(inv *Invocation, vakaInitPresent bool) error {
 	overrideYAML, err := lifecycleOverrideYAML(vakaInitPresent, vakaInitBaseImage+":"+version)
 	if err != nil {
 		return fmt.Errorf("build vaka-init container override: %w", err)
 	}
-	return execDockerCompose(args, overrideYAML, nil)
+	return execDockerCompose(inv, overrideYAML, nil)
 }
 
 // servicesNeedingPrebuild returns the sorted list of services whose image must
