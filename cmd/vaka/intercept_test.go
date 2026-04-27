@@ -29,6 +29,8 @@ func TestClassifySubcmd(t *testing.T) {
 		{"doctor", pathCobra},
 		{"show-compose", pathShowCompose},
 		{"version", pathCobra},
+		{"help", pathCobra},
+		{"completion", pathCobra},
 		{"", pathCobra},
 		{"logs", pathPassthrough},
 		{"ps", pathPassthrough},

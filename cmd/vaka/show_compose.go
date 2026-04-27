@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 )
@@ -84,4 +85,16 @@ func parseShowComposeFlags(inv *Invocation) (output string, passthrough *Invocat
 		return "", nil, parseErr
 	}
 	return output, parsed, nil
+}
+
+func printShowComposeHelp(w io.Writer) {
+	fmt.Fprintln(w, "Print the generated compose override YAML used by vaka injection.")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Usage:")
+	fmt.Fprintln(w, "  vaka [compose-global-flags...] show-compose [--build] [-o, --output <path>]")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Notes:")
+	fmt.Fprintln(w, "  - pass compose global flags before `show-compose`")
+	fmt.Fprintln(w, "  - after `show-compose`, only --build and -o/--output are accepted")
+	fmt.Fprintln(w, "  - VAKA_<SERVICE>_CONF values are never printed")
 }

@@ -55,7 +55,7 @@ const (
 // classifySubcmd maps a compose subcommand name to its dispatch path.
 func classifySubcmd(subcmd string) subcmdPath {
 	switch subcmd {
-	case "validate", "show-nft", "doctor", "version", "":
+	case "validate", "show-nft", "doctor", "version", "help", "completion", "__complete", "__completeNoDesc", "":
 		return pathCobra
 	case "up", "run", "create", "volumes":
 		return pathFull
