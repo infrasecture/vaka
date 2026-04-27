@@ -49,9 +49,21 @@ func main() {
 	}
 	vakaInitPresent := inv.VakaFlags["--vaka-init-present"] == "true"
 
+	if inv.Subcommand == "show-compose" {
+		if isProxySubcommandHelp(inv) {
+			printShowComposeHelp(os.Stdout)
+			return
+		}
+		if err := runShowCompose(vakaFile, inv, vakaInitPresent); err != nil {
+			fmt.Fprintln(os.Stderr, "vaka:", err)
+			os.Exit(exitCode(err))
+		}
+		return
+	}
+
 	// Dispatch by parsed subcommand path.
 	switch classifySubcmd(inv.Subcommand) {
-	case pathCobra:
+	case pathNative:
 		// cobra-handled commands (validate, show-nft, doctor, version, help/completion).
 		// SetArgs so cobra sees a clean argv (--vaka-* already stripped).
 		rootCmd.SetArgs(inv.ComposeArgs)
@@ -59,7 +71,7 @@ func main() {
 			os.Exit(1)
 		}
 
-	case pathFull:
+	case pathRender:
 		if isProxySubcommandHelp(inv) {
 			if err := execDockerCompose(inv, "", nil); err != nil {
 				os.Exit(exitCode(err))
@@ -72,33 +84,25 @@ func main() {
 			os.Exit(exitCode(err))
 		}
 
-	case pathLifecycle:
+	case pathReference:
 		if isProxySubcommandHelp(inv) {
 			if err := execDockerCompose(inv, "", nil); err != nil {
 				os.Exit(exitCode(err))
 			}
 			return
 		}
-		// Lifecycle path: down, stop, kill, rm.
-		if err := runLifecycle(inv, vakaInitPresent); err != nil {
-			fmt.Fprintln(os.Stderr, "vaka:", err)
-			os.Exit(exitCode(err))
-		}
-
-	case pathShowCompose:
-		if isProxySubcommandHelp(inv) {
-			printShowComposeHelp(os.Stdout)
+		if referenceUsesLifecycleOverlay(inv.Subcommand) {
+			// Lifecycle path: down, stop, kill, rm.
+			if err := runLifecycle(inv, vakaInitPresent); err != nil {
+				fmt.Fprintln(os.Stderr, "vaka:", err)
+				os.Exit(exitCode(err))
+			}
 			return
 		}
-		// Show-compose path: build and print/write the generated override only.
-		if err := runShowCompose(vakaFile, inv, vakaInitPresent); err != nil {
-			fmt.Fprintln(os.Stderr, "vaka:", err)
-			os.Exit(exitCode(err))
-		}
 
-	default: // pathPassthrough
-		// Pure passthrough: forward unchanged to docker compose.
+		// Reference path default: forward unchanged to docker compose.
 		if err := execDockerCompose(inv, "", nil); err != nil {
+			fmt.Fprintln(os.Stderr, "vaka:", err)
 			os.Exit(exitCode(err))
 		}
 	}

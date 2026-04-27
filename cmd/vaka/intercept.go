@@ -41,30 +41,33 @@ var defaultDockerCaps = map[string]bool{
 	"CAP_AUDIT_WRITE": true, "CAP_SETFCAP": true,
 }
 
-// subcmdPath classifies how a compose subcommand is handled.
-type subcmdPath int
+// dispatchPath classifies how a subcommand is handled.
+type dispatchPath int
 
 const (
-	pathCobra       subcmdPath = iota // validate, show-nft, version — cobra commands
-	pathFull                          // up, run, create, volumes — full policy + __vaka-init injection
-	pathLifecycle                     // down, stop, kill, rm — __vaka-init container only
-	pathShowCompose                   // show-compose — print generated override only
-	pathPassthrough                   // all others — forwarded unchanged to docker compose
+	pathNative    dispatchPath = iota // vaka-native commands (cobra-handled and wrapper-native)
+	pathRender                        // up, run, create
+	pathReference                     // all other compose commands
 )
 
-// classifySubcmd maps a compose subcommand name to its dispatch path.
-func classifySubcmd(subcmd string) subcmdPath {
+// classifySubcmd maps a subcommand name to its dispatch path.
+func classifySubcmd(subcmd string) dispatchPath {
 	switch subcmd {
-	case "validate", "show-nft", "doctor", "version", "help", "completion", "__complete", "__completeNoDesc", "":
-		return pathCobra
-	case "up", "run", "create", "volumes":
-		return pathFull
-	case "down", "stop", "kill", "rm":
-		return pathLifecycle
-	case "show-compose":
-		return pathShowCompose
+	case "validate", "show-nft", "doctor", "version", "help", "completion", "__complete", "__completeNoDesc", "show-compose", "":
+		return pathNative
+	case "up", "run", "create":
+		return pathRender
 	default:
-		return pathPassthrough
+		return pathReference
+	}
+}
+
+func referenceUsesLifecycleOverlay(subcmd string) bool {
+	switch subcmd {
+	case "down", "stop", "kill", "rm":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -79,7 +82,7 @@ func execDockerCompose(inv *Invocation, overrideYAML string, extraEnv []string) 
 		if len(inv.GlobalFiles) == 0 {
 			resolved, err := resolveComposeInput(inv)
 			if err != nil {
-				if classifySubcmd(inv.Subcommand) == pathLifecycle {
+				if referenceUsesLifecycleOverlay(inv.Subcommand) {
 					return fmt.Errorf("lifecycle command requires compose configuration (%w); run from the project directory or pass -f/--project-directory", err)
 				}
 				return err
