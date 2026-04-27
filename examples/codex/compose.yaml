@@ -1,0 +1,41 @@
+services:
+  codex:
+    image: ghcr.io/infrasecture/harness-workstation
+    container_name: ${CODEX_CONTAINER_NAME:-codex-dev}
+    init: true
+    tty: true
+    stdin_open: true
+    working_dir: /workspace
+
+    # Explicit, but matches the default behavior of Codex anyway
+    environment:
+      CODEX_HOME: /root/.codex
+      CODEX_BYOBU_SESSION: codex
+
+    healthcheck:
+      test: ["CMD-SHELL", "byobu-tmux has-session -t \"$${CODEX_BYOBU_SESSION:-codex}\" >/dev/null 2>&1"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+      start_period: 1s
+
+    volumes:
+      - ${WORKSPACE_DIR:-./}:/workspace
+      - codex_state:/root/
+
+  litellm:
+    image: docker.litellm.ai/berriai/litellm:main-stable
+    init: true
+    command: ["--config", "/app/config.yaml"]
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      DISABLE_ADMIN_UI: "True"
+    volumes:
+      - ./litellm.config.yaml:/app/config.yaml:ro
+    expose:
+      - "4000"
+
+volumes:
+  codex_state:
