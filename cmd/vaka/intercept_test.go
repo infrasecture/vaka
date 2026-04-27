@@ -269,14 +269,17 @@ func TestComputeCapDelta(t *testing.T) {
 	}
 }
 
-func TestExtractVakaFlagsBool(t *testing.T) {
-	// --vaka-init-present is a boolean flag: no value token consumed.
-	flags, rest := extractVakaFlags([]string{"up", "--vaka-init-present", "--remove-orphans"})
-	if flags["--vaka-init-present"] != "true" {
-		t.Errorf("expected --vaka-init-present=true, got %q", flags["--vaka-init-present"])
+func TestParseInvocationVakaInitPresentBool(t *testing.T) {
+	// --vaka-init-present is a boolean flag and must appear before subcommand.
+	inv, err := ParseInvocation([]string{"--vaka-init-present", "up", "--remove-orphans"})
+	if err != nil {
+		t.Fatalf("ParseInvocation: %v", err)
+	}
+	if inv.VakaFlags["--vaka-init-present"] != "true" {
+		t.Errorf("expected --vaka-init-present=true, got %q", inv.VakaFlags["--vaka-init-present"])
 	}
 	want := []string{"up", "--remove-orphans"}
-	if strings.Join(rest, " ") != strings.Join(want, " ") {
-		t.Errorf("rest = %v, want %v", rest, want)
+	if strings.Join(inv.ComposeArgs, " ") != strings.Join(want, " ") {
+		t.Errorf("compose args = %v, want %v", inv.ComposeArgs, want)
 	}
 }

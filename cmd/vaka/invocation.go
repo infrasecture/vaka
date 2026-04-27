@@ -72,10 +72,18 @@ var vakaFlagsBool = map[string]bool{
 	"--vaka-init-present": true,
 }
 
+var knownVakaFlags = []string{
+	"--vaka-file",
+	"--vaka-init-present",
+}
+
 // ParseInvocation parses raw os.Args[1:] into a single invocation model used by
 // all execution paths.
 func ParseInvocation(argv []string) (*Invocation, error) {
-	flags, composeArgs := extractVakaFlags(argv)
+	flags, composeArgs, err := extractVakaFlags(argv)
+	if err != nil {
+		return nil, err
+	}
 
 	inv := &Invocation{
 		RawArgs:          append([]string{}, argv...),
@@ -94,54 +102,72 @@ func ParseInvocation(argv []string) (*Invocation, error) {
 // extractVakaFlags splits raw os.Args[1:] into vaka-specific flags and
 // compose-destined args.
 //
-// For now, compatibility with current behavior is preserved:
-//   - vaka flags are accepted before the compose subcommand
-//   - and between subcommand and first positional token
-//   - and are ignored after `--` or after that first positional
-func extractVakaFlags(argv []string) (map[string]string, []string) {
+// Strict mode:
+//   - `--vaka-*` flags are accepted only before the compose subcommand.
+//   - `--vaka-file` requires `=` form: `--vaka-file=<path>`.
+//   - unknown pre-subcommand `--vaka-*` flags are hard errors with suggestion.
+//   - post-subcommand tokens are forwarded unchanged, except known misplaced
+//     vaka flags which fail fast with a positioning hint.
+func extractVakaFlags(argv []string) (map[string]string, []string, error) {
 	flags := make(map[string]string)
 	rest := make([]string, 0, len(argv))
 
-	bareWords := 0
+	subcommand := ""
+	seenSubcommand := false
 	for i := 0; i < len(argv); i++ {
 		tok := argv[i]
 		if tok == "--" {
 			rest = append(rest, argv[i:]...)
 			break
 		}
-		if bareWords >= 2 {
-			rest = append(rest, argv[i:]...)
-			break
-		}
-		if !strings.HasPrefix(tok, "-") {
-			rest = append(rest, tok)
-			bareWords++
-			continue
-		}
-		if vakaFlagsTakingValue[tok] {
-			if i+1 < len(argv) {
-				flags[tok] = argv[i+1]
-				i++
+
+		if !seenSubcommand {
+			if _, _, consumed, _, ok := parseValueTakingToken(argv, i, composeGlobalFlagsWithValue); ok {
+				rest = append(rest, argv[i:i+consumed]...)
+				i += consumed - 1
+				continue
 			}
+			if _, _, consumed, _, ok := parseValueTakingToken(argv, i, dockerGlobalFlagsWithValue); ok {
+				rest = append(rest, argv[i:i+consumed]...)
+				i += consumed - 1
+				continue
+			}
+
+			if tok == "--vaka-file" {
+				return nil, nil, fmt.Errorf("--vaka-file requires '=' form before the subcommand (use --vaka-file=<path>)")
+			}
+			if strings.HasPrefix(tok, "--vaka-file=") {
+				val := strings.TrimSpace(strings.TrimPrefix(tok, "--vaka-file="))
+				if val == "" {
+					return nil, nil, fmt.Errorf("--vaka-file requires a non-empty value (use --vaka-file=<path>)")
+				}
+				flags["--vaka-file"] = val
+				continue
+			}
+			if vakaFlagsBool[tok] {
+				flags[tok] = "true"
+				continue
+			}
+			if strings.HasPrefix(tok, "--vaka-") {
+				return nil, nil, unknownVakaFlagError(tok)
+			}
+
+			if !strings.HasPrefix(tok, "-") {
+				seenSubcommand = true
+				subcommand = tok
+				rest = append(rest, tok)
+				continue
+			}
+			rest = append(rest, tok)
 			continue
 		}
-		if vakaFlagsBool[tok] {
-			flags[tok] = "true"
-			continue
-		}
-		if _, _, consumed, _, ok := parseValueTakingToken(argv, i, composeGlobalFlagsWithValue); ok {
-			rest = append(rest, argv[i:i+consumed]...)
-			i += consumed - 1
-			continue
-		}
-		if _, _, consumed, _, ok := parseValueTakingToken(argv, i, dockerGlobalFlagsWithValue); ok {
-			rest = append(rest, argv[i:i+consumed]...)
-			i += consumed - 1
-			continue
+
+		if isKnownVakaFlagToken(tok) {
+			return nil, nil, fmt.Errorf("vaka flag %q must appear before subcommand %q", tok, subcommand)
 		}
 		rest = append(rest, tok)
 	}
-	return flags, rest
+	return flags, rest, nil
 }
 
 func (inv *Invocation) scanComposeArgs() error {
@@ -266,4 +292,85 @@ func unsupportedDockerGlobalError(flag, value string, usedEquals bool) error {
 		}
 		return fmt.Errorf("docker top-level %s is not supported in vaka arguments; configure Docker target via environment or docker config", flag)
 	}
+}
+
+func isKnownVakaFlagToken(tok string) bool {
+	if tok == "--vaka-file" || strings.HasPrefix(tok, "--vaka-file=") {
+		return true
+	}
+	return vakaFlagsBool[tok]
+}
+
+func unknownVakaFlagError(tok string) error {
+	base := tok
+	if idx := strings.Index(base, "="); idx >= 0 {
+		base = base[:idx]
+	}
+	suggestion := nearestVakaFlag(base)
+	if suggestion != "" {
+		return fmt.Errorf("unknown vaka flag %q; did you mean %q?", tok, suggestion)
+	}
+	return fmt.Errorf("unknown vaka flag %q", tok)
+}
+
+func nearestVakaFlag(flag string) string {
+	best := ""
+	bestDist := -1
+	for _, candidate := range knownVakaFlags {
+		d := levenshteinDistance(flag, candidate)
+		if bestDist == -1 || d < bestDist {
+			bestDist = d
+			best = candidate
+		}
+	}
+	if bestDist <= 3 {
+		return best
+	}
+	return ""
+}
+
+func levenshteinDistance(a, b string) int {
+	if a == b {
+		return 0
+	}
+	if len(a) == 0 {
+		return len(b)
+	}
+	if len(b) == 0 {
+		return len(a)
+	}
+
+	prev := make([]int, len(b)+1)
+	curr := make([]int, len(b)+1)
+	for j := 0; j <= len(b); j++ {
+		prev[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		curr[0] = i
+		for j := 1; j <= len(b); j++ {
+			cost := 0
+			if a[i-1] != b[j-1] {
+				cost = 1
+			}
+			del := prev[j] + 1
+			ins := curr[j-1] + 1
+			sub := prev[j-1] + cost
+			curr[j] = min3(del, ins, sub)
+		}
+		prev, curr = curr, prev
+	}
+	return prev[len(b)]
+}
+
+func min3(a, b, c int) int {
+	if a < b {
+		if a < c {
+			return a
+		}
+		return c
+	}
+	if b < c {
+		return b
+	}
+	return c
 }
