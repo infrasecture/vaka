@@ -5,14 +5,14 @@ import (
 	"testing"
 )
 
-func TestInjectStdinOverride(t *testing.T) {
-	t.Run("last -f gets -f - appended after it", func(t *testing.T) {
+func TestInjectFDOverride(t *testing.T) {
+	t.Run("last -f gets -f /dev/fd/3 appended after it", func(t *testing.T) {
 		inv, err := ParseInvocation([]string{"-f", "a.yaml", "-f", "b.yaml", "up", "--build"})
 		if err != nil {
 			t.Fatalf("ParseInvocation: %v", err)
 		}
-		got := injectStdinOverride(inv, nil)
-		want := []string{"compose", "-f", "a.yaml", "-f", "b.yaml", "-f", "-", "up", "--build"}
+		got := injectFDOverride(inv, nil)
+		want := []string{"compose", "-f", "a.yaml", "-f", "b.yaml", "-f", composeOverridePath, "up", "--build"}
 		assertArgv(t, want, got)
 	})
 
@@ -21,8 +21,8 @@ func TestInjectStdinOverride(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ParseInvocation: %v", err)
 		}
-		got := injectStdinOverride(inv, nil)
-		want := []string{"compose", "--file=a.yaml", "-f", "-", "up"}
+		got := injectFDOverride(inv, nil)
+		want := []string{"compose", "--file=a.yaml", "-f", composeOverridePath, "up"}
 		assertArgv(t, want, got)
 	})
 
@@ -31,23 +31,23 @@ func TestInjectStdinOverride(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ParseInvocation: %v", err)
 		}
-		got := injectStdinOverride(inv, nil)
-		want := []string{"compose", "-f", "a.yaml", "-f", "-", "run", "--", "-f", "trick"}
+		got := injectFDOverride(inv, nil)
+		want := []string{"compose", "-f", "a.yaml", "-f", composeOverridePath, "run", "--", "-f", "trick"}
 		assertArgv(t, want, got)
 	})
 
-	t.Run("no -f: inject discovered defaults then -f -", func(t *testing.T) {
+	t.Run("no -f: inject discovered defaults then -f /dev/fd/3", func(t *testing.T) {
 		inv, err := ParseInvocation([]string{"up", "--build"})
 		if err != nil {
 			t.Fatalf("ParseInvocation: %v", err)
 		}
 		defaults := []string{"docker-compose.yaml", "docker-compose.override.yaml"}
-		got := injectStdinOverride(inv, defaults)
+		got := injectFDOverride(inv, defaults)
 		want := []string{
 			"compose",
 			"-f", "docker-compose.yaml",
 			"-f", "docker-compose.override.yaml",
-			"-f", "-",
+			"-f", composeOverridePath,
 			"up", "--build",
 		}
 		assertArgv(t, want, got)

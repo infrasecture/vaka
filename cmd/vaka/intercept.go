@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"sort"
@@ -72,8 +73,10 @@ func referenceUsesLifecycleOverlay(subcmd string) bool {
 }
 
 // execDockerCompose executes docker compose with the given args.
-// When overrideYAML is non-empty it is injected via -f - (with default compose
-// files also passed via -f so compose merges them correctly).
+// When overrideYAML is non-empty it is injected via -f /dev/fd/3 (with default
+// compose files also passed via -f so compose merges them correctly). The YAML
+// bytes are streamed through an inherited pipe FD so stdin remains attached to
+// the user's terminal.
 // extraEnv, when non-nil, is appended to the inherited environment.
 func execDockerCompose(inv *Invocation, overrideYAML string, extraEnv []string) error {
 	var dockerArgs []string
@@ -89,22 +92,50 @@ func execDockerCompose(inv *Invocation, overrideYAML string, extraEnv []string) 
 			}
 			defaults = resolved.Files
 		}
-		dockerArgs = injectStdinOverride(inv, defaults)
+		dockerArgs = injectFDOverride(inv, defaults)
 	} else {
 		dockerArgs = inv.dockerComposeArgs()
 	}
 	c := exec.Command("docker", dockerArgs...)
-	if overrideYAML != "" {
-		c.Stdin = strings.NewReader(overrideYAML)
-	} else {
-		c.Stdin = os.Stdin
-	}
+	c.Stdin = os.Stdin
 	c.Stdout = os.Stdout
 	c.Stderr = os.Stderr
 	if extraEnv != nil {
 		c.Env = append(os.Environ(), extraEnv...)
 	}
-	return c.Run()
+	if overrideYAML == "" {
+		return c.Run()
+	}
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		return fmt.Errorf("create compose override pipe: %w", err)
+	}
+	c.ExtraFiles = []*os.File{r} // ExtraFiles[0] becomes child FD 3.
+
+	if err := c.Start(); err != nil {
+		_ = r.Close()
+		_ = w.Close()
+		return err
+	}
+	_ = r.Close()
+
+	writeErrCh := make(chan error, 1)
+	go func() {
+		_, writeErr := io.WriteString(w, overrideYAML)
+		_ = w.Close()
+		writeErrCh <- writeErr
+	}()
+
+	waitErr := c.Wait()
+	writeErr := <-writeErrCh
+	if waitErr != nil {
+		return waitErr
+	}
+	if writeErr != nil {
+		return fmt.Errorf("stream compose override: %w", writeErr)
+	}
+	return nil
 }
 
 // runFull handles full-override commands: up, run, create, volumes.
@@ -247,7 +278,7 @@ func buildInjectionOverride(
 // lifecycleOverrideYAML returns the minimal compose override YAML declaring the
 // __vaka-init container so lifecycle commands (down/stop/kill/rm) include it in
 // their operation. Returns "" when vakaInitPresent is true; execDockerCompose
-// then runs as a pure passthrough without injecting -f -.
+// then runs as a pure passthrough without injecting the FD override file.
 func lifecycleOverrideYAML(vakaInitPresent bool, imageRef string) (string, error) {
 	if vakaInitPresent {
 		return "", nil
