@@ -63,15 +63,6 @@ func classifySubcmd(subcmd string) dispatchPath {
 	}
 }
 
-func referenceUsesLifecycleOverlay(subcmd string) bool {
-	switch subcmd {
-	case "down", "stop", "kill", "rm":
-		return true
-	default:
-		return false
-	}
-}
-
 // execDockerCompose executes docker compose with the given args.
 // When overrideYAML is non-empty it is injected via -f /dev/fd/3 (with default
 // compose files also passed via -f so compose merges them correctly). The YAML
@@ -85,8 +76,8 @@ func execDockerCompose(inv *Invocation, overrideYAML string, extraEnv []string) 
 		if len(inv.GlobalFiles) == 0 {
 			resolved, err := resolveComposeInput(inv)
 			if err != nil {
-				if referenceUsesLifecycleOverlay(inv.Subcommand) {
-					return fmt.Errorf("lifecycle command requires compose configuration (%w); run from the project directory or pass -f/--project-directory", err)
+				if classifySubcmd(inv.Subcommand) == pathReference {
+					return fmt.Errorf("reference command requires compose configuration (%w); run from the project directory or pass -f/--project-directory", err)
 				}
 				return err
 			}
@@ -275,20 +266,20 @@ func buildInjectionOverride(
 	return overrideYAML, extraEnv, nil
 }
 
-// lifecycleOverrideYAML returns the minimal compose override YAML declaring the
-// __vaka-init container so lifecycle commands (down/stop/kill/rm) include it in
-// their operation. Returns "" when vakaInitPresent is true; execDockerCompose
-// then runs as a pure passthrough without injecting the FD override file.
-func lifecycleOverrideYAML(vakaInitPresent bool, imageRef string) (string, error) {
+// referenceOverrideYAML returns the minimal compose override YAML declaring the
+// __vaka-init container so reference commands can resolve __vaka-init service
+// names through compose. Returns "" when vakaInitPresent is true.
+func referenceOverrideYAML(vakaInitPresent bool, imageRef string) (string, error) {
 	if vakaInitPresent {
 		return "", nil
 	}
 	return compose.BuildVakaInitOnlyOverride(imageRef)
 }
 
-// runLifecycle handles lifecycle commands: down, stop, kill, rm.
-func runLifecycle(inv *Invocation, vakaInitPresent bool) error {
-	overrideYAML, err := lifecycleOverrideYAML(vakaInitPresent, vakaInitBaseImage+":"+version)
+// runReference handles all reference commands by injecting only the minimal
+// __vaka-init compose service override.
+func runReference(inv *Invocation, vakaInitPresent bool) error {
+	overrideYAML, err := referenceOverrideYAML(vakaInitPresent, vakaInitBaseImage+":"+version)
 	if err != nil {
 		return fmt.Errorf("build vaka-init container override: %w", err)
 	}

@@ -91,17 +91,7 @@ func main() {
 			}
 			return
 		}
-		if referenceUsesLifecycleOverlay(inv.Subcommand) {
-			// Lifecycle path: down, stop, kill, rm.
-			if err := runLifecycle(inv, vakaInitPresent); err != nil {
-				fmt.Fprintln(os.Stderr, "vaka:", err)
-				os.Exit(exitCode(err))
-			}
-			return
-		}
-
-		// Reference path default: forward unchanged to docker compose.
-		if err := execDockerCompose(inv, "", nil); err != nil {
+		if err := runReference(inv, vakaInitPresent); err != nil {
 			fmt.Fprintln(os.Stderr, "vaka:", err)
 			os.Exit(exitCode(err))
 		}
