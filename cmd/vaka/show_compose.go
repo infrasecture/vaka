@@ -10,8 +10,8 @@ import (
 
 // runShowCompose builds the same compose override as runFull and prints it to
 // stdout, or writes it to a file when -o/--output is provided.
-func runShowCompose(vakaFile string, args []string, vakaInitPresent bool) error {
-	output, passthrough, err := parseShowComposeFlags(args)
+func runShowCompose(vakaFile string, inv *Invocation, vakaInitPresent bool) error {
+	output, passthrough, err := parseShowComposeFlags(inv)
 	if err != nil {
 		return err
 	}
@@ -37,25 +37,25 @@ func runShowCompose(vakaFile string, args []string, vakaInitPresent bool) error 
 // parseShowComposeFlags parses show-compose-specific flags from args.
 // It preserves all non-output tokens so the shared builder receives the same
 // input shape, while stripping -o/--output from the final passthrough argv.
-func parseShowComposeFlags(args []string) (output string, passthrough []string, err error) {
-	if findSubcmd(args) != "show-compose" {
+func parseShowComposeFlags(inv *Invocation) (output string, passthrough *Invocation, err error) {
+	if inv.Subcommand != "show-compose" {
 		return "", nil, fmt.Errorf("show-compose: subcommand not found")
 	}
-	subcmdIdx := findSubcmdIndex(args)
+	subcmdIdx := inv.SubcommandIdx
 	if subcmdIdx < 0 {
 		return "", nil, fmt.Errorf("show-compose: subcommand not found")
 	}
 
-	passthrough = append(passthrough, args[:subcmdIdx+1]...)
+	passthroughArgs := append([]string{}, inv.ComposeArgs[:subcmdIdx+1]...)
 
-	for i := subcmdIdx + 1; i < len(args); i++ {
-		tok := args[i]
+	for i := subcmdIdx + 1; i < len(inv.ComposeArgs); i++ {
+		tok := inv.ComposeArgs[i]
 		switch {
 		case tok == "-o" || tok == "--output":
-			if i+1 >= len(args) {
+			if i+1 >= len(inv.ComposeArgs) {
 				return "", nil, fmt.Errorf("%s requires a value", tok)
 			}
-			output = args[i+1]
+			output = inv.ComposeArgs[i+1]
 			i++
 		case strings.HasPrefix(tok, "--output="):
 			output = strings.TrimPrefix(tok, "--output=")
@@ -63,17 +63,25 @@ func parseShowComposeFlags(args []string) (output string, passthrough []string, 
 				return "", nil, fmt.Errorf("--output requires a value")
 			}
 		case tok == "--":
-			passthrough = append(passthrough, args[i:]...)
-			return output, passthrough, nil
+			passthroughArgs = append(passthroughArgs, inv.ComposeArgs[i:]...)
+			parsed, parseErr := ParseInvocation(passthroughArgs)
+			if parseErr != nil {
+				return "", nil, parseErr
+			}
+			return output, parsed, nil
 		case tok == "--build":
-			// Keep --build so hasBuildFlag() can force prebuild parity with runFull.
-			passthrough = append(passthrough, tok)
+			// Keep --build so Invocation.BuildRequested mirrors runFull behavior.
+			passthroughArgs = append(passthroughArgs, tok)
 		case strings.HasPrefix(tok, "-"):
 			return "", nil, fmt.Errorf("unknown show-compose flag: %s", tok)
 		default:
-			passthrough = append(passthrough, tok)
+			passthroughArgs = append(passthroughArgs, tok)
 		}
 	}
 
-	return output, passthrough, nil
+	parsed, parseErr := ParseInvocation(passthroughArgs)
+	if parseErr != nil {
+		return "", nil, parseErr
+	}
+	return output, parsed, nil
 }

@@ -78,7 +78,11 @@ func TestExecDockerComposeLifecycleRequiresComposeConfig(t *testing.T) {
 		_ = os.Unsetenv("COMPOSE_FILE")
 	})
 
-	err := execDockerCompose([]string{"down"}, "services: {}\n", nil)
+	inv, err := ParseInvocation([]string{"down"})
+	if err != nil {
+		t.Fatalf("ParseInvocation: %v", err)
+	}
+	err = execDockerCompose(inv, "services: {}\n", nil)
 	if err == nil {
 		t.Fatal("expected error when compose config is missing")
 	}
@@ -212,7 +216,7 @@ func TestServicesNeedingPrebuildForceRebuild(t *testing.T) {
 	}
 }
 
-func TestGlobalFlags(t *testing.T) {
+func TestParseInvocationComposeGlobals(t *testing.T) {
 	tests := []struct {
 		name string
 		args []string
@@ -227,7 +231,11 @@ func TestGlobalFlags(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := globalFlags(tc.args)
+			inv, err := ParseInvocation(tc.args)
+			if err != nil {
+				t.Fatalf("ParseInvocation: %v", err)
+			}
+			got := inv.ComposeGlobals
 			if strings.Join(got, " ") != strings.Join(tc.want, " ") {
 				t.Errorf("got %v, want %v", got, tc.want)
 			}

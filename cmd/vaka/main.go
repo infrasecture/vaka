@@ -105,52 +105,53 @@ func main() {
 	)
 
 	raw := os.Args[1:]
+	inv, err := ParseInvocation(raw)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "vaka:", err)
+		os.Exit(1)
+	}
 
 	// Step 1: Extract vaka-specific flags (--vaka-file, --vaka-init-present).
-	vakaFlags, rest := extractVakaFlags(raw)
-	vakaFile := vakaFlags["--vaka-file"]
+	vakaFile := inv.VakaFlags["--vaka-file"]
 	if vakaFile == "" {
 		vakaFile = "vaka.yaml"
 	}
-	vakaInitPresent := vakaFlags["--vaka-init-present"] == "true"
+	vakaInitPresent := inv.VakaFlags["--vaka-init-present"] == "true"
 
-	// Step 2: Find the subcommand (first non-flag, non-value token).
-	subcmd := findSubcmd(rest)
-
-	// Step 3: dispatch by subcommand path.
-	switch classifySubcmd(subcmd) {
+	// Dispatch by parsed subcommand path.
+	switch classifySubcmd(inv.Subcommand) {
 	case pathCobra:
 		// cobra-handled commands (validate, show-nft, version, empty).
 		// SetArgs so cobra sees a clean argv (--vaka-* already stripped).
-		rootCmd.SetArgs(rest)
+		rootCmd.SetArgs(inv.ComposeArgs)
 		if err := rootCmd.Execute(); err != nil {
 			os.Exit(1)
 		}
 
 	case pathFull:
 		// Full-override path: up, run, create.
-		if err := runFull(vakaFile, rest, vakaInitPresent); err != nil {
+		if err := runFull(vakaFile, inv, vakaInitPresent); err != nil {
 			fmt.Fprintln(os.Stderr, "vaka:", err)
 			os.Exit(exitCode(err))
 		}
 
 	case pathLifecycle:
 		// Lifecycle path: down, stop, kill, rm.
-		if err := runLifecycle(rest, vakaInitPresent); err != nil {
+		if err := runLifecycle(inv, vakaInitPresent); err != nil {
 			fmt.Fprintln(os.Stderr, "vaka:", err)
 			os.Exit(exitCode(err))
 		}
 
 	case pathShowCompose:
 		// Show-compose path: build and print/write the generated override only.
-		if err := runShowCompose(vakaFile, rest, vakaInitPresent); err != nil {
+		if err := runShowCompose(vakaFile, inv, vakaInitPresent); err != nil {
 			fmt.Fprintln(os.Stderr, "vaka:", err)
 			os.Exit(exitCode(err))
 		}
 
 	default: // pathPassthrough
 		// Pure passthrough: forward unchanged to docker compose.
-		if err := execDockerCompose(rest, "", nil); err != nil {
+		if err := execDockerCompose(inv, "", nil); err != nil {
 			os.Exit(exitCode(err))
 		}
 	}

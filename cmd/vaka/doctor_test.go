@@ -292,9 +292,9 @@ func TestDoctorCheckRequiredVakaInitImageMissing(t *testing.T) {
 	defer func() { version = origVersion }()
 
 	fake := &fakeDoctorDockerServices{imageExists: false}
-	newDoctorDockerServices = func(args []string) (DockerServices, error) {
-		if len(args) != 0 {
-			t.Fatalf("newDoctorDockerServices args = %v, want empty", args)
+	newDoctorDockerServices = func(inv *Invocation) (DockerServices, error) {
+		if inv != nil {
+			t.Fatalf("newDoctorDockerServices invocation = %#v, want nil", inv)
 		}
 		return fake, nil
 	}
@@ -324,9 +324,9 @@ func TestDoctorCheckRequiredVakaInitImagePresent(t *testing.T) {
 	defer func() { version = origVersion }()
 
 	fake := &fakeDoctorDockerServices{imageExists: true}
-	newDoctorDockerServices = func(args []string) (DockerServices, error) {
-		if len(args) != 0 {
-			t.Fatalf("newDoctorDockerServices args = %v, want empty", args)
+	newDoctorDockerServices = func(inv *Invocation) (DockerServices, error) {
+		if inv != nil {
+			t.Fatalf("newDoctorDockerServices invocation = %#v, want nil", inv)
 		}
 		return fake, nil
 	}
@@ -356,9 +356,9 @@ func TestDoctorFixPullsRequiredVakaInitImage(t *testing.T) {
 	defer func() { version = origVersion }()
 
 	fake := &fakeDoctorDockerServices{}
-	newDoctorDockerServices = func(args []string) (DockerServices, error) {
-		if len(args) != 0 {
-			t.Fatalf("newDoctorDockerServices args = %v, want empty", args)
+	newDoctorDockerServices = func(inv *Invocation) (DockerServices, error) {
+		if inv != nil {
+			t.Fatalf("newDoctorDockerServices invocation = %#v, want nil", inv)
 		}
 		return fake, nil
 	}
@@ -392,7 +392,7 @@ func TestDoctorRequiredVakaInitImageDevBuildNonFixable(t *testing.T) {
 	defer func() { version = origVersion }()
 
 	ctorCount := 0
-	newDoctorDockerServices = func(args []string) (DockerServices, error) {
+	newDoctorDockerServices = func(inv *Invocation) (DockerServices, error) {
 		ctorCount++
 		return &fakeDoctorDockerServices{}, nil
 	}
@@ -430,9 +430,9 @@ func TestDoctorRequiredVakaInitImageFixReusesDockerServicesCache(t *testing.T) {
 
 	fake := &fakeDoctorDockerServices{imageExists: false}
 	ctorCount := 0
-	newDoctorDockerServices = func(args []string) (DockerServices, error) {
-		if len(args) != 0 {
-			t.Fatalf("newDoctorDockerServices args = %v, want empty", args)
+	newDoctorDockerServices = func(inv *Invocation) (DockerServices, error) {
+		if inv != nil {
+			t.Fatalf("newDoctorDockerServices invocation = %#v, want nil", inv)
 		}
 		ctorCount++
 		return fake, nil

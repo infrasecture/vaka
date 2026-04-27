@@ -72,39 +72,6 @@ func strEq(a, b []string) bool {
 	return true
 }
 
-func TestNewDockerClientOptionsUsesContextFlag(t *testing.T) {
-	tests := []struct {
-		name    string
-		args    []string
-		wantCtx string
-	}{
-		{
-			name:    "long context flag",
-			args:    []string{"--context", "desktop-linux", "up"},
-			wantCtx: "desktop-linux",
-		},
-		{
-			name:    "short context flag",
-			args:    []string{"-c", "desktop-linux", "up"},
-			wantCtx: "desktop-linux",
-		},
-		{
-			name:    "last context flag wins",
-			args:    []string{"--context", "ctx-a", "-c", "ctx-b", "up"},
-			wantCtx: "ctx-b",
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			opts := newDockerClientOptions(tc.args)
-			if opts.Context != tc.wantCtx {
-				t.Fatalf("Context=%q, want %q", opts.Context, tc.wantCtx)
-			}
-		})
-	}
-}
-
 func TestDockerTargetDescriptionPrecedence(t *testing.T) {
 	t.Setenv(client.EnvOverrideHost, "")
 	t.Setenv(dockercli.EnvOverrideContext, "")
@@ -120,23 +87,13 @@ func TestDockerTargetDescriptionPrecedence(t *testing.T) {
 	configPath := filepath.Join(configDir, dockerconfig.ConfigFileName)
 	tests := []struct {
 		name      string
-		args      []string
 		host      string
 		envCtx    string
 		cfg       *configfile.ConfigFile
 		wantDescr string
 	}{
 		{
-			name:      "explicit context wins over host env",
-			args:      []string{"--context", "ctx-flag", "up"},
-			host:      "tcp://remote:2376",
-			envCtx:    "ctx-env",
-			cfg:       cfg,
-			wantDescr: `context "ctx-flag" (from --context)`,
-		},
-		{
 			name:      "docker host wins over docker context env",
-			args:      []string{"up"},
 			host:      "tcp://remote:2376",
 			envCtx:    "ctx-env",
 			cfg:       cfg,
@@ -144,7 +101,6 @@ func TestDockerTargetDescriptionPrecedence(t *testing.T) {
 		},
 		{
 			name:      "docker context env when no host",
-			args:      []string{"up"},
 			host:      "",
 			envCtx:    "ctx-env",
 			cfg:       cfg,
@@ -152,7 +108,6 @@ func TestDockerTargetDescriptionPrecedence(t *testing.T) {
 		},
 		{
 			name:      "config current context fallback",
-			args:      []string{"up"},
 			host:      "",
 			envCtx:    "",
 			cfg:       cfg,
@@ -160,7 +115,6 @@ func TestDockerTargetDescriptionPrecedence(t *testing.T) {
 		},
 		{
 			name:      "default context fallback",
-			args:      []string{"up"},
 			host:      "",
 			envCtx:    "",
 			cfg:       &configfile.ConfigFile{},
@@ -172,7 +126,7 @@ func TestDockerTargetDescriptionPrecedence(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv(client.EnvOverrideHost, tc.host)
 			t.Setenv(dockercli.EnvOverrideContext, tc.envCtx)
-			got := dockerTargetDescription(tc.args, tc.cfg)
+			got := dockerTargetDescription(tc.cfg)
 			if got != tc.wantDescr {
 				t.Fatalf("dockerTargetDescription()=%q, want %q", got, tc.wantDescr)
 			}
@@ -349,7 +303,7 @@ func TestImageExistsAbsent(t *testing.T) {
 
 func TestResolveRuntimeImageNotFound(t *testing.T) {
 	dc := &fakeDockerClient{notFound: true}
-	ds := &dockerServices{c: dc, targetDesc: `context "dev" (from --context)`}
+	ds := &dockerServices{c: dc, targetDesc: "test-context"}
 	svc := composetypes.ServiceConfig{Image: "myapp:latest"}
 	_, err := ds.ResolveRuntime(context.Background(), "myapp", svc)
 	if err == nil {
