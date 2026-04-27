@@ -80,7 +80,20 @@ services:
         accept:
           - dns: {}
           - proto: tcp
-            to: [api.openai.com, api.anthropic.com, api.github.com]
+            to: [
+                api.openai.com,
+                auth.openai.com,
+                chatgpt.com,
+                api.openai.com,
+                platform.openai.com,
+                api.anthropic.com,
+                claude.ai,
+                platform.claude.com,
+                downloads.claude.ai,
+                storage.googleapis.com,
+                api.github.com,
+                github.com,
+                ]
             ports: [443]
 YAML
 
@@ -284,7 +297,20 @@ services:
         accept:
           - dns: {}
           - proto: tcp
-            to: [api.openai.com, api.anthropic.com]
+            to: [
+                api.openai.com,
+                auth.openai.com,
+                chatgpt.com,
+                api.openai.com,
+                platform.openai.com,
+                api.anthropic.com,
+                claude.ai,
+                platform.claude.com,
+                downloads.claude.ai,
+                storage.googleapis.com,
+                api.github.com,
+                github.com,
+                ]
             ports: [443]
 ```
 
