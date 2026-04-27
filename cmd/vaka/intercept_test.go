@@ -45,28 +45,8 @@ func TestClassifySubcmd(t *testing.T) {
 	}
 }
 
-func TestReferenceUsesLifecycleOverlay(t *testing.T) {
-	tests := []struct {
-		subcmd string
-		want   bool
-	}{
-		{"down", true},
-		{"stop", true},
-		{"kill", true},
-		{"rm", true},
-		{"logs", false},
-		{"exec", false},
-		{"foo", false},
-	}
-	for _, tc := range tests {
-		if got := referenceUsesLifecycleOverlay(tc.subcmd); got != tc.want {
-			t.Fatalf("referenceUsesLifecycleOverlay(%q)=%v, want %v", tc.subcmd, got, tc.want)
-		}
-	}
-}
-
-func TestLifecycleOverrideYAMLPassthrough(t *testing.T) {
-	yaml, err := lifecycleOverrideYAML(true, "emsi/vaka-init:v0.1.0")
+func TestReferenceOverrideYAMLPassthrough(t *testing.T) {
+	yaml, err := referenceOverrideYAML(true, "emsi/vaka-init:v0.1.0")
 	if err != nil {
 		t.Fatalf("passthrough: unexpected error: %v", err)
 	}
@@ -75,8 +55,8 @@ func TestLifecycleOverrideYAMLPassthrough(t *testing.T) {
 	}
 }
 
-func TestLifecycleOverrideYAMLInjectsContainer(t *testing.T) {
-	yaml, err := lifecycleOverrideYAML(false, "emsi/vaka-init:v0.1.0")
+func TestReferenceOverrideYAMLInjectsContainer(t *testing.T) {
+	yaml, err := referenceOverrideYAML(false, "emsi/vaka-init:v0.1.0")
 	if err != nil {
 		t.Fatalf("injection: unexpected error: %v", err)
 	}
@@ -88,7 +68,7 @@ func TestLifecycleOverrideYAMLInjectsContainer(t *testing.T) {
 	}
 }
 
-func TestExecDockerComposeLifecycleRequiresComposeConfig(t *testing.T) {
+func TestExecDockerComposeReferenceRequiresComposeConfig(t *testing.T) {
 	dir := t.TempDir()
 	chdirForTest(t, dir)
 	oldComposeFile, hadComposeFile := os.LookupEnv("COMPOSE_FILE")
@@ -109,7 +89,7 @@ func TestExecDockerComposeLifecycleRequiresComposeConfig(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when compose config is missing")
 	}
-	if !strings.Contains(err.Error(), "lifecycle command requires compose configuration") {
+	if !strings.Contains(err.Error(), "reference command requires compose configuration") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
