@@ -14,32 +14,53 @@ import (
 func TestClassifySubcmd(t *testing.T) {
 	tests := []struct {
 		subcmd string
-		want   subcmdPath
+		want   dispatchPath
 	}{
-		{"up", pathFull},
-		{"run", pathFull},
-		{"create", pathFull},
-		{"volumes", pathFull},
-		{"down", pathLifecycle},
-		{"stop", pathLifecycle},
-		{"kill", pathLifecycle},
-		{"rm", pathLifecycle},
-		{"validate", pathCobra},
-		{"show-nft", pathCobra},
-		{"doctor", pathCobra},
-		{"show-compose", pathShowCompose},
-		{"version", pathCobra},
-		{"help", pathCobra},
-		{"completion", pathCobra},
-		{"", pathCobra},
-		{"logs", pathPassthrough},
-		{"ps", pathPassthrough},
-		{"exec", pathPassthrough},
-		{"pull", pathPassthrough},
+		{"up", pathRender},
+		{"run", pathRender},
+		{"create", pathRender},
+		{"volumes", pathReference},
+		{"down", pathReference},
+		{"stop", pathReference},
+		{"kill", pathReference},
+		{"rm", pathReference},
+		{"validate", pathNative},
+		{"show-nft", pathNative},
+		{"doctor", pathNative},
+		{"show-compose", pathNative},
+		{"version", pathNative},
+		{"help", pathNative},
+		{"completion", pathNative},
+		{"", pathNative},
+		{"logs", pathReference},
+		{"ps", pathReference},
+		{"exec", pathReference},
+		{"pull", pathReference},
+		{"foo", pathReference},
 	}
 	for _, tc := range tests {
 		if got := classifySubcmd(tc.subcmd); got != tc.want {
 			t.Errorf("classifySubcmd(%q) = %v, want %v", tc.subcmd, got, tc.want)
+		}
+	}
+}
+
+func TestReferenceUsesLifecycleOverlay(t *testing.T) {
+	tests := []struct {
+		subcmd string
+		want   bool
+	}{
+		{"down", true},
+		{"stop", true},
+		{"kill", true},
+		{"rm", true},
+		{"logs", false},
+		{"exec", false},
+		{"foo", false},
+	}
+	for _, tc := range tests {
+		if got := referenceUsesLifecycleOverlay(tc.subcmd); got != tc.want {
+			t.Fatalf("referenceUsesLifecycleOverlay(%q)=%v, want %v", tc.subcmd, got, tc.want)
 		}
 	}
 }
