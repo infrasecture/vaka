@@ -5,14 +5,14 @@ import (
 	"testing"
 )
 
-func TestInjectStdinOverride(t *testing.T) {
-	t.Run("last -f gets -f - appended after it", func(t *testing.T) {
+func TestInjectFDOverride(t *testing.T) {
+	t.Run("last -f gets -f /dev/fd/3 appended after it", func(t *testing.T) {
 		inv, err := ParseInvocation([]string{"-f", "a.yaml", "-f", "b.yaml", "up", "--build"})
 		if err != nil {
 			t.Fatalf("ParseInvocation: %v", err)
 		}
-		got := injectStdinOverride(inv, nil)
-		want := []string{"compose", "-f", "a.yaml", "-f", "b.yaml", "-f", "-", "up", "--build"}
+		got := injectFDOverride(inv, nil)
+		want := []string{"compose", "-f", "a.yaml", "-f", "b.yaml", "-f", composeOverridePath, "up", "--build"}
 		assertArgv(t, want, got)
 	})
 
@@ -21,8 +21,8 @@ func TestInjectStdinOverride(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ParseInvocation: %v", err)
 		}
-		got := injectStdinOverride(inv, nil)
-		want := []string{"compose", "--file=a.yaml", "-f", "-", "up"}
+		got := injectFDOverride(inv, nil)
+		want := []string{"compose", "--file=a.yaml", "-f", composeOverridePath, "up"}
 		assertArgv(t, want, got)
 	})
 
@@ -31,23 +31,23 @@ func TestInjectStdinOverride(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ParseInvocation: %v", err)
 		}
-		got := injectStdinOverride(inv, nil)
-		want := []string{"compose", "-f", "a.yaml", "-f", "-", "run", "--", "-f", "trick"}
+		got := injectFDOverride(inv, nil)
+		want := []string{"compose", "-f", "a.yaml", "-f", composeOverridePath, "run", "--", "-f", "trick"}
 		assertArgv(t, want, got)
 	})
 
-	t.Run("no -f: inject discovered defaults then -f -", func(t *testing.T) {
+	t.Run("no -f: inject discovered defaults then -f /dev/fd/3", func(t *testing.T) {
 		inv, err := ParseInvocation([]string{"up", "--build"})
 		if err != nil {
 			t.Fatalf("ParseInvocation: %v", err)
 		}
 		defaults := []string{"docker-compose.yaml", "docker-compose.override.yaml"}
-		got := injectStdinOverride(inv, defaults)
+		got := injectFDOverride(inv, defaults)
 		want := []string{
 			"compose",
 			"-f", "docker-compose.yaml",
 			"-f", "docker-compose.override.yaml",
-			"-f", "-",
+			"-f", composeOverridePath,
 			"up", "--build",
 		}
 		assertArgv(t, want, got)
@@ -55,8 +55,8 @@ func TestInjectStdinOverride(t *testing.T) {
 }
 
 func TestParseInvocationVakaFlagExtraction(t *testing.T) {
-	t.Run("extracts --vaka-file and preserves compose args", func(t *testing.T) {
-		inv, err := ParseInvocation([]string{"--vaka-file", "vaka.yaml", "-f", "a.yaml", "up", "--build"})
+	t.Run("extracts --vaka-file=<path> and preserves compose args", func(t *testing.T) {
+		inv, err := ParseInvocation([]string{"--vaka-file=vaka.yaml", "-f", "a.yaml", "up", "--build"})
 		if err != nil {
 			t.Fatalf("ParseInvocation: %v", err)
 		}
@@ -75,26 +75,25 @@ func TestParseInvocationVakaFlagExtraction(t *testing.T) {
 		assertArgv(t, []string{"up", "--build"}, inv.ComposeArgs)
 	})
 
-	t.Run("--vaka-file after run service is not extracted", func(t *testing.T) {
-		inv, err := ParseInvocation([]string{"run", "gateway", "mytool", "--vaka-file", "/app/cfg.yaml"})
+	t.Run("unknown --vaka-* after subcommand is forwarded verbatim", func(t *testing.T) {
+		inv, err := ParseInvocation([]string{"run", "gateway", "mytool", "--vaka-anything"})
 		if err != nil {
 			t.Fatalf("ParseInvocation: %v", err)
 		}
 		if len(inv.VakaFlags) != 0 {
 			t.Fatalf("expected no vaka flags extracted, got %v", inv.VakaFlags)
 		}
-		assertArgv(t, []string{"run", "gateway", "mytool", "--vaka-file", "/app/cfg.yaml"}, inv.ComposeArgs)
+		assertArgv(t, []string{"run", "gateway", "mytool", "--vaka-anything"}, inv.ComposeArgs)
 	})
 
-	t.Run("--vaka-init-present between subcommand and first positional is extracted", func(t *testing.T) {
-		inv, err := ParseInvocation([]string{"run", "--vaka-init-present", "gateway", "mytool"})
-		if err != nil {
-			t.Fatalf("ParseInvocation: %v", err)
+	t.Run("known vaka flag after subcommand hard-errors", func(t *testing.T) {
+		_, err := ParseInvocation([]string{"up", "--vaka-file=x.yml"})
+		if err == nil {
+			t.Fatal("expected error, got nil")
 		}
-		if inv.VakaFlags["--vaka-init-present"] != "true" {
-			t.Fatalf("expected --vaka-init-present=true, got %v", inv.VakaFlags)
+		if !strings.Contains(err.Error(), "must appear before subcommand") {
+			t.Fatalf("error %q does not contain positioning hint", err.Error())
 		}
-		assertArgv(t, []string{"run", "gateway", "mytool"}, inv.ComposeArgs)
 	})
 
 	t.Run("vaka flag after -- is not extracted", func(t *testing.T) {
@@ -106,6 +105,41 @@ func TestParseInvocationVakaFlagExtraction(t *testing.T) {
 			t.Fatalf("expected no vaka flags extracted, got %v", inv.VakaFlags)
 		}
 		assertArgv(t, []string{"--", "--vaka-file", "x"}, inv.ComposeArgs)
+	})
+}
+
+func TestParseInvocationVakaStrictRules(t *testing.T) {
+	t.Run("space form for --vaka-file is rejected", func(t *testing.T) {
+		_, err := ParseInvocation([]string{"--vaka-file", "x.yml", "up"})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "requires '=' form") {
+			t.Fatalf("error %q does not contain '=' form guidance", err.Error())
+		}
+	})
+
+	t.Run("unknown vaka flag before subcommand suggests known flag", func(t *testing.T) {
+		_, err := ParseInvocation([]string{"--vaka-flie=x.yml", "up"})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "did you mean \"--vaka-file\"") {
+			t.Fatalf("error %q missing suggestion", err.Error())
+		}
+	})
+
+	t.Run("combined strict vaka flags before subcommand works", func(t *testing.T) {
+		inv, err := ParseInvocation([]string{"--vaka-file=x.yml", "--vaka-init-present", "up"})
+		if err != nil {
+			t.Fatalf("ParseInvocation: %v", err)
+		}
+		if inv.VakaFlags["--vaka-file"] != "x.yml" {
+			t.Fatalf("vaka-file=%q, want x.yml", inv.VakaFlags["--vaka-file"])
+		}
+		if inv.VakaFlags["--vaka-init-present"] != "true" {
+			t.Fatalf("--vaka-init-present=%q, want true", inv.VakaFlags["--vaka-init-present"])
+		}
 	})
 }
 

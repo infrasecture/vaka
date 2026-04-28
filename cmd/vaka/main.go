@@ -25,76 +25,7 @@ func main() {
 		newValidateCmd(),
 		newShowNftCmd(),
 		newDoctorCmd(),
-		// The up/run/create/volumes/down/stop/kill/rm stubs exist only for --help
-		// visibility. Actual execution is handled by the manual dispatch switch
-		// below and never reaches these cobra commands.
-		&cobra.Command{
-			Use:                "up [compose-flags...]",
-			Short:              "Validate, inject vaka policy, and proxy to docker compose up",
-			Long:               "Use --vaka-init-present to skip __vaka-init container injection (binaries baked into image).",
-			DisableFlagParsing: true,
-			Run:                func(*cobra.Command, []string) {},
-		},
-		&cobra.Command{
-			Use:                "run [compose-flags...]",
-			Short:              "Validate, inject vaka policy, and proxy to docker compose run",
-			Long:               "Use --vaka-init-present to skip __vaka-init container injection (binaries baked into image).",
-			DisableFlagParsing: true,
-			Run:                func(*cobra.Command, []string) {},
-		},
-		&cobra.Command{
-			Use:                "create [compose-flags...]",
-			Short:              "Validate, inject vaka policy, and proxy to docker compose create",
-			Long:               "Use --vaka-init-present to skip __vaka-init container injection (binaries baked into image).",
-			DisableFlagParsing: true,
-			Run:                func(*cobra.Command, []string) {},
-		},
-		&cobra.Command{
-			Use:                "volumes [compose-flags...]",
-			Short:              "Validate, inject vaka policy, and proxy to docker compose volumes",
-			Long:               "Uses the same full injection path as up/run/create so __vaka-init resources are visible.",
-			DisableFlagParsing: true,
-			Run:                func(*cobra.Command, []string) {},
-		},
-		&cobra.Command{
-			Use:                "down [compose-flags...]",
-			Short:              "Tear down the stack including the __vaka-init container",
-			Long:               "Use --vaka-init-present if the stack was started with that flag.",
-			DisableFlagParsing: true,
-			Run:                func(*cobra.Command, []string) {},
-		},
-		&cobra.Command{
-			Use:                "stop [compose-flags...]",
-			Short:              "Stop services including the __vaka-init container",
-			Long:               "Use --vaka-init-present if the stack was started with that flag.",
-			DisableFlagParsing: true,
-			Run:                func(*cobra.Command, []string) {},
-		},
-		&cobra.Command{
-			Use:                "kill [compose-flags...]",
-			Short:              "Kill services including the __vaka-init container",
-			Long:               "Use --vaka-init-present if the stack was started with that flag.",
-			DisableFlagParsing: true,
-			Run:                func(*cobra.Command, []string) {},
-		},
-		&cobra.Command{
-			Use:                "rm [compose-flags...]",
-			Short:              "Remove stopped containers including the __vaka-init container",
-			Long:               "Use --vaka-init-present if the stack was started with that flag.",
-			DisableFlagParsing: true,
-			Run:                func(*cobra.Command, []string) {},
-		},
-		&cobra.Command{
-			Use:   "show-compose [--build] [-o output.yaml]",
-			Short: "Print the generated compose override YAML used by vaka injection",
-			Long: "Uses the exact same override-generation path as up/run/create/volumes. " +
-				"It may pre-build services and pull emsi/vaka-init:<version> when needed to resolve runtime metadata. " +
-				"Output defaults to stdout; use -o, --output <path> to write a file. " +
-				"After show-compose, only --build and -o/--output are accepted; pass compose global flags before the subcommand. " +
-				"VAKA_<SERVICE>_CONF values are not printed.",
-			DisableFlagParsing: true,
-			Run:                func(*cobra.Command, []string) {},
-		},
+		newShowComposeCmd(),
 		&cobra.Command{
 			Use:   "version",
 			Short: "Print version",
@@ -103,6 +34,7 @@ func main() {
 			},
 		},
 	)
+	configureRootHelp(rootCmd)
 
 	raw := os.Args[1:]
 	inv, err := ParseInvocation(raw)
@@ -118,43 +50,61 @@ func main() {
 	}
 	vakaInitPresent := inv.VakaFlags["--vaka-init-present"] == "true"
 
+	if inv.Subcommand == "show-compose" {
+		if isProxySubcommandHelp(inv) {
+			printShowComposeHelp(os.Stdout)
+			return
+		}
+		if err := runShowCompose(vakaFile, inv, vakaInitPresent); err != nil {
+			fmt.Fprintln(os.Stderr, "vaka:", err)
+			os.Exit(exitCode(err))
+		}
+		return
+	}
+
 	// Dispatch by parsed subcommand path.
 	switch classifySubcmd(inv.Subcommand) {
-	case pathCobra:
-		// cobra-handled commands (validate, show-nft, version, empty).
+	case pathNative:
+		// cobra-handled commands (validate, show-nft, doctor, version, help/completion).
 		// SetArgs so cobra sees a clean argv (--vaka-* already stripped).
 		rootCmd.SetArgs(inv.ComposeArgs)
 		if err := rootCmd.Execute(); err != nil {
 			os.Exit(1)
 		}
 
-	case pathFull:
+	case pathRender:
+		if isProxySubcommandHelp(inv) {
+			if err := execDockerCompose(inv, "", nil); err != nil {
+				os.Exit(exitCode(err))
+			}
+			return
+		}
 		// Full-override path: up, run, create.
 		if err := runFull(vakaFile, inv, vakaInitPresent); err != nil {
 			fmt.Fprintln(os.Stderr, "vaka:", err)
 			os.Exit(exitCode(err))
 		}
 
-	case pathLifecycle:
-		// Lifecycle path: down, stop, kill, rm.
-		if err := runLifecycle(inv, vakaInitPresent); err != nil {
-			fmt.Fprintln(os.Stderr, "vaka:", err)
-			os.Exit(exitCode(err))
+	case pathReference:
+		if isProxySubcommandHelp(inv) {
+			if err := execDockerCompose(inv, "", nil); err != nil {
+				os.Exit(exitCode(err))
+			}
+			return
 		}
-
-	case pathShowCompose:
-		// Show-compose path: build and print/write the generated override only.
-		if err := runShowCompose(vakaFile, inv, vakaInitPresent); err != nil {
+		if err := runReference(inv, vakaInitPresent); err != nil {
 			fmt.Fprintln(os.Stderr, "vaka:", err)
-			os.Exit(exitCode(err))
-		}
-
-	default: // pathPassthrough
-		// Pure passthrough: forward unchanged to docker compose.
-		if err := execDockerCompose(inv, "", nil); err != nil {
 			os.Exit(exitCode(err))
 		}
 	}
+}
+
+func isProxySubcommandHelp(inv *Invocation) bool {
+	if len(inv.PostSubcommand) == 0 {
+		return false
+	}
+	first := inv.PostSubcommand[0]
+	return first == "--help" || first == "-h"
 }
 
 // exitCode extracts the process exit code from an *exec.ExitError so that

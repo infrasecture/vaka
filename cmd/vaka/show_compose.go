@@ -4,9 +4,29 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strings"
+
+	"github.com/spf13/cobra"
 )
+
+func newShowComposeCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "show-compose",
+		Short: "Print the generated compose override YAML used by vaka injection",
+		Long:  "Print the generated compose override YAML used by vaka injection.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmd.Help()
+		},
+	}
+	cmd.Flags().Bool("build", false, "Pre-build eligible services before resolving image runtime metadata")
+	cmd.Flags().StringP("output", "o", "", "Write override YAML to a file instead of stdout")
+	cmd.SetHelpFunc(func(cmd *cobra.Command, args []string) {
+		printShowComposeHelp(cmd.OutOrStdout())
+	})
+	return cmd
+}
 
 // runShowCompose builds the same compose override as runFull and prints it to
 // stdout, or writes it to a file when -o/--output is provided.
@@ -84,4 +104,17 @@ func parseShowComposeFlags(inv *Invocation) (output string, passthrough *Invocat
 		return "", nil, parseErr
 	}
 	return output, parsed, nil
+}
+
+func printShowComposeHelp(w io.Writer) {
+	fmt.Fprintln(w, "Print the generated compose override YAML used by vaka injection.")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Usage:")
+	fmt.Fprintln(w, "  vaka [--vaka-file=<path>] [--vaka-init-present] [compose-global-flags...] show-compose [--build] [-o, --output <path>]")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Notes:")
+	fmt.Fprintln(w, "  - pass --vaka-file and --vaka-init-present before `show-compose`")
+	fmt.Fprintln(w, "  - pass compose global flags before `show-compose`")
+	fmt.Fprintln(w, "  - after `show-compose`, only --build and -o/--output are accepted")
+	fmt.Fprintln(w, "  - VAKA_<SERVICE>_CONF values are never printed")
 }

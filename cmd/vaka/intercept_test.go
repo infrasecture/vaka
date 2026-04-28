@@ -14,26 +14,29 @@ import (
 func TestClassifySubcmd(t *testing.T) {
 	tests := []struct {
 		subcmd string
-		want   subcmdPath
+		want   dispatchPath
 	}{
-		{"up", pathFull},
-		{"run", pathFull},
-		{"create", pathFull},
-		{"volumes", pathFull},
-		{"down", pathLifecycle},
-		{"stop", pathLifecycle},
-		{"kill", pathLifecycle},
-		{"rm", pathLifecycle},
-		{"validate", pathCobra},
-		{"show-nft", pathCobra},
-		{"doctor", pathCobra},
-		{"show-compose", pathShowCompose},
-		{"version", pathCobra},
-		{"", pathCobra},
-		{"logs", pathPassthrough},
-		{"ps", pathPassthrough},
-		{"exec", pathPassthrough},
-		{"pull", pathPassthrough},
+		{"up", pathRender},
+		{"run", pathRender},
+		{"create", pathRender},
+		{"volumes", pathReference},
+		{"down", pathReference},
+		{"stop", pathReference},
+		{"kill", pathReference},
+		{"rm", pathReference},
+		{"validate", pathNative},
+		{"show-nft", pathNative},
+		{"doctor", pathNative},
+		{"show-compose", pathNative},
+		{"version", pathNative},
+		{"help", pathNative},
+		{"completion", pathNative},
+		{"", pathNative},
+		{"logs", pathReference},
+		{"ps", pathReference},
+		{"exec", pathReference},
+		{"pull", pathReference},
+		{"foo", pathReference},
 	}
 	for _, tc := range tests {
 		if got := classifySubcmd(tc.subcmd); got != tc.want {
@@ -42,8 +45,8 @@ func TestClassifySubcmd(t *testing.T) {
 	}
 }
 
-func TestLifecycleOverrideYAMLPassthrough(t *testing.T) {
-	yaml, err := lifecycleOverrideYAML(true, "emsi/vaka-init:v0.1.0")
+func TestReferenceOverrideYAMLPassthrough(t *testing.T) {
+	yaml, err := referenceOverrideYAML(true, "emsi/vaka-init:v0.1.0")
 	if err != nil {
 		t.Fatalf("passthrough: unexpected error: %v", err)
 	}
@@ -52,8 +55,8 @@ func TestLifecycleOverrideYAMLPassthrough(t *testing.T) {
 	}
 }
 
-func TestLifecycleOverrideYAMLInjectsContainer(t *testing.T) {
-	yaml, err := lifecycleOverrideYAML(false, "emsi/vaka-init:v0.1.0")
+func TestReferenceOverrideYAMLInjectsContainer(t *testing.T) {
+	yaml, err := referenceOverrideYAML(false, "emsi/vaka-init:v0.1.0")
 	if err != nil {
 		t.Fatalf("injection: unexpected error: %v", err)
 	}
@@ -65,7 +68,7 @@ func TestLifecycleOverrideYAMLInjectsContainer(t *testing.T) {
 	}
 }
 
-func TestExecDockerComposeLifecycleRequiresComposeConfig(t *testing.T) {
+func TestExecDockerComposeReferenceRequiresComposeConfig(t *testing.T) {
 	dir := t.TempDir()
 	chdirForTest(t, dir)
 	oldComposeFile, hadComposeFile := os.LookupEnv("COMPOSE_FILE")
@@ -86,7 +89,7 @@ func TestExecDockerComposeLifecycleRequiresComposeConfig(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when compose config is missing")
 	}
-	if !strings.Contains(err.Error(), "lifecycle command requires compose configuration") {
+	if !strings.Contains(err.Error(), "reference command requires compose configuration") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -269,14 +272,17 @@ func TestComputeCapDelta(t *testing.T) {
 	}
 }
 
-func TestExtractVakaFlagsBool(t *testing.T) {
-	// --vaka-init-present is a boolean flag: no value token consumed.
-	flags, rest := extractVakaFlags([]string{"up", "--vaka-init-present", "--remove-orphans"})
-	if flags["--vaka-init-present"] != "true" {
-		t.Errorf("expected --vaka-init-present=true, got %q", flags["--vaka-init-present"])
+func TestParseInvocationVakaInitPresentBool(t *testing.T) {
+	// --vaka-init-present is a boolean flag and must appear before subcommand.
+	inv, err := ParseInvocation([]string{"--vaka-init-present", "up", "--remove-orphans"})
+	if err != nil {
+		t.Fatalf("ParseInvocation: %v", err)
+	}
+	if inv.VakaFlags["--vaka-init-present"] != "true" {
+		t.Errorf("expected --vaka-init-present=true, got %q", inv.VakaFlags["--vaka-init-present"])
 	}
 	want := []string{"up", "--remove-orphans"}
-	if strings.Join(rest, " ") != strings.Join(want, " ") {
-		t.Errorf("rest = %v, want %v", rest, want)
+	if strings.Join(inv.ComposeArgs, " ") != strings.Join(want, " ") {
+		t.Errorf("compose args = %v, want %v", inv.ComposeArgs, want)
 	}
 }
