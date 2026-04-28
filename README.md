@@ -100,7 +100,7 @@ YAML
 vaka up
 ```
 
-That's it. No Dockerfile edits, no rebuilds, no agents on the host. `vaka up` is a drop-in replacement for `docker compose up`; commands that do not need policy injection (`logs`, `exec`, `ps`, ...) are forwarded verbatim.
+That's it. No Dockerfile edits, no rebuilds, no agents on the host. `vaka up` is a drop-in replacement for `docker compose up`; reference commands (`logs`, `exec`, `ps`, ...) are proxied through Compose with the minimal `__vaka-init` overlay so helper resources stay visible.
 
 ---
 
@@ -171,13 +171,13 @@ vaka fills that gap with nftables: a kernel firewall applied inside each contain
 
 ### How vaka starts your containers
 
-vaka reads your policy and compose files, generates a compose override in memory, and pipes it to `docker compose` via stdin. The per-service policy is delivered as a Docker secret rather than as a generated policy file on the host.
+vaka reads your policy and compose files, generates a compose override in memory, and streams it to `docker compose` through an inherited `/dev/fd/3` pipe. The per-service policy is delivered as a Docker secret rather than as a generated policy file on the host.
 
 ```mermaid
 flowchart LR
     vf["vaka.yaml"] --> cli["vaka up"]
     cf["docker-compose.yaml"] --> cli
-    cli -- "compose override<br/>piped via stdin<br/>no files on disk" --> dc["docker compose"]
+    cli -- "compose override<br/>via /dev/fd/3 pipe<br/>no files on disk" --> dc["docker compose"]
     dc -- "policy as<br/>Docker secret<br/>+ NET_ADMIN cap" --> c["container"]
 ```
 
@@ -337,11 +337,11 @@ COPY --from=vaka /opt/vaka/sbin/nft       /opt/vaka/sbin/nft
 Then run with:
 
 ```bash
-vaka up   --vaka-init-present
-vaka down --vaka-init-present
+vaka --vaka-init-present up
+vaka --vaka-init-present down
 ```
 
-The `--vaka-init-present` flag must be passed consistently for every command
+The `--vaka-init-present` flag must appear before the subcommand and must be passed consistently for every command
 that uses vaka's injection-aware paths for the stack:
 `up`, `run`, `create`, `volumes`, `down`, `stop`, `kill`, `rm`.
 
@@ -440,8 +440,8 @@ vaka rm                 # remove stopped containers
 `vaka down`, `vaka stop`, `vaka kill`, and `vaka rm` tear down the full stack — including the `__vaka-init` helper container that injected the binaries. If you started the stack with `--vaka-init-present` (see [Air-gapped / opt-out](#air-gapped--opt-out)), pass the same flag on teardown:
 
 ```bash
-vaka up   --vaka-init-present
-vaka down --vaka-init-present
+vaka --vaka-init-present up
+vaka --vaka-init-present down
 ```
 
 When upgrading `vaka`/`vaka-init`, refresh injected helper volumes before
@@ -460,9 +460,9 @@ or:
 vaka up -V    # docker compose --renew-anon-volumes
 ```
 
-### Passthrough commands
+### Reference commands
 
-Commands that do not need policy injection are forwarded to `docker compose` verbatim:
+Commands that do not create new application containers are proxied to `docker compose` with a minimal `__vaka-init` overlay. That keeps the helper service visible to Compose commands such as `ps`, `logs`, `exec`, and `pull`:
 
 ```bash
 vaka logs -f llm-gateway
@@ -474,7 +474,7 @@ vaka is a drop-in replacement for `docker compose`. Compose global flags work id
 
 ```bash
 vaka -f prod.yaml up --build -d
-vaka --vaka-file policies/prod.yaml -f prod.yaml up
+vaka --vaka-file=policies/prod.yaml -f prod.yaml up
 ```
 
 ### Validate before deploying
@@ -703,20 +703,20 @@ This field uses compose-compatible syntax (`user`, `uid`, `uid:gid`, `user:group
 
 ### `vaka up`
 
-Validates `vaka.yaml`, generates a compose override in memory, and starts the stack with the override piped via stdin. By default the override adds a `__vaka-init` helper container that exposes the `vaka-init` and `nft` binaries (under `/opt/vaka`) and shares them read-only with each policy-enforced service via compose `volumes_from`. All `docker compose up` flags are passed through.
+Validates `vaka.yaml`, generates a compose override in memory, and starts the stack with the override delivered through an inherited `/dev/fd/3` pipe so Compose keeps terminal stdin. By default the override adds a `__vaka-init` helper container that exposes the `vaka-init` and `nft` binaries (under `/opt/vaka`) and shares them read-only with each policy-enforced service via compose `volumes_from`. All `docker compose up` flags are passed through.
 
 ```
-vaka [--vaka-file vaka.yaml] up [--vaka-init-present] [compose-flags...]
+vaka [--vaka-file=<path>] [--vaka-init-present] [compose-global-flags...] up [compose-flags...]
 ```
 
-Pass `--vaka-init-present` to skip the injection helper when the binaries are already baked into your image (see [Air-gapped / opt-out](#air-gapped--opt-out)).
+Pass `--vaka-init-present` before the subcommand to skip the injection helper when the binaries are already baked into your image (see [Air-gapped / opt-out](#air-gapped--opt-out)).
 
 ### `vaka run`
 
 Same injection path as `up` but for `docker compose run`.
 
 ```
-vaka [--vaka-file vaka.yaml] run [--vaka-init-present] [compose-flags...] <service> [command...]
+vaka [--vaka-file=<path>] [--vaka-init-present] [compose-global-flags...] run [compose-flags...] <service> [command...]
 ```
 
 ### `vaka create`
@@ -724,21 +724,15 @@ vaka [--vaka-file vaka.yaml] run [--vaka-init-present] [compose-flags...] <servi
 Same injection path as `up` but for `docker compose create`. This validates `vaka.yaml`, prepares the helper resources, and creates containers with the `vaka-init` entrypoint override without starting the application services.
 
 ```
-vaka [--vaka-file vaka.yaml] create [--vaka-init-present] [compose-flags...]
+vaka [--vaka-file=<path>] [--vaka-init-present] [compose-global-flags...] create [compose-flags...]
 ```
 
 ### `vaka volumes`
 
-Uses the same full injection path as `up`/`run`/`create`, then proxies to
-`docker compose volumes`. This ensures vaka-managed helper resources are visible
-in the project volume listing.
-
-Because it uses the full path, `vaka volumes` still validates `vaka.yaml` and
-may inspect/pre-build service images or ensure/pull the matching
-`emsi/vaka-init:<version>` image when injection is enabled.
+Proxies to `docker compose volumes` with the minimal `__vaka-init` overlay. This ensures vaka-managed helper resources are visible in the project volume listing without running the full policy-generation path used by `up` / `run` / `create`.
 
 ```bash
-vaka [--vaka-file vaka.yaml] volumes [--vaka-init-present] [compose-flags...]
+vaka [--vaka-file=<path>] [--vaka-init-present] [compose-global-flags...] volumes [compose-flags...]
 ```
 
 ### `vaka down` / `vaka stop` / `vaka kill` / `vaka rm`
@@ -746,10 +740,10 @@ vaka [--vaka-file vaka.yaml] volumes [--vaka-init-present] [compose-flags...]
 Tear down the full stack including the `__vaka-init` helper container. If the stack was started with `--vaka-init-present`, the same flag must be passed here so vaka knows not to expect the helper.
 
 ```
-vaka [--vaka-file vaka.yaml] down [--vaka-init-present] [compose-flags...]
-vaka [--vaka-file vaka.yaml] stop [--vaka-init-present] [compose-flags...]
-vaka [--vaka-file vaka.yaml] kill [--vaka-init-present] [compose-flags...]
-vaka [--vaka-file vaka.yaml] rm   [--vaka-init-present] [compose-flags...]
+vaka [--vaka-file=<path>] [--vaka-init-present] [compose-global-flags...] down [compose-flags...]
+vaka [--vaka-file=<path>] [--vaka-init-present] [compose-global-flags...] stop [compose-flags...]
+vaka [--vaka-file=<path>] [--vaka-init-present] [compose-global-flags...] kill [compose-flags...]
+vaka [--vaka-file=<path>] [--vaka-init-present] [compose-global-flags...] rm   [compose-flags...]
 ```
 
 `vaka down --volumes` additionally removes the anonymous volume attached to `__vaka-init` that holds the injected binaries.
@@ -786,12 +780,12 @@ Builds and prints the compose override YAML generated by vaka's injection path.
 
 - Default output: stdout
 - File output: `-o, --output <path>`
-- Uses the same builder as `vaka up` / `run` / `create` / `volumes`
+- Uses the same builder as `vaka up` / `run` / `create`
 - May pre-build services and pull `emsi/vaka-init:<version>` as part of generation
 - `VAKA_<SERVICE>_CONF` env values are intentionally not printed
 
 ```bash
-vaka [--vaka-file vaka.yaml] [compose-global-flags...] show-compose [--build] [-o override.yaml]
+vaka [--vaka-file=<path>] [compose-global-flags...] show-compose [--build] [-o override.yaml]
 ```
 
 ### `vaka version`
@@ -802,9 +796,9 @@ Prints the version string stamped at build time.
 vaka version
 ```
 
-### Passthrough commands
+### Reference commands
 
-Any subcommand not listed above is forwarded verbatim to `docker compose`:
+Any Compose subcommand not listed above is proxied to `docker compose` with the minimal `__vaka-init` overlay:
 
 ```bash
 vaka logs -f llm-gateway       # docker compose logs -f llm-gateway
@@ -816,10 +810,12 @@ vaka ps                        # docker compose ps
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--vaka-file` | `vaka.yaml` | Path to the vaka policy file |
+| `--vaka-file=<path>` | `vaka.yaml` | Path to the vaka policy file |
 | `--vaka-init-present` | off | Skip automatic injection of `vaka-init` / `nft`; assume they are already present at `/opt/vaka/sbin/` inside each service image. |
 
-All Docker Compose global flags (`-f`, `-p`, `--profile`, `--env-file`, `--project-directory`, `--context` and others) are passed through unchanged.
+Vaka flags must appear before the subcommand. Value-taking vaka flags use `=` form, for example `--vaka-file=policies/prod.yaml`.
+
+Docker Compose global flags such as `-f`, `-p`, `--profile`, `--env-file`, and `--project-directory` are passed through unchanged. Docker top-level globals such as `--context` and `--host` are not accepted in `vaka` arguments; use `docker context use ...`, `DOCKER_CONTEXT=...`, or `DOCKER_HOST=...` instead.
 
 ---
 
