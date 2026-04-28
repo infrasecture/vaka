@@ -111,7 +111,7 @@ func TestShowComposeRegisteredForCobraHelp(t *testing.T) {
 	if !strings.Contains(got, "Print the generated compose override YAML used by vaka injection.") {
 		t.Fatalf("show-compose help missing description:\n%s", got)
 	}
-	if !strings.Contains(got, "vaka [compose-global-flags...] show-compose") {
+	if !strings.Contains(got, "vaka [--vaka-file=<path>] [--vaka-init-present] [compose-global-flags...] show-compose") {
 		t.Fatalf("show-compose help missing custom usage:\n%s", got)
 	}
 }

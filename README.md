@@ -263,16 +263,16 @@ Download the binary for your platform from the [releases page](https://github.co
 # Pick one binary for your platform:
 
 # Linux amd64
-curl -fsSL https://github.com/infrasecture/vaka/releases/download/v0.1.0/vaka-linux-amd64 -o vaka
+curl -fsSL https://github.com/infrasecture/vaka/releases/download/v0.0.2/vaka-linux-amd64 -o vaka
 
 # Linux arm64
-curl -fsSL https://github.com/infrasecture/vaka/releases/download/v0.1.0/vaka-linux-arm64 -o vaka
+curl -fsSL https://github.com/infrasecture/vaka/releases/download/v0.0.2/vaka-linux-arm64 -o vaka
 
 # macOS arm64 (Apple Silicon)
-curl -fsSL https://github.com/infrasecture/vaka/releases/download/v0.1.0/vaka-darwin-arm64 -o vaka
+curl -fsSL https://github.com/infrasecture/vaka/releases/download/v0.0.2/vaka-darwin-arm64 -o vaka
 
 # macOS amd64 (Intel)
-curl -fsSL https://github.com/infrasecture/vaka/releases/download/v0.1.0/vaka-darwin-amd64 -o vaka
+curl -fsSL https://github.com/infrasecture/vaka/releases/download/v0.0.2/vaka-darwin-amd64 -o vaka
 
 chmod +x vaka
 sudo mv vaka /usr/local/bin/vaka
@@ -327,7 +327,7 @@ The full schema for `vaka.yaml` is in [Configuration reference](#configuration-r
 If your environment cannot pull `emsi/vaka-init` from the internet, bake the binaries into your image at build time and pass `--vaka-init-present` to skip automatic injection:
 
 ```dockerfile
-FROM emsi/vaka-init:v0.1.2 AS vaka
+FROM emsi/vaka-init:v0.0.2 AS vaka
 FROM ubuntu:24.04
 # ... rest of your image ...
 COPY --from=vaka /opt/vaka/sbin/vaka-init /opt/vaka/sbin/vaka-init
@@ -953,13 +953,13 @@ Installed paths from packages:
 Versions come from git tags. Tag a release and push:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.0.2
+git push origin v0.0.2
 ```
 
 Then run `./build.sh`. The script reads `git describe --tags --always` and stamps the version into:
 
-- the `vaka version` command output (`vaka v0.1.0`)
+- the `vaka version` command output (`vaka v0.0.2`)
 - the `vaka-init` binary metadata (visible via `strings`)
 - the `emsi/vaka-init` OCI image label (`org.opencontainers.image.version`)
 - `.deb` and `.rpm` package metadata
@@ -986,7 +986,7 @@ Both workflows produce the same registry result:
 ```
 emsi/nft-static:1.1.6          ← multi-arch manifest list
 emsi/nft-static:latest
-emsi/vaka-init:v0.1.0          ← multi-arch manifest list
+emsi/vaka-init:v0.0.2          ← multi-arch manifest list
 emsi/vaka-init:latest
 ```
 
