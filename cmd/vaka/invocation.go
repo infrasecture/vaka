@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -72,11 +73,6 @@ var vakaFlagsBool = map[string]bool{
 	"--vaka-init-present": true,
 }
 
-var knownVakaFlags = []string{
-	"--vaka-file",
-	"--vaka-init-present",
-}
-
 // ParseInvocation parses raw os.Args[1:] into a single invocation model used by
 // all execution paths.
 func ParseInvocation(argv []string) (*Invocation, error) {
@@ -104,7 +100,7 @@ func ParseInvocation(argv []string) (*Invocation, error) {
 //
 // Strict mode:
 //   - `--vaka-*` flags are accepted only before the compose subcommand.
-//   - `--vaka-file` requires `=` form: `--vaka-file=<path>`.
+//   - value-taking `--vaka-*` flags require `=` form: `--flag=<value>`.
 //   - unknown pre-subcommand `--vaka-*` flags are hard errors with suggestion.
 //   - post-subcommand tokens are forwarded unchanged, except known misplaced
 //     vaka flags which fail fast with a positioning hint.
@@ -133,15 +129,10 @@ func extractVakaFlags(argv []string) (map[string]string, []string, error) {
 				continue
 			}
 
-			if tok == "--vaka-file" {
-				return nil, nil, fmt.Errorf("--vaka-file requires '=' form before the subcommand (use --vaka-file=<path>)")
-			}
-			if strings.HasPrefix(tok, "--vaka-file=") {
-				val := strings.TrimSpace(strings.TrimPrefix(tok, "--vaka-file="))
-				if val == "" {
-					return nil, nil, fmt.Errorf("--vaka-file requires a non-empty value (use --vaka-file=<path>)")
-				}
-				flags["--vaka-file"] = val
+			if flag, value, err := parseVakaValueFlag(tok); err != nil {
+				return nil, nil, err
+			} else if flag != "" {
+				flags[flag] = value
 				continue
 			}
 			if vakaFlagsBool[tok] {
@@ -295,10 +286,37 @@ func unsupportedDockerGlobalError(flag, value string, usedEquals bool) error {
 }
 
 func isKnownVakaFlagToken(tok string) bool {
-	if tok == "--vaka-file" || strings.HasPrefix(tok, "--vaka-file=") {
+	if flagNameFromEqualsForm(tok, vakaFlagsTakingValue) != "" {
+		return true
+	}
+	if vakaFlagsTakingValue[tok] {
 		return true
 	}
 	return vakaFlagsBool[tok]
+}
+
+func parseVakaValueFlag(tok string) (flag string, value string, err error) {
+	if vakaFlagsTakingValue[tok] {
+		return "", "", fmt.Errorf("%s requires '=' form before the subcommand (use %s=<value>)", tok, tok)
+	}
+	flag = flagNameFromEqualsForm(tok, vakaFlagsTakingValue)
+	if flag == "" {
+		return "", "", nil
+	}
+	value = strings.TrimSpace(strings.TrimPrefix(tok, flag+"="))
+	if value == "" {
+		return "", "", fmt.Errorf("%s requires a non-empty value (use %s=<value>)", flag, flag)
+	}
+	return flag, value, nil
+}
+
+func flagNameFromEqualsForm(tok string, flags map[string]bool) string {
+	for _, candidate := range sortedFlagKeys(flags) {
+		if strings.HasPrefix(tok, candidate+"=") {
+			return candidate
+		}
+	}
+	return ""
 }
 
 func unknownVakaFlagError(tok string) error {
@@ -316,7 +334,7 @@ func unknownVakaFlagError(tok string) error {
 func nearestVakaFlag(flag string) string {
 	best := ""
 	bestDist := -1
-	for _, candidate := range knownVakaFlags {
+	for _, candidate := range allKnownVakaFlags() {
 		d := levenshteinDistance(flag, candidate)
 		if bestDist == -1 || d < bestDist {
 			bestDist = d
@@ -327,6 +345,26 @@ func nearestVakaFlag(flag string) string {
 		return best
 	}
 	return ""
+}
+
+func allKnownVakaFlags() []string {
+	out := make([]string, 0, len(vakaFlagsTakingValue)+len(vakaFlagsBool))
+	for _, flag := range sortedFlagKeys(vakaFlagsTakingValue) {
+		out = append(out, flag)
+	}
+	for _, flag := range sortedFlagKeys(vakaFlagsBool) {
+		out = append(out, flag)
+	}
+	return out
+}
+
+func sortedFlagKeys(flags map[string]bool) []string {
+	out := make([]string, 0, len(flags))
+	for flag := range flags {
+		out = append(out, flag)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func levenshteinDistance(a, b string) int {
