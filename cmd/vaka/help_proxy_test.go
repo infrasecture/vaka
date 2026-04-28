@@ -71,6 +71,7 @@ func TestConfigureRootHelpAppendsProxySection(t *testing.T) {
 		Short: "Print version",
 		Run:   func(*cobra.Command, []string) {},
 	})
+	root.AddCommand(newShowComposeCmd())
 	configureRootHelp(root)
 
 	var out bytes.Buffer
@@ -85,6 +86,32 @@ func TestConfigureRootHelpAppendsProxySection(t *testing.T) {
 		t.Fatalf("help output missing proxied section:\n%s", got)
 	}
 	if !strings.Contains(got, "show-compose") {
-		t.Fatalf("help output missing show-compose line:\n%s", got)
+		t.Fatalf("help output missing native show-compose command:\n%s", got)
+	}
+	if strings.Contains(got, "Additional vaka command") {
+		t.Fatalf("help output should not use show-compose footer:\n%s", got)
+	}
+}
+
+func TestShowComposeRegisteredForCobraHelp(t *testing.T) {
+	root := &cobra.Command{
+		Use:   "vaka",
+		Short: "test",
+	}
+	root.AddCommand(newShowComposeCmd())
+
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"help", "show-compose"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("root.Execute: %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "Print the generated compose override YAML used by vaka injection.") {
+		t.Fatalf("show-compose help missing description:\n%s", got)
+	}
+	if !strings.Contains(got, "vaka [compose-global-flags...] show-compose") {
+		t.Fatalf("show-compose help missing custom usage:\n%s", got)
 	}
 }

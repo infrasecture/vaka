@@ -25,6 +25,7 @@ func main() {
 		newValidateCmd(),
 		newShowNftCmd(),
 		newDoctorCmd(),
+		newShowComposeCmd(),
 		&cobra.Command{
 			Use:   "version",
 			Short: "Print version",

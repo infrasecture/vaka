@@ -22,9 +22,6 @@ func configureRootHelp(root *cobra.Command) {
 		out := cmd.OutOrStdout()
 		fmt.Fprintln(out)
 		fmt.Fprintln(out, proxiedComposeCommandsHelpSection())
-		fmt.Fprintln(out)
-		fmt.Fprintln(out, "Additional vaka command:")
-		fmt.Fprintln(out, "  show-compose   Print the generated compose override YAML used by vaka injection")
 	})
 }
 

@@ -7,7 +7,26 @@ import (
 	"io"
 	"os"
 	"strings"
+
+	"github.com/spf13/cobra"
 )
+
+func newShowComposeCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "show-compose",
+		Short: "Print the generated compose override YAML used by vaka injection",
+		Long:  "Print the generated compose override YAML used by vaka injection.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmd.Help()
+		},
+	}
+	cmd.Flags().Bool("build", false, "Pre-build eligible services before resolving image runtime metadata")
+	cmd.Flags().StringP("output", "o", "", "Write override YAML to a file instead of stdout")
+	cmd.SetHelpFunc(func(cmd *cobra.Command, args []string) {
+		printShowComposeHelp(cmd.OutOrStdout())
+	})
+	return cmd
+}
 
 // runShowCompose builds the same compose override as runFull and prints it to
 // stdout, or writes it to a file when -o/--output is provided.
