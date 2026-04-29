@@ -1,5 +1,7 @@
 # vaka — Secure Agentic Container Layer: Design Spec
 
+> Historical implementation note. This document is not the current user or maintainer reference. See the maintained docs in `docs/` for current behavior.
+
 **Date:** 2026-04-14
 **Status:** Approved
 **Scope:** `vaka-init` (container init binary) + `vaka` (host CLI) + `ServicePolicy` config schema.

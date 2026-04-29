@@ -1,5 +1,7 @@
 # vaka-init Container Injection Implementation Plan
 
+> Historical implementation note. This document is not the current user or maintainer reference. See the maintained docs in `docs/` for current behavior.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Automatically inject `vaka-init` and `nft` binaries into managed containers via a `__vaka-init` container, so users no longer need to bake them into their images.

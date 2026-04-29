@@ -1,5 +1,7 @@
 # vaka Secure Container Layer Implementation Plan
 
+> Historical implementation note. This document is not the current user or maintainer reference. See the maintained docs in `docs/` for current behavior.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 >
 > **Historical note (2026-04-20+):** this archived implementation plan contains
