@@ -73,10 +73,12 @@ Checks Docker CLI availability, daemon reachability, Compose v2 availability, Li
 ## `vaka show-nft <service>`
 
 ```bash
-vaka show-nft [-f vaka.yaml] [--compose docker-compose.yaml] <service>
+vaka show-nft [-f vaka.yaml] <service>
 ```
 
 Prints the nftables ruleset that would be loaded for a service.
+
+Pass `--compose <path>` only when you explicitly want compose cross-checks against that file set. For normal project use, prefer the shorter form above; passing only `docker-compose.yaml` can ignore `docker-compose.override.yaml` and other compose files you normally rely on.
 
 Current behavior: hostnames in `to:` lists are printed as comments instead of being resolved. This keeps the command offline and avoids using the host resolver when the container may resolve differently. The wording and optional resolved preview are tracked in [issue #57](https://github.com/infrasecture/vaka/issues/57).
 

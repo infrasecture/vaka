@@ -89,7 +89,7 @@ DOCKER_CONTEXT=<name> vaka doctor
 Preview nftables rules:
 
 ```bash
-vaka show-nft --compose docker-compose.yaml <service>
+vaka show-nft <service>
 ```
 
 Preview the Compose override:

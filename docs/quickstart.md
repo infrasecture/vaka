@@ -102,7 +102,7 @@ Reference commands are proxied through Docker Compose with a minimal vaka overla
 Preview the nftables rules for one service:
 
 ```bash
-vaka show-nft --compose docker-compose.yaml agent
+vaka show-nft agent
 ```
 
 Preview the generated Compose override:
