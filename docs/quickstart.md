@@ -12,14 +12,14 @@ curl -fLO https://github.com/infrasecture/vaka/releases/download/v0.0.2/vaka_0.0
 sudo dpkg -i vaka_0.0.2_amd64.deb
 ```
 
+See [installation.md](installation.md) for RPM, Arch Linux, source-build, and macOS binary options.
+
 macOS:
 
 ```bash
 brew tap infrasecture/tap
 brew install vaka
 ```
-
-See [installation.md](installation.md) for RPM, Arch Linux, source-build, and macOS binary options.
 
 ## 2. Add `vaka.yaml`
 
