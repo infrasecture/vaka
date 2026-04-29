@@ -4,6 +4,14 @@ This guide assumes you already have a working Docker Compose project.
 
 ## 1. Install vaka
 
+Linux:
+
+```bash
+# Debian / Ubuntu
+curl -fLO https://github.com/infrasecture/vaka/releases/download/v0.0.2/vaka_0.0.2_amd64.deb
+sudo dpkg -i vaka_0.0.2_amd64.deb
+```
+
 macOS:
 
 ```bash
@@ -11,7 +19,7 @@ brew tap infrasecture/tap
 brew install vaka
 ```
 
-Linux users can install a release package or build from source. See [installation.md](installation.md).
+See [installation.md](installation.md) for RPM, Arch Linux, source-build, and macOS binary options.
 
 ## 2. Add `vaka.yaml`
 

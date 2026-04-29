@@ -2,41 +2,6 @@
 
 This page covers installing the `vaka` CLI. The CLI runs on the host. The helper runtime (`vaka-init` plus `nft`) runs inside Linux containers and is pulled automatically on first use unless you use the baked-in helper mode.
 
-## macOS With Homebrew
-
-```bash
-brew tap infrasecture/tap
-brew install vaka
-```
-
-For nightly builds:
-
-```bash
-brew tap infrasecture/tap
-brew install vaka-nightly
-```
-
-The Homebrew formula installs both `vaka` and the local `vaka-init` helper binary used by the CLI package.
-
-Docker Desktop must be using Linux containers. That is the normal Docker Desktop mode on macOS.
-
-## macOS Release Binaries
-
-Homebrew is the preferred macOS install path, but raw macOS binaries are also attached to releases:
-
-```bash
-# macOS arm64, Apple Silicon
-curl -fsSL https://github.com/infrasecture/vaka/releases/download/v0.0.2/vaka-darwin-arm64 -o vaka
-
-# macOS amd64, Intel
-curl -fsSL https://github.com/infrasecture/vaka/releases/download/v0.0.2/vaka-darwin-amd64 -o vaka
-
-chmod +x vaka
-sudo mv vaka /usr/local/bin/vaka
-```
-
-Replace `v0.0.2` with the release you want if you are not installing the latest release.
-
 ## Linux Packages
 
 Linux release assets are distributed as Debian, RPM, and Arch Linux packages from the [GitHub releases page](https://github.com/infrasecture/vaka/releases).
@@ -63,7 +28,7 @@ Package installs place files at:
 
 The host CLI is `/usr/local/bin/vaka`. The `/opt/vaka/sbin` binaries are helper binaries used for baked-in or package-managed environments.
 
-## Build From Source
+## Linux Build From Source
 
 The build script uses Docker, so a local Go toolchain is not required for normal builds.
 
@@ -100,6 +65,41 @@ Build the full release matrix with:
 ```bash
 ./build.sh --release
 ```
+
+## macOS With Homebrew
+
+```bash
+brew tap infrasecture/tap
+brew install vaka
+```
+
+For nightly builds:
+
+```bash
+brew tap infrasecture/tap
+brew install vaka-nightly
+```
+
+The Homebrew formula installs both `vaka` and the local `vaka-init` helper binary used by the CLI package.
+
+Docker Desktop must be using Linux containers. That is the normal Docker Desktop mode on macOS.
+
+## macOS Release Binaries
+
+Homebrew is the preferred macOS install path, but raw macOS binaries are also attached to releases:
+
+```bash
+# macOS arm64, Apple Silicon
+curl -fsSL https://github.com/infrasecture/vaka/releases/download/v0.0.2/vaka-darwin-arm64 -o vaka
+
+# macOS amd64, Intel
+curl -fsSL https://github.com/infrasecture/vaka/releases/download/v0.0.2/vaka-darwin-amd64 -o vaka
+
+chmod +x vaka
+sudo mv vaka /usr/local/bin/vaka
+```
+
+Replace `v0.0.2` with the release you want if you are not installing the latest release.
 
 ## First-Run Helper Image
 

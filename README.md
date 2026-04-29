@@ -34,17 +34,30 @@ vaka reduces that blast radius. A service that only needs OpenAI, Anthropic, Git
 
 ## Install
 
+On Linux, install a `.deb`, `.rpm`, or Arch package from the [releases page](https://github.com/infrasecture/vaka/releases):
+
+```bash
+# Debian / Ubuntu
+curl -fLO https://github.com/infrasecture/vaka/releases/download/v0.0.2/vaka_0.0.2_amd64.deb
+sudo dpkg -i vaka_0.0.2_amd64.deb
+
+# Fedora / RHEL / CentOS
+curl -fLO https://github.com/infrasecture/vaka/releases/download/v0.0.2/vaka-0.0.2-1.x86_64.rpm
+sudo rpm -i vaka-0.0.2-1.x86_64.rpm
+
+# Arch Linux
+curl -fLO https://github.com/infrasecture/vaka/releases/download/v0.0.2/vaka-0.0.2-1-x86_64.pkg.tar.zst
+sudo pacman -U vaka-0.0.2-1-x86_64.pkg.tar.zst
+```
+
 On macOS, use Homebrew:
 
 ```bash
 brew tap infrasecture/tap
 brew install vaka
-
-# or track nightly builds
-brew install vaka-nightly
 ```
 
-On Linux, install a `.deb`, `.rpm`, or Arch package from the [releases page](https://github.com/infrasecture/vaka/releases). Full install options are in [docs/installation.md](docs/installation.md).
+Full install options are in [docs/installation.md](docs/installation.md).
 
 ## Quickstart
 
