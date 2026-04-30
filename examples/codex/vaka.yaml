@@ -7,7 +7,7 @@ services:
       egress:
         defaultAction: reject       # accept | reject | drop
         accept:
-          - dns: {}  # all entries from /etc/resolve.conf
+          - dns: {}  # all entries from /etc/resolv.conf
           - proto: tcp
             to: [litellm]
             ports: [4000]

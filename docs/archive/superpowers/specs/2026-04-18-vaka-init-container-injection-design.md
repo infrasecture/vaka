@@ -1,5 +1,7 @@
 # vaka-init Container Injection Design
 
+> Historical implementation note. This document is not the current user or maintainer reference. See the maintained docs in `docs/` for current behavior.
+
 **Feature:** vaka automatically injects `vaka-init` and `nft` binaries into managed containers via a `__vaka-init` container, eliminating the requirement that users bake these binaries into their container images.
 
 **Issue:** [#8](https://github.com/infrasecture/vaka/issues/8)
