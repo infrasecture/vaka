@@ -82,6 +82,28 @@ brew install vaka-nightly
 
 The Homebrew formula installs both `vaka` and the local `vaka-init` helper binary used by the CLI package.
 
+`vaka` and `vaka-nightly` install the same command names, so only one channel should be linked at a time.
+
+To switch from stable to nightly:
+
+```bash
+brew unlink vaka
+brew install vaka-nightly
+```
+
+If a previous `brew install vaka-nightly` already fetched the formula but failed at the link step, Homebrew may report that it is installed but unlinked. In that case run:
+
+```bash
+brew link vaka-nightly
+```
+
+To switch back:
+
+```bash
+brew unlink vaka-nightly
+brew install vaka
+```
+
 Docker Desktop must be using Linux containers. That is the normal Docker Desktop mode on macOS.
 
 ## macOS Release Binaries
