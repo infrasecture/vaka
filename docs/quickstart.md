@@ -23,29 +23,11 @@ brew install vaka
 
 ## 2. Add `vaka.yaml`
 
-Create `vaka.yaml` next to `docker-compose.yaml`:
+For a realistic starting point, use the [Codex + LiteLLM example](../examples/codex). It puts the internet-facing model-provider access on a LiteLLM sidecar and keeps the Codex container restricted to that local sidecar.
 
-```yaml
-apiVersion: agent.vaka/v1alpha1
-kind: ServicePolicy
-services:
-  agent:
-    network:
-      egress:
-        defaultAction: reject
-        block_metadata: drop
-        accept:
-          - dns: {}
-          - proto: tcp
-            to:
-              - api.openai.com
-              - api.anthropic.com
-              - api.github.com
-              - github.com
-            ports: [443]
-```
+Start from [`examples/codex/vaka.yaml`](../examples/codex/vaka.yaml), then adapt service names and allowed endpoints for your Compose project.
 
-Replace `agent` with the real Compose service name.
+Create `vaka.yaml` next to `docker-compose.yaml`. Each key under `services:` must match a Compose service name.
 
 ## 3. Validate
 

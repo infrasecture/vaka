@@ -13,6 +13,17 @@ You keep your existing `docker-compose.yaml`. You add a small `vaka.yaml` that s
 
 No image rebuilds. No compose-file edits. No generated policy files on the host.
 
+<!--
+  DEMO VIDEO PLACEHOLDER:
+  Add a non-autoplay demo block here once the edited assets are ready.
+  Suggested shape:
+    - short clickable thumbnail or animated preview, not full autoplay video
+    - link to docs/demo.md for full recordings:
+      1. agent container without vaka
+      2. agent container with vaka policy and LiteLLM sidecar
+  Keep large MP4 files out of git; prefer release assets or another durable host.
+-->
+
 ## Contents
 
 - [Why](#why)
@@ -61,29 +72,11 @@ Full install options are in [docs/installation.md](docs/installation.md).
 
 ## Quickstart
 
-Create `vaka.yaml` next to your `docker-compose.yaml`:
+The fastest way to see a realistic policy is the [Codex + LiteLLM example](examples/codex). It runs Codex in one container, routes model traffic through a LiteLLM sidecar, and uses vaka to prevent the Codex container from reaching the internet directly.
 
-```yaml
-apiVersion: agent.vaka/v1alpha1
-kind: ServicePolicy
-services:
-  agent:
-    network:
-      egress:
-        defaultAction: reject
-        block_metadata: drop
-        accept:
-          - dns: {}
-          - proto: tcp
-            to:
-              - api.openai.com
-              - api.anthropic.com
-              - api.github.com
-              - github.com
-            ports: [443]
-```
+Use its policy as the starting point: [`examples/codex/vaka.yaml`](examples/codex/vaka.yaml).
 
-The service name under `services:` must match a service in your Compose file.
+For your own Compose project, create `vaka.yaml` next to `docker-compose.yaml`. Each key under `services:` must match a Compose service name.
 
 Check the setup:
 
