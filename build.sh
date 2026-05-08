@@ -8,7 +8,7 @@
 #   ./build.sh --release        build full release matrix (all arch targets)
 #   ./build.sh --push           build, push arch tags, create manifest lists
 #   ./build.sh --manifest       create manifest lists from already-pushed arch images
-#   ./build.sh --packages       also produce .deb and .rpm packages via nfpm
+#   ./build.sh --packages       also produce .deb, .rpm, and Arch Linux packages via nfpm
 #   ./build.sh --rebuild-nft    force rebuild of emsi/nft-static images
 #   ./build.sh --rebuild-go     force rebuild of Go binaries even if up to date
 #   ARCHS="amd64" ./build.sh    restrict to one architecture
@@ -54,6 +54,8 @@
 #   INIT_IMAGE     vaka-init image name              (default: emsi/vaka-init)
 #   NFT_IMAGE      nft-static image name             (default: emsi/nft-static)
 #   NFPM_IMAGE     nfpm packager image               (default: ghcr.io/goreleaser/nfpm:latest)
+#   PUBLISH_LATEST whether --push/--manifest updates :latest manifest tags
+#                  (default: true; release.sh --nightly sets false)
 #
 # Output layout in ./dist/:
 #   vaka-<os>-<arch>         — vaka host CLI (native host target by default)
@@ -147,6 +149,15 @@ GOLANG_IMAGE="${GOLANG_IMAGE:-golang:1.25-alpine}"
 NFT_IMAGE="${NFT_IMAGE:-emsi/nft-static}"
 INIT_IMAGE="${INIT_IMAGE:-emsi/vaka-init}"
 NFPM_IMAGE="${NFPM_IMAGE:-ghcr.io/goreleaser/nfpm:latest}"
+PUBLISH_LATEST="${PUBLISH_LATEST:-true}"
+
+case "${PUBLISH_LATEST}" in
+    true|false) ;;
+    *)
+        echo "ERROR: PUBLISH_LATEST must be true or false (got ${PUBLISH_LATEST})" >&2
+        exit 1
+        ;;
+esac
 
 # Tag scheme:
 #   Arch-specific (local + push staging): emsi/nft-static:1.1.6-amd64
@@ -172,24 +183,31 @@ if [[ "${DO_MANIFEST_ONLY}" == "true" ]]; then
         init_sources+=("${INIT_IMAGE}:${VERSION}-${ARCH}")
     done
 
+    nft_tags=(--tag "${NFT_IMAGE}:${NFTABLES_VERSION}")
+    init_tags=(--tag "${INIT_IMAGE}:${VERSION}")
+    if [[ "${PUBLISH_LATEST}" == "true" ]]; then
+        nft_tags+=(--tag "${NFT_IMAGE}:latest")
+        init_tags+=(--tag "${INIT_IMAGE}:latest")
+    fi
+
     printf '    %s\n' "${NFT_IMAGE}:${NFTABLES_VERSION}"
     docker buildx imagetools create \
-        --tag "${NFT_IMAGE}:${NFTABLES_VERSION}" \
-        --tag "${NFT_IMAGE}:latest" \
+        "${nft_tags[@]}" \
         "${nft_sources[@]}"
 
     printf '    %s\n' "${INIT_IMAGE}:${VERSION}"
     docker buildx imagetools create \
-        --tag "${INIT_IMAGE}:${VERSION}" \
-        --tag "${INIT_IMAGE}:latest" \
+        "${init_tags[@]}" \
         "${init_sources[@]}"
 
     echo ""
     echo "Manifest lists created in registry:"
     printf '  %s   (%s)\n' "${NFT_IMAGE}:${NFTABLES_VERSION}" "${ARCHS}"
-    printf '  %s  (%s)\n'  "${NFT_IMAGE}:latest"              "${ARCHS}"
     printf '  %s   (%s)\n' "${INIT_IMAGE}:${VERSION}"         "${ARCHS}"
-    printf '  %s  (%s)\n'  "${INIT_IMAGE}:latest"             "${ARCHS}"
+    if [[ "${PUBLISH_LATEST}" == "true" ]]; then
+        printf '  %s  (%s)\n'  "${NFT_IMAGE}:latest"              "${ARCHS}"
+        printf '  %s  (%s)\n'  "${INIT_IMAGE}:latest"             "${ARCHS}"
+    fi
     exit 0
 fi
 
@@ -609,16 +627,21 @@ if [[ "${DO_PUSH}" == "true" ]]; then
     echo ""
 
     echo "==> Creating manifest lists..."
+    nft_tags=(--tag "${NFT_IMAGE}:${NFTABLES_VERSION}")
+    init_tags=(--tag "${INIT_IMAGE}:${VERSION}")
+    if [[ "${PUBLISH_LATEST}" == "true" ]]; then
+        nft_tags+=(--tag "${NFT_IMAGE}:latest")
+        init_tags+=(--tag "${INIT_IMAGE}:latest")
+    fi
+
     printf '    %s\n' "${NFT_IMAGE}:${NFTABLES_VERSION}"
     docker buildx imagetools create \
-        --tag "${NFT_IMAGE}:${NFTABLES_VERSION}" \
-        --tag "${NFT_IMAGE}:latest" \
+        "${nft_tags[@]}" \
         "${nft_sources[@]}"
 
     printf '    %s\n' "${INIT_IMAGE}:${VERSION}"
     docker buildx imagetools create \
-        --tag "${INIT_IMAGE}:${VERSION}" \
-        --tag "${INIT_IMAGE}:latest" \
+        "${init_tags[@]}" \
         "${init_sources[@]}"
 
     echo ""
@@ -648,9 +671,11 @@ echo ""
 if [[ "${DO_PUSH}" == "true" ]]; then
     echo "Registry manifest tags (resolve to requested ARCHS at pull time):"
     echo "  ${NFT_IMAGE}:${NFTABLES_VERSION}"
-    echo "  ${NFT_IMAGE}:latest"
     echo "  ${INIT_IMAGE}:${VERSION}"
-    echo "  ${INIT_IMAGE}:latest"
+    if [[ "${PUBLISH_LATEST}" == "true" ]]; then
+        echo "  ${NFT_IMAGE}:latest"
+        echo "  ${INIT_IMAGE}:latest"
+    fi
 else
     echo "To publish (single host with QEMU):"
     echo "  sudo apt-get install -y qemu-user-static   # Debian/Ubuntu"

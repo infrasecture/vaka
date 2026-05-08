@@ -11,7 +11,8 @@
 #
 # Build behavior:
 #   - Calls build.sh exactly once:
-#       ./build.sh --release --packages --push
+#       VERSION=<release-tag> ./build.sh --release --packages --push
+#     Nightly mode sets PUBLISH_LATEST=false so :latest remains stable-only.
 #   - Generates SHA256SUMS for this release's artifacts only.
 #   - Updates Homebrew tap formulas, then commits + pushes the vaka repo
 #     submodule pointer bump when changed.
@@ -38,7 +39,9 @@ Options:
 
 Behavior:
   - Default mode requires a release tag (vX.Y.Z) on HEAD; otherwise exits non-zero.
-  - Build is executed once via: ./build.sh --release --packages --push
+  - Build is executed once via: VERSION=<release-tag> ./build.sh --release --packages --push
+  - Nightly mode sets PUBLISH_LATEST=false, so container :latest tags remain
+    stable-release tags.
   - If Homebrew formula changes, script updates and pushes homebrew-tap,
     then commits and pushes the vaka repo submodule pointer bump.
 EOF
@@ -247,7 +250,11 @@ if [[ -z "${release_title}" ]]; then
 fi
 
 echo "==> Building release artifacts and publishing container images with VERSION=${release_tag}"
-VERSION="${release_tag}" ./build.sh --release --packages --push
+publish_latest=true
+if [[ "${is_prerelease}" == "true" ]]; then
+    publish_latest=false
+fi
+VERSION="${release_tag}" PUBLISH_LATEST="${publish_latest}" ./build.sh --release --packages --push
 
 artifacts=()
 artifact_names=()

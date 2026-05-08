@@ -81,11 +81,14 @@ Nightly release:
 ./release.sh --nightly
 ```
 
+Nightly releases use the 12-character commit SHA as the GitHub release tag and mark the release as a pre-release. They build and upload the same artifact classes as stable releases, update `Formula/vaka-nightly.rb`, and push the Homebrew tap update. Nightly container images are published under the SHA tag, but `:latest` is not updated; `:latest` remains reserved for stable releases.
+
 `release.sh`:
 
 - requires a clean working tree,
 - initializes and updates the `homebrew-tap` submodule,
-- runs `./build.sh --release --packages --push`,
+- runs `VERSION=<release-tag> ./build.sh --release --packages --push`,
+- sets `PUBLISH_LATEST=false` for nightly releases,
 - creates release checksums,
 - publishes a GitHub release,
 - updates the stable or nightly Homebrew formula,

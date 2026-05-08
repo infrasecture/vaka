@@ -66,6 +66,9 @@ On macOS, use Homebrew:
 ```bash
 brew tap infrasecture/tap
 brew install vaka
+
+# or track nightly builds
+brew install vaka-nightly
 ```
 
 Full install options are in [docs/installation.md](docs/installation.md).
@@ -151,7 +154,6 @@ More examples will live under [examples/](examples/). See [docs/examples.md](doc
 - [How it works](docs/how-it-works.md)
 - [Troubleshooting](docs/troubleshooting.md)
 - [Maintainers](docs/maintainers.md)
-- [Historical implementation notes](docs/archive/README.md)
 
 ## Status
 
