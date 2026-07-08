@@ -37,15 +37,20 @@ var composeVerbBaseline = map[string]bool{
 // flag errors for unknown commands such as `vaka pull -q`.
 func newRootCmd(root *RootInvocation) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "vaka",
+		Use:   "vaka [--vaka-file=<path>] [--vaka-init-present] <command>",
 		Short: "Secure container layer for AI agentic harnesses",
 		Long: `vaka enforces nftables egress policy inside Docker containers running
 AI agentic harnesses. Run 'vaka up' instead of 'docker compose up'.
 
 Full docker compose syntax (compose global flags such as -f, -p, --profile)
-lives under 'vaka compose'; run 'vaka compose --help' for the compose surface.`,
-		SilenceUsage: true,
-		Args:         cobra.ArbitraryArgs,
+lives under 'vaka compose'; run 'vaka compose --help' for the compose surface.
+
+Vaka flags precede the command and value-taking ones require '=' form:
+--vaka-file=<path> selects the policy file (default vaka.yaml);
+--vaka-init-present skips helper injection for images that bundle vaka-init.`,
+		SilenceUsage:          true,
+		DisableFlagsInUseLine: true,
+		Args:                  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()
@@ -54,6 +59,16 @@ lives under 'vaka compose'; run 'vaka compose --help' for the compose surface.`,
 		},
 	}
 	cmd.SetErrPrefix("vaka:")
+
+	// The root is runnable only so unknown commands get the compose-namespace
+	// hint; cobra's default template would therefore print both "vaka [flags]"
+	// and "vaka [command]" usage lines. Show a single line: the UseLine for
+	// runnable commands, the generic subcommand form otherwise. The literal
+	// match keeps this a no-op (default template) if cobra's template changes.
+	cmd.SetUsageTemplate(strings.Replace(cmd.UsageTemplate(),
+		"Usage:{{if .Runnable}}\n  {{.UseLine}}{{end}}{{if .HasAvailableSubCommands}}\n  {{.CommandPath}} [command]{{end}}",
+		"Usage:{{if .Runnable}}\n  {{.UseLine}}{{else if .HasAvailableSubCommands}}\n  {{.CommandPath}} [command]{{end}}",
+		1))
 
 	cmd.AddGroup(
 		&cobra.Group{ID: groupVaka, Title: "Vaka Commands:"},

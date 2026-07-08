@@ -83,6 +83,31 @@ func TestRootHelpListsShorthandsAndCompose(t *testing.T) {
 	}
 }
 
+// TestRootHelpUsageShowsGrammarOnce guards against cobra's default two-line
+// usage for runnable roots ("vaka [flags]" + "vaka [command]"): root help must
+// show exactly the vaka grammar line.
+func TestRootHelpUsageShowsGrammarOnce(t *testing.T) {
+	root := newRootCmd(&RootInvocation{VakaFile: "vaka.yaml"})
+
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"--help"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("root.Execute: %v", err)
+	}
+	got := out.String()
+
+	if !strings.Contains(got, "Usage:\n  vaka [--vaka-file=<path>] [--vaka-init-present] <command>\n") {
+		t.Fatalf("root help missing grammar usage line:\n%s", got)
+	}
+	for _, stale := range []string{"vaka [flags]", "\n  vaka [command]"} {
+		if strings.Contains(got, stale) {
+			t.Fatalf("root help contains stale usage line %q:\n%s", stale, got)
+		}
+	}
+}
+
 func TestShowComposeRegisteredForCobraHelp(t *testing.T) {
 	root := newRootCmd(&RootInvocation{VakaFile: "vaka.yaml"})
 
