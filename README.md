@@ -102,6 +102,14 @@ vaka exec agent sh
 vaka down
 ```
 
+The full docker compose surface (including compose global flags such as `-f`
+and `--profile`) lives under `vaka compose`:
+
+```bash
+vaka compose -f compose.prod.yaml up -d
+vaka compose pull
+```
+
 For a slower walkthrough, see [docs/quickstart.md](docs/quickstart.md).
 
 ## Mental Model

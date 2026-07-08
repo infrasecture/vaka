@@ -55,17 +55,18 @@ vaka doctor --fix
 vaka up
 ```
 
-Use regular Compose flags as usual:
+Use regular Compose flags after the command as usual; Compose global flags
+such as `-f` require the `vaka compose` form:
 
 ```bash
 vaka up --build -d
-vaka -f compose.prod.yaml up -d
+vaka compose -f compose.prod.yaml up -d
 ```
 
-Use `--vaka-file=<path>` before the subcommand when the policy file is not named `vaka.yaml`:
+Use `--vaka-file=<path>` before the command when the policy file is not named `vaka.yaml`:
 
 ```bash
-vaka --vaka-file=policies/prod.yaml -f compose.prod.yaml up -d
+vaka --vaka-file=policies/prod.yaml compose -f compose.prod.yaml up -d
 ```
 
 ## 6. Operate The Stack

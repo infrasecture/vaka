@@ -102,3 +102,25 @@ func parseComposeHelpValueFlags(help string) map[string]bool {
 	}
 	return flags
 }
+
+// TestComposeVerbBaselineDrift pins the composeVerbBaseline hint table against
+// the live `docker compose --help` command list. A verb docker advertises but
+// the baseline lacks means stale unknown-command hints, so it fails; baseline
+// entries missing from the local docker version are only logged (the local
+// docker may simply be older).
+func TestComposeVerbBaselineDrift(t *testing.T) {
+	verbs, err := discoverComposeVerbs()
+	if err != nil {
+		t.Skipf("docker compose --help unavailable: %v", err)
+	}
+	for verb := range verbs {
+		if !composeVerbBaseline[verb] {
+			t.Errorf("docker compose --help lists %q but composeVerbBaseline is missing it", verb)
+		}
+	}
+	for verb := range composeVerbBaseline {
+		if !verbs[verb] {
+			t.Logf("composeVerbBaseline contains %q but the local docker compose does not list it (older docker?)", verb)
+		}
+	}
+}
