@@ -70,9 +70,9 @@ services:
 			writeFixtureFiles(t, dir, policyYAML, composeYAML)
 
 			ds := &fakeBuilderDockerServices{}
-			inv, err := ParseInvocation([]string{"show-compose"})
+			inv, err := ParseComposeInvocation([]string{"show-compose"})
 			if err != nil {
-				t.Fatalf("ParseInvocation: %v", err)
+				t.Fatalf("ParseComposeInvocation: %v", err)
 			}
 			gotYAML, _, err := buildInjectionOverride(context.Background(), ds, "vaka.yaml", inv, tc.vakaInitPresent)
 			if err != nil {
@@ -122,17 +122,17 @@ services:
 
 	var prebuildCalls int
 	var prebuildArgs []string
-	setExecDockerComposeForTest(t, func(inv *Invocation, overrideYAML string, extraEnv []string) error {
-		if overrideYAML == "" && len(inv.ComposeArgs) > 0 && inv.ComposeArgs[0] == "build" {
+	setExecDockerComposeForTest(t, func(inv *ComposeInvocation, overrideYAML string, extraEnv []string) error {
+		if overrideYAML == "" && len(inv.Args) > 0 && inv.Args[0] == "build" {
 			prebuildCalls++
-			prebuildArgs = append([]string{}, inv.ComposeArgs...)
+			prebuildArgs = append([]string{}, inv.Args...)
 		}
 		return nil
 	})
 
-	inv, err := ParseInvocation([]string{"show-compose", "--build"})
+	inv, err := ParseComposeInvocation([]string{"show-compose", "--build"})
 	if err != nil {
-		t.Fatalf("ParseInvocation: %v", err)
+		t.Fatalf("ParseComposeInvocation: %v", err)
 	}
 	_, _, err = buildInjectionOverride(context.Background(), ds, "vaka.yaml", inv, true)
 	if err != nil {

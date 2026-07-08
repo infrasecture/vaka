@@ -6,13 +6,19 @@ import (
 	"strings"
 )
 
-// Invocation is the canonical parsed representation of one vaka CLI invocation.
-// It preserves argv token ordering while separating vaka-only flags from compose
-// argv and precomputing compose-aware metadata used across execution paths.
-type Invocation struct {
-	RawArgs     []string
-	VakaFlags   map[string]string
-	ComposeArgs []string
+// RootInvocation is the parsed root layer of one vaka CLI invocation: the
+// vaka-owned flags plus the remaining argv destined for command dispatch.
+type RootInvocation struct {
+	VakaFile        string
+	VakaInitPresent bool
+	Rest            []string
+}
+
+// ComposeInvocation is the canonical parsed representation of one compose-bound
+// argv slice (vaka root flags already stripped). It preserves token ordering
+// and precomputes compose-aware metadata used across execution paths.
+type ComposeInvocation struct {
+	Args []string
 
 	Subcommand     string
 	SubcommandIdx  int
@@ -26,7 +32,7 @@ type Invocation struct {
 	ProjectDirectory string
 	BuildRequested   bool
 
-	lastFileTokenIdx int // index in ComposeArgs for the last pre-subcommand -f/--file value token
+	lastFileTokenIdx int // index in Args for the last pre-subcommand -f/--file value token
 }
 
 // composeGlobalFlagsWithValue is the set of docker compose global flags that
@@ -73,18 +79,30 @@ var vakaFlagsBool = map[string]bool{
 	"--vaka-init-present": true,
 }
 
-// ParseInvocation parses raw os.Args[1:] into a single invocation model used by
-// all execution paths.
-func ParseInvocation(argv []string) (*Invocation, error) {
-	flags, composeArgs, err := extractVakaFlags(argv)
+// parseRootArgs parses raw os.Args[1:] into the vaka root layer: strict
+// --vaka-* flags plus the remaining argv for command dispatch.
+func parseRootArgs(argv []string) (*RootInvocation, error) {
+	flags, rest, err := extractVakaFlags(argv)
 	if err != nil {
 		return nil, err
 	}
+	root := &RootInvocation{
+		VakaFile:        flags["--vaka-file"],
+		VakaInitPresent: flags["--vaka-init-present"] == "true",
+		Rest:            rest,
+	}
+	if root.VakaFile == "" {
+		root.VakaFile = "vaka.yaml"
+	}
+	return root, nil
+}
 
-	inv := &Invocation{
-		RawArgs:          append([]string{}, argv...),
-		VakaFlags:        flags,
-		ComposeArgs:      composeArgs,
+// ParseComposeInvocation parses a compose-bound argv slice (vaka root flags
+// already stripped) into the invocation model used by all compose execution
+// paths.
+func ParseComposeInvocation(argv []string) (*ComposeInvocation, error) {
+	inv := &ComposeInvocation{
+		Args:             append([]string{}, argv...),
 		SubcommandIdx:    -1,
 		lastFileTokenIdx: -1,
 	}
@@ -161,8 +179,8 @@ func extractVakaFlags(argv []string) (map[string]string, []string, error) {
 	return flags, rest, nil
 }
 
-func (inv *Invocation) scanComposeArgs() error {
-	args := inv.ComposeArgs
+func (inv *ComposeInvocation) scanComposeArgs() error {
+	args := inv.Args
 	for i := 0; i < len(args); i++ {
 		tok := args[i]
 		if tok == "--" {
@@ -220,7 +238,7 @@ func (inv *Invocation) scanComposeArgs() error {
 	return nil
 }
 
-func (inv *Invocation) detectBuildRequested() {
+func (inv *ComposeInvocation) detectBuildRequested() {
 	if inv.Subcommand == "" {
 		return
 	}
@@ -235,10 +253,10 @@ func (inv *Invocation) detectBuildRequested() {
 	}
 }
 
-func (inv *Invocation) dockerComposeArgs() []string {
-	out := make([]string, 0, len(inv.ComposeArgs)+1)
+func (inv *ComposeInvocation) dockerComposeArgs() []string {
+	out := make([]string, 0, len(inv.Args)+1)
 	out = append(out, "compose")
-	out = append(out, inv.ComposeArgs...)
+	out = append(out, inv.Args...)
 	return out
 }
 

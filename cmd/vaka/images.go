@@ -69,7 +69,7 @@ var loadDockerConfigFile = dockerconfig.LoadDefaultConfigFile
 //  2. DOCKER_CONTEXT
 //  3. currentContext from Docker config (DOCKER_CONFIG/config.json)
 //  4. default context
-func NewDockerServices(inv *Invocation) (DockerServices, error) {
+func NewDockerServices(inv *ComposeInvocation) (DockerServices, error) {
 	cfg := loadDockerConfigFile(os.Stderr)
 	opts := newDockerClientOptions(inv)
 	targetDesc := dockerTargetDescription(cfg)
@@ -84,7 +84,7 @@ func NewDockerServices(inv *Invocation) (DockerServices, error) {
 	}, nil
 }
 
-func newDockerClientOptions(_ *Invocation) *dockerflags.ClientOptions {
+func newDockerClientOptions(_ *ComposeInvocation) *dockerflags.ClientOptions {
 	opts := dockerflags.NewClientOptions()
 	fs := pflag.NewFlagSet("vaka-docker", pflag.ContinueOnError)
 	fs.SetOutput(io.Discard)

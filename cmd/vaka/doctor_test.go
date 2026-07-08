@@ -292,7 +292,7 @@ func TestDoctorCheckRequiredVakaInitImageMissing(t *testing.T) {
 	defer func() { version = origVersion }()
 
 	fake := &fakeDoctorDockerServices{imageExists: false}
-	newDoctorDockerServices = func(inv *Invocation) (DockerServices, error) {
+	newDoctorDockerServices = func(inv *ComposeInvocation) (DockerServices, error) {
 		if inv != nil {
 			t.Fatalf("newDoctorDockerServices invocation = %#v, want nil", inv)
 		}
@@ -324,7 +324,7 @@ func TestDoctorCheckRequiredVakaInitImagePresent(t *testing.T) {
 	defer func() { version = origVersion }()
 
 	fake := &fakeDoctorDockerServices{imageExists: true}
-	newDoctorDockerServices = func(inv *Invocation) (DockerServices, error) {
+	newDoctorDockerServices = func(inv *ComposeInvocation) (DockerServices, error) {
 		if inv != nil {
 			t.Fatalf("newDoctorDockerServices invocation = %#v, want nil", inv)
 		}
@@ -356,7 +356,7 @@ func TestDoctorFixPullsRequiredVakaInitImage(t *testing.T) {
 	defer func() { version = origVersion }()
 
 	fake := &fakeDoctorDockerServices{}
-	newDoctorDockerServices = func(inv *Invocation) (DockerServices, error) {
+	newDoctorDockerServices = func(inv *ComposeInvocation) (DockerServices, error) {
 		if inv != nil {
 			t.Fatalf("newDoctorDockerServices invocation = %#v, want nil", inv)
 		}
@@ -392,7 +392,7 @@ func TestDoctorRequiredVakaInitImageDevBuildNonFixable(t *testing.T) {
 	defer func() { version = origVersion }()
 
 	ctorCount := 0
-	newDoctorDockerServices = func(inv *Invocation) (DockerServices, error) {
+	newDoctorDockerServices = func(inv *ComposeInvocation) (DockerServices, error) {
 		ctorCount++
 		return &fakeDoctorDockerServices{}, nil
 	}
@@ -430,7 +430,7 @@ func TestDoctorRequiredVakaInitImageFixReusesDockerServicesCache(t *testing.T) {
 
 	fake := &fakeDoctorDockerServices{imageExists: false}
 	ctorCount := 0
-	newDoctorDockerServices = func(inv *Invocation) (DockerServices, error) {
+	newDoctorDockerServices = func(inv *ComposeInvocation) (DockerServices, error) {
 		if inv != nil {
 			t.Fatalf("newDoctorDockerServices invocation = %#v, want nil", inv)
 		}

@@ -13,11 +13,11 @@ const (
 // defaults is the list of compose files to inject when the user supplied no
 // explicit -f flags (output of resolveComposeInput). Pass nil only when
 // inv.GlobalFiles is non-empty.
-func injectFDOverride(inv *Invocation, defaults []string) []string {
+func injectFDOverride(inv *ComposeInvocation, defaults []string) []string {
 	dockerArgs := inv.dockerComposeArgs()
 
 	// We insert after the last explicit compose file token before subcommand.
-	// inv.lastFileTokenIdx is indexed in inv.ComposeArgs, so add one for the
+	// inv.lastFileTokenIdx is indexed in inv.Args, so add one for the
 	// leading "compose" token in dockerArgs.
 	if inv.lastFileTokenIdx >= 0 {
 		insertAfter := inv.lastFileTokenIdx + 1

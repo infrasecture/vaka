@@ -69,7 +69,7 @@ func classifySubcmd(subcmd string) dispatchPath {
 // bytes are streamed through an inherited pipe FD so stdin remains attached to
 // the user's terminal.
 // extraEnv, when non-nil, is appended to the inherited environment.
-func execDockerCompose(inv *Invocation, overrideYAML string, extraEnv []string) error {
+func execDockerCompose(inv *ComposeInvocation, overrideYAML string, extraEnv []string) error {
 	var dockerArgs []string
 	if overrideYAML != "" {
 		defaults := []string{}
@@ -132,7 +132,7 @@ func execDockerCompose(inv *Invocation, overrideYAML string, extraEnv []string) 
 // runFull handles full-override commands: up, run, create, volumes.
 // It loads and validates vaka.yaml, ensures the __vaka-init image when needed,
 // builds the full compose override, and delegates to execDockerCompose.
-func runFull(vakaFile string, inv *Invocation, vakaInitPresent bool) error {
+func runFull(vakaFile string, inv *ComposeInvocation, vakaInitPresent bool) error {
 	ctx := context.Background()
 	ds, err := newDockerServices(inv)
 	if err != nil {
@@ -154,7 +154,7 @@ func buildInjectionOverride(
 	ctx context.Context,
 	ds DockerServices,
 	vakaFile string,
-	inv *Invocation,
+	inv *ComposeInvocation,
 	vakaInitPresent bool,
 ) (overrideYAML string, extraEnv []string, err error) {
 	composeInput, err := resolveComposeInput(inv)
@@ -183,8 +183,8 @@ func buildInjectionOverride(
 		buildArgs := append([]string{}, inv.ComposeGlobals...)
 		buildArgs = append(buildArgs, "build")
 		buildArgs = append(buildArgs, toBuild...)
-		buildInv := &Invocation{
-			ComposeArgs: buildArgs,
+		buildInv := &ComposeInvocation{
+			Args: buildArgs,
 		}
 		if err := execDockerComposeFn(buildInv, "", nil); err != nil {
 			return "", nil, fmt.Errorf("pre-build: %w", err)
@@ -278,7 +278,7 @@ func referenceOverrideYAML(vakaInitPresent bool, imageRef string) (string, error
 
 // runReference handles all reference commands by injecting only the minimal
 // __vaka-init compose service override.
-func runReference(inv *Invocation, vakaInitPresent bool) error {
+func runReference(inv *ComposeInvocation, vakaInitPresent bool) error {
 	overrideYAML, err := referenceOverrideYAML(vakaInitPresent, vakaInitBaseImage+":"+version)
 	if err != nil {
 		return fmt.Errorf("build vaka-init container override: %w", err)

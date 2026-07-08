@@ -36,19 +36,18 @@ func main() {
 	)
 	configureRootHelp(rootCmd)
 
-	raw := os.Args[1:]
-	inv, err := ParseInvocation(raw)
+	root, err := parseRootArgs(os.Args[1:])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "vaka:", err)
 		os.Exit(1)
 	}
-
-	// Step 1: Extract vaka-specific flags (--vaka-file, --vaka-init-present).
-	vakaFile := inv.VakaFlags["--vaka-file"]
-	if vakaFile == "" {
-		vakaFile = "vaka.yaml"
+	inv, err := ParseComposeInvocation(root.Rest)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "vaka:", err)
+		os.Exit(1)
 	}
-	vakaInitPresent := inv.VakaFlags["--vaka-init-present"] == "true"
+	vakaFile := root.VakaFile
+	vakaInitPresent := root.VakaInitPresent
 
 	if inv.Subcommand == "show-compose" {
 		if isProxySubcommandHelp(inv) {
@@ -67,7 +66,7 @@ func main() {
 	case pathNative:
 		// cobra-handled commands (validate, show-nft, doctor, version, help/completion).
 		// SetArgs so cobra sees a clean argv (--vaka-* already stripped).
-		rootCmd.SetArgs(inv.ComposeArgs)
+		rootCmd.SetArgs(inv.Args)
 		if err := rootCmd.Execute(); err != nil {
 			os.Exit(1)
 		}
@@ -99,7 +98,7 @@ func main() {
 	}
 }
 
-func isProxySubcommandHelp(inv *Invocation) bool {
+func isProxySubcommandHelp(inv *ComposeInvocation) bool {
 	if len(inv.PostSubcommand) == 0 {
 		return false
 	}
