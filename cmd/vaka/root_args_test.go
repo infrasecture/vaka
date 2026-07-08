@@ -7,14 +7,14 @@ import (
 
 func TestParseRootArgsVakaFlagExtraction(t *testing.T) {
 	t.Run("extracts --vaka-file=<path> and preserves remaining args", func(t *testing.T) {
-		root, err := parseRootArgs([]string{"--vaka-file=prod.yaml", "-f", "a.yaml", "up", "--build"})
+		root, err := parseRootArgs([]string{"--vaka-file=prod.yaml", "compose", "-f", "a.yaml", "up", "--build"})
 		if err != nil {
 			t.Fatalf("parseRootArgs: %v", err)
 		}
 		if root.VakaFile != "prod.yaml" {
 			t.Fatalf("VakaFile=%q, want prod.yaml", root.VakaFile)
 		}
-		assertArgv(t, []string{"-f", "a.yaml", "up", "--build"}, root.Rest)
+		assertArgv(t, []string{"compose", "-f", "a.yaml", "up", "--build"}, root.Rest)
 	})
 
 	t.Run("no vaka flags: args unchanged and defaults applied", func(t *testing.T) {
@@ -58,6 +58,46 @@ func TestParseRootArgsVakaFlagExtraction(t *testing.T) {
 			t.Fatalf("VakaFile=%q, want default vaka.yaml", root.VakaFile)
 		}
 		assertArgv(t, []string{"--", "--vaka-file", "x"}, root.Rest)
+	})
+}
+
+func TestParseRootArgsRejectsLeadingNonVakaFlags(t *testing.T) {
+	t.Run("compose global flag before command suggests vaka compose form", func(t *testing.T) {
+		_, err := parseRootArgs([]string{"-f", "a.yaml", "up"})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "vaka compose -f a.yaml up") {
+			t.Fatalf("error %q missing compose suggestion", err.Error())
+		}
+	})
+
+	t.Run("docker top-level global keeps targeted guidance", func(t *testing.T) {
+		_, err := parseRootArgs([]string{"--context", "rootless", "up"})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "docker context use rootless") {
+			t.Fatalf("error %q missing docker context guidance", err.Error())
+		}
+	})
+
+	t.Run("unknown flag before command gets placement rule", func(t *testing.T) {
+		_, err := parseRootArgs([]string{"--dry-run", "up"})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "vaka compose --dry-run up") {
+			t.Fatalf("error %q missing compose placement hint", err.Error())
+		}
+	})
+
+	t.Run("-h and --help pass through to cobra", func(t *testing.T) {
+		root, err := parseRootArgs([]string{"--help"})
+		if err != nil {
+			t.Fatalf("parseRootArgs: %v", err)
+		}
+		assertArgv(t, []string{"--help"}, root.Rest)
 	})
 }
 

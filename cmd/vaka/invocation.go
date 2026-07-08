@@ -114,20 +114,22 @@ func ParseComposeInvocation(argv []string) (*ComposeInvocation, error) {
 }
 
 // extractVakaFlags splits raw os.Args[1:] into vaka-specific flags and
-// compose-destined args.
+// command-destined args.
 //
 // Strict mode:
-//   - `--vaka-*` flags are accepted only before the compose subcommand.
+//   - `--vaka-*` flags are accepted only before the command.
 //   - value-taking `--vaka-*` flags require `=` form: `--flag=<value>`.
-//   - unknown pre-subcommand `--vaka-*` flags are hard errors with suggestion.
-//   - post-subcommand tokens are forwarded unchanged, except known misplaced
+//   - unknown pre-command `--vaka-*` flags are hard errors with suggestion.
+//   - any other pre-command flag is a hard error (`-h`/`--help` excepted):
+//     compose global flags belong after the `compose` command.
+//   - post-command tokens are forwarded unchanged, except known misplaced
 //     vaka flags which fail fast with a positioning hint.
 func extractVakaFlags(argv []string) (map[string]string, []string, error) {
 	flags := make(map[string]string)
 	rest := make([]string, 0, len(argv))
 
-	subcommand := ""
-	seenSubcommand := false
+	command := ""
+	seenCommand := false
 	for i := 0; i < len(argv); i++ {
 		tok := argv[i]
 		if tok == "--" {
@@ -135,18 +137,7 @@ func extractVakaFlags(argv []string) (map[string]string, []string, error) {
 			break
 		}
 
-		if !seenSubcommand {
-			if _, _, consumed, _, ok := parseValueTakingToken(argv, i, composeGlobalFlagsWithValue); ok {
-				rest = append(rest, argv[i:i+consumed]...)
-				i += consumed - 1
-				continue
-			}
-			if _, _, consumed, _, ok := parseValueTakingToken(argv, i, dockerGlobalFlagsWithValue); ok {
-				rest = append(rest, argv[i:i+consumed]...)
-				i += consumed - 1
-				continue
-			}
-
+		if !seenCommand {
 			if flag, value, err := parseVakaValueFlag(tok); err != nil {
 				return nil, nil, err
 			} else if flag != "" {
@@ -160,23 +151,43 @@ func extractVakaFlags(argv []string) (map[string]string, []string, error) {
 			if strings.HasPrefix(tok, "--vaka-") {
 				return nil, nil, unknownVakaFlagError(tok)
 			}
-
-			if !strings.HasPrefix(tok, "-") {
-				seenSubcommand = true
-				subcommand = tok
+			if tok == "-h" || tok == "--help" {
 				rest = append(rest, tok)
 				continue
 			}
+			if strings.HasPrefix(tok, "-") {
+				return nil, nil, rootLeadingFlagError(argv[i:])
+			}
+
+			seenCommand = true
+			command = tok
 			rest = append(rest, tok)
 			continue
 		}
 
 		if isKnownVakaFlagToken(tok) {
-			return nil, nil, fmt.Errorf("vaka flag %q must appear before subcommand %q", tok, subcommand)
+			return nil, nil, fmt.Errorf("vaka flag %q must appear before subcommand %q", tok, command)
 		}
 		rest = append(rest, tok)
 	}
 	return flags, rest, nil
+}
+
+// rootLeadingFlagError explains a non-vaka flag encountered before the command.
+// Docker top-level globals keep their targeted guidance; compose globals point
+// at the `vaka compose` form; anything else gets the generic placement rule.
+func rootLeadingFlagError(tail []string) error {
+	tok := tail[0]
+	if matched, value, _, usedEquals, ok := parseValueTakingToken(tail, 0, dockerGlobalFlagsWithValue); ok {
+		return unsupportedDockerGlobalError(matched, value, usedEquals)
+	}
+	if dockerGlobalBoolFlags[tok] {
+		return unsupportedDockerGlobalError(tok, "", false)
+	}
+	if matched, _, _, _, ok := parseValueTakingToken(tail, 0, composeGlobalFlagsWithValue); ok {
+		return fmt.Errorf("compose global flag %q must follow the compose command: try `vaka compose %s`", matched, strings.Join(tail, " "))
+	}
+	return fmt.Errorf("unknown flag %q before command; only --vaka-* flags may precede the command, and compose global flags belong after it: `vaka compose %s`", tok, strings.Join(tail, " "))
 }
 
 func (inv *ComposeInvocation) scanComposeArgs() error {

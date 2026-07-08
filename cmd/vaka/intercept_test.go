@@ -11,36 +11,28 @@ import (
 	"vaka.dev/vaka/pkg/policy"
 )
 
-func TestClassifySubcmd(t *testing.T) {
+func TestClassifyComposeVerb(t *testing.T) {
 	tests := []struct {
-		subcmd string
-		want   dispatchPath
+		verb string
+		want composeVerbClass
 	}{
-		{"up", pathRender},
-		{"run", pathRender},
-		{"create", pathRender},
-		{"volumes", pathReference},
-		{"down", pathReference},
-		{"stop", pathReference},
-		{"kill", pathReference},
-		{"rm", pathReference},
-		{"validate", pathNative},
-		{"show-nft", pathNative},
-		{"doctor", pathNative},
-		{"show-compose", pathNative},
-		{"version", pathNative},
-		{"help", pathNative},
-		{"completion", pathNative},
-		{"", pathNative},
-		{"logs", pathReference},
-		{"ps", pathReference},
-		{"exec", pathReference},
-		{"pull", pathReference},
-		{"foo", pathReference},
+		{"up", verbRender},
+		{"run", verbRender},
+		{"create", verbRender},
+		{"volumes", verbReference},
+		{"down", verbReference},
+		{"stop", verbReference},
+		{"kill", verbReference},
+		{"rm", verbReference},
+		{"logs", verbReference},
+		{"ps", verbReference},
+		{"exec", verbReference},
+		{"pull", verbReference},
+		{"foo", verbReference},
 	}
 	for _, tc := range tests {
-		if got := classifySubcmd(tc.subcmd); got != tc.want {
-			t.Errorf("classifySubcmd(%q) = %v, want %v", tc.subcmd, got, tc.want)
+		if got := classifyComposeVerb(tc.verb); got != tc.want {
+			t.Errorf("classifyComposeVerb(%q) = %v, want %v", tc.verb, got, tc.want)
 		}
 	}
 }

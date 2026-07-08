@@ -86,7 +86,7 @@ services:
 				if parseErr != nil {
 					return parseErr
 				}
-				return runShowCompose("vaka.yaml", showInv, true)
+				return runShowCompose("vaka.yaml", showInv, true, "")
 			})
 			if err != nil {
 				t.Fatalf("runShowCompose: %v", err)
