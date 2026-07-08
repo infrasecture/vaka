@@ -15,7 +15,16 @@ func newShowNftCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "show-nft <service>",
 		Short: "Print the nft ruleset that would be applied for a service (dry-run)",
-		Args:  cobra.ExactArgs(1),
+		Args: func(cmd *cobra.Command, args []string) error {
+			switch len(args) {
+			case 1:
+				return nil
+			case 0:
+				return fmt.Errorf("missing required <service> argument (usage: %s)", cmd.UseLine())
+			default:
+				return fmt.Errorf("expected exactly one <service> argument, got %d (usage: %s)", len(args), cmd.UseLine())
+			}
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			service := args[0]
 

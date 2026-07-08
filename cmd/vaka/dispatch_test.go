@@ -246,6 +246,30 @@ services:
 	}
 }
 
+func TestShowNftArgErrorsNameTheMissingService(t *testing.T) {
+	t.Run("no args", func(t *testing.T) {
+		_, err := runRootCapturingExec(t, []string{"show-nft"})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		for _, want := range []string{"missing required <service> argument", "vaka show-nft <service>"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("error %q missing %q", err.Error(), want)
+			}
+		}
+	})
+
+	t.Run("too many args", func(t *testing.T) {
+		_, err := runRootCapturingExec(t, []string{"show-nft", "app", "db"})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "expected exactly one <service> argument, got 2") {
+			t.Fatalf("error %q missing arg-count explanation", err.Error())
+		}
+	})
+}
+
 func TestRootWithoutArgsShowsHelp(t *testing.T) {
 	calls, err := runRootCapturingExec(t, nil)
 	if err != nil {
