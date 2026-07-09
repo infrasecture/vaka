@@ -75,6 +75,10 @@ Full install options are in [docs/installation.md](docs/installation.md).
 
 ## Quickstart
 
+The fastest way to see a realistic policy is the [Codex + LiteLLM example](examples/codex). It runs Codex in one container, routes model traffic through a LiteLLM sidecar, and uses vaka to prevent the Codex container from reaching the internet directly.
+
+Use its policy as the starting point: [`examples/codex/vaka.yaml`](examples/codex/vaka.yaml).
+
 For your own Compose project, create `vaka.yaml` next to `docker-compose.yaml`. Each key under `services:` must match a Compose service name.
 
 Check the setup:
