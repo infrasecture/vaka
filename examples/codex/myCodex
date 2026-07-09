@@ -120,7 +120,7 @@ ensure_compose_command() {
   fi
 
   if command -v vaka >/dev/null 2>&1; then
-    COMPOSE_COMMAND=(vaka --vaka-file "${SCRIPT_DIR}/vaka.yaml")
+    COMPOSE_COMMAND=(vaka "--vaka-file=${SCRIPT_DIR}/vaka.yaml" compose)
     return
   fi
 

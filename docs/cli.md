@@ -47,6 +47,24 @@ vaka compose --project-directory srv logs -f app
 Compose commands vaka does not know about are forwarded with the reference
 overlay, so new docker compose subcommands keep working.
 
+## Compose Help
+
+Help for the Compose namespace and its shorthands comes from the installed
+Docker Compose plugin:
+
+```bash
+vaka compose --help
+vaka compose <command> --help
+vaka <shorthand> --help
+vaka help compose
+vaka help <shorthand>
+```
+
+These forms run Docker Compose help without loading a project or injecting a
+vaka override, so the available commands and options match the installed
+Compose version. Running bare `vaka compose` also displays Docker Compose
+usage.
+
 ## `vaka up` (shorthand)
 
 ```bash
@@ -144,6 +162,33 @@ vaka version
 ```
 
 Prints the version stamped at build time.
+
+## `vaka completion`
+
+Generate a completion script for Bash, Zsh, Fish, or PowerShell:
+
+```bash
+# Bash
+source <(vaka completion bash)
+
+# Zsh
+source <(vaka completion zsh)
+
+# Fish
+vaka completion fish | source
+
+# PowerShell
+vaka completion powershell | Out-String | Invoke-Expression
+```
+
+Save the generated script in the shell's completion directory to load it in
+future sessions. Bash scripts embed the path of the `vaka` executable that
+generated them; regenerate a saved script if the executable moves.
+
+Vaka completes its native command tree. Compose-backed commands and
+shorthands intentionally provide no vaka-generated argument candidates and
+disable filename fallback; use Docker Compose documentation for their flags
+and arguments.
 
 ## Vaka Wrapper Flags
 

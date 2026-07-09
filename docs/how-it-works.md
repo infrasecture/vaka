@@ -16,7 +16,9 @@ flowchart LR
 
 ## Compose Override
 
-For `up`, `run`, and `create`, vaka generates a Compose override in memory and streams it to `docker compose` through `/dev/fd/3`.
+For `vaka compose up`, `vaka compose run`, and `vaka compose create`, vaka
+generates a Compose override in memory and streams it to `docker compose`
+through `/dev/fd/3`. `up` and `run` also have equivalent top-level shorthands.
 
 The override:
 
