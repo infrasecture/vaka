@@ -214,16 +214,3 @@ vaka compose --vaka-file=policies/prod.yaml up
 ```
 
 Docker top-level globals such as `--context`, `-c`, `--host`, `-H`, `--config`, TLS flags, `--debug`, and `--log-level` are rejected; use Docker environment or context configuration instead.
-
-## Breaking Changes In 0.x
-
-The compose namespace restructure changed the following pre-1.0 behavior:
-
-- Compose global flags moved under `compose`: `vaka -f x.yml up` →
-  `vaka compose -f x.yml up`.
-- `vaka create` was demoted: use `vaka compose create`.
-- Unknown top-level commands now error instead of being forwarded to
-  docker compose; Compose verbs outside the shorthand set need
-  `vaka compose <verb>`.
-- `show-compose` takes compose inputs as flags after the command:
-  `vaka -f x.yml show-compose` → `vaka show-compose -f x.yml`.

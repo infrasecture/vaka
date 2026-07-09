@@ -99,23 +99,5 @@ vaka show-compose -o /tmp/vaka-override.yaml
 
 ## Build-Only Services
 
-If a Compose service has `build:` but no `image:`, vaka may not be able to inspect image defaults before the build. Either add an `image:` name or provide runtime metadata explicitly:
-
-```yaml
-services:
-  app:
-    build: .
-    image: app:local
-```
-
-or:
-
-```yaml
-services:
-  app:
-    build: .
-    user: "1000:1000"
-    entrypoint: ["/usr/local/bin/app"]
-```
-
-Without image inspection or explicit metadata, `vaka up` fails before containers start.
+For build-only service failures, see
+[Build-Only Services](troubleshooting.md#build-only-services).
