@@ -89,6 +89,7 @@ Vaka flags precede the command and value-taking ones require '=' form:
 		newShowNftCmd(),
 		newDoctorCmd(),
 		newShowComposeCmd(root),
+		newCompletionCmd(),
 		version,
 	} {
 		c.GroupID = groupVaka

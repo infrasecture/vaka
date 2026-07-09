@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 )
@@ -124,5 +125,30 @@ func TestShowComposeRegisteredForCobraHelp(t *testing.T) {
 	}
 	if !strings.Contains(got, "--vaka-file") {
 		t.Fatalf("show-compose help missing root-flag placement note:\n%s", got)
+	}
+}
+
+func TestBashCompletionPinsGeneratorExecutable(t *testing.T) {
+	root := newRootCmd(&RootInvocation{VakaFile: "vaka.yaml"})
+
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"completion", "bash"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("root.Execute: %v", err)
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	got := out.String()
+	if strings.Contains(got, `requestComp="${words[0]} __complete ${args[*]}"`) {
+		t.Fatalf("bash completion still calls the command from the input line")
+	}
+	want := `requestComp="` + shellQuote(exe) + ` __complete ${args[*]}"`
+	if !strings.Contains(got, want) {
+		t.Fatalf("bash completion missing pinned request command %q", want)
 	}
 }

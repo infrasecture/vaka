@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"reflect"
@@ -208,6 +209,36 @@ func TestComposeHelpAndMetadataProxying(t *testing.T) {
 				if calls[0].args[i] != tc.wantArgs[i] {
 					t.Fatalf("args = %v, want %v", calls[0].args, tc.wantArgs)
 				}
+			}
+		})
+	}
+}
+
+func TestComposeBackedCompletionIsQuietAndDisablesFileFallback(t *testing.T) {
+	for _, args := range [][]string{
+		{"__complete", "compose", ""},
+		{"__complete", "up", ""},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			setExecDockerComposeForTest(t, func(inv *ComposeInvocation, overrideYAML string, extraEnv []string) error {
+				t.Fatalf("completion must not execute docker compose, got args %v", inv.Args)
+				return nil
+			})
+
+			root := newRootCmd(&RootInvocation{VakaFile: "vaka.yaml", VakaInitPresent: true, Rest: args})
+			var stdout, stderr bytes.Buffer
+			root.SetArgs(args)
+			root.SetOut(&stdout)
+			root.SetErr(&stderr)
+
+			if err := root.Execute(); err != nil {
+				t.Fatalf("execute completion: %v", err)
+			}
+			if got := stdout.String(); got != ":4\n" {
+				t.Fatalf("completion stdout = %q, want no-file directive only", got)
+			}
+			if strings.Contains(stderr.String(), "docker compose") {
+				t.Fatalf("completion stderr should not contain docker compose proxy output:\n%s", stderr.String())
 			}
 		})
 	}

@@ -29,7 +29,7 @@ func newComposeCmd(root *RootInvocation) *cobra.Command {
 			return runComposeCLI(root, args)
 		},
 		ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-			return nil, cobra.ShellCompDirectiveDefault
+			return nil, cobra.ShellCompDirectiveNoFileComp
 		},
 	}
 	cmd.SetHelpFunc(proxyComposeHelp(""))
