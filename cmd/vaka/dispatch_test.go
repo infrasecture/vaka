@@ -1,0 +1,312 @@
+package main
+
+import (
+	"bytes"
+	"errors"
+	"io"
+	"reflect"
+	"strings"
+	"testing"
+)
+
+// composeExecCall records one execDockerComposeFn invocation.
+type composeExecCall struct {
+	args         []string
+	overrideYAML string
+	extraEnv     []string
+}
+
+// runRootCapturingExec executes the vaka command tree with argv and returns
+// every compose execution it produced, with the docker services factory and
+// compose exec hook faked out.
+func runRootCapturingExec(t *testing.T, argv []string) ([]composeExecCall, error) {
+	t.Helper()
+	var calls []composeExecCall
+	setExecDockerComposeForTest(t, func(inv *ComposeInvocation, overrideYAML string, extraEnv []string) error {
+		calls = append(calls, composeExecCall{
+			args:         append([]string{}, inv.Args...),
+			overrideYAML: overrideYAML,
+			extraEnv:     append([]string{}, extraEnv...),
+		})
+		return nil
+	})
+	setDockerServicesFactoryForTest(t, &fakeBuilderDockerServices{})
+
+	root := newRootCmd(&RootInvocation{VakaFile: "vaka.yaml", VakaInitPresent: true, Rest: argv})
+	root.SetArgs(argv)
+	root.SetOut(io.Discard)
+	root.SetErr(io.Discard)
+	err := root.Execute()
+	return calls, err
+}
+
+func stubComposeVerbDiscoveryUnavailable(t *testing.T) {
+	t.Helper()
+	old := dockerComposeHelpOutput
+	dockerComposeHelpOutput = func() ([]byte, error) {
+		return nil, errors.New("docker unavailable in tests")
+	}
+	t.Cleanup(func() {
+		dockerComposeHelpOutput = old
+	})
+}
+
+// TestShorthandEquivalence proves that every top-level shorthand produces a
+// compose execution byte-identical to its `vaka compose ...` form, at the
+// execDockerComposeFn boundary.
+func TestShorthandEquivalence(t *testing.T) {
+	policyYAML := `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+`
+	composeYAML := `
+services:
+  app:
+    image: alpine:3.20
+    user: "1000:1000"
+    entrypoint: ["sleep"]
+    command: ["infinity"]
+`
+
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"up", []string{"up", "-d"}},
+		{"up with build", []string{"up", "--build"}},
+		{"down", []string{"down", "--volumes"}},
+		{"start", []string{"start", "app"}},
+		{"stop", []string{"stop", "app"}},
+		{"run", []string{"run", "--rm", "app", "sh"}},
+		{"run with payload dashes", []string{"run", "app", "sh", "-c", "echo hi"}},
+		{"exec", []string{"exec", "app", "sh"}},
+		{"logs", []string{"logs", "-f", "app"}},
+		{"ps", []string{"ps", "-a"}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			chdirForTest(t, dir)
+			writeFixtureFiles(t, dir, policyYAML, composeYAML)
+
+			shorthandCalls, err := runRootCapturingExec(t, tc.args)
+			if err != nil {
+				t.Fatalf("shorthand execute: %v", err)
+			}
+			composeCalls, err := runRootCapturingExec(t, append([]string{"compose"}, tc.args...))
+			if err != nil {
+				t.Fatalf("compose execute: %v", err)
+			}
+
+			if len(shorthandCalls) == 0 {
+				t.Fatal("shorthand produced no compose execution")
+			}
+			if !reflect.DeepEqual(shorthandCalls, composeCalls) {
+				t.Fatalf("shorthand and compose executions differ\nshorthand: %+v\ncompose:   %+v", shorthandCalls, composeCalls)
+			}
+		})
+	}
+}
+
+func TestUnknownTopLevelCommandErrors(t *testing.T) {
+	stubComposeVerbDiscoveryUnavailable(t)
+
+	tests := []struct {
+		name    string
+		args    []string
+		want    []string
+		wantNot []string
+	}{
+		{
+			name: "compose verb points at namespace",
+			args: []string{"pull"},
+			want: []string{"vaka compose pull", "up, down, start, stop, run, exec, logs, ps"},
+		},
+		{
+			name: "demoted create points at namespace",
+			args: []string{"create"},
+			want: []string{"vaka compose create"},
+		},
+		{
+			name: "compose verb with flags still points at namespace",
+			args: []string{"pull", "-q"},
+			want: []string{"vaka compose pull"},
+		},
+		{
+			name:    "non-compose token is a plain unknown command",
+			args:    []string{"frobnicate"},
+			want:    []string{"unknown command \"frobnicate\""},
+			wantNot: []string{"vaka compose"},
+		},
+		{
+			name: "near-miss native command gets suggestion",
+			args: []string{"validat"},
+			want: []string{"Did you mean this?", "validate"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			calls, err := runRootCapturingExec(t, tc.args)
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if len(calls) != 0 {
+				t.Fatalf("unknown command must not execute docker compose, got %+v", calls)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("error %q missing %q", err.Error(), want)
+				}
+			}
+			for _, wantNot := range tc.wantNot {
+				if strings.Contains(err.Error(), wantNot) {
+					t.Fatalf("error %q unexpectedly contains %q", err.Error(), wantNot)
+				}
+			}
+		})
+	}
+}
+
+func TestComposeHelpAndMetadataProxying(t *testing.T) {
+	tests := []struct {
+		name     string
+		args     []string
+		wantArgs []string
+	}{
+		{"bare compose proxies docker usage", []string{"compose"}, nil},
+		{"compose --help proxies", []string{"compose", "--help"}, []string{"--help"}},
+		{"shorthand --help proxies subcommand help", []string{"up", "--help"}, []string{"up", "--help"}},
+		{"compose subcommand --help proxies", []string{"compose", "logs", "-h"}, []string{"logs", "-h"}},
+		{"vaka help up proxies subcommand help", []string{"help", "up"}, []string{"up", "--help"}},
+		{"vaka help compose proxies compose help", []string{"help", "compose"}, []string{"--help"}},
+		{"compose version is metadata passthrough", []string{"compose", "version"}, []string{"version"}},
+		{"compose ls is metadata passthrough", []string{"compose", "ls", "-q"}, []string{"ls", "-q"}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			calls, err := runRootCapturingExec(t, tc.args)
+			if err != nil {
+				t.Fatalf("execute: %v", err)
+			}
+			if len(calls) != 1 {
+				t.Fatalf("expected exactly one compose execution, got %+v", calls)
+			}
+			if calls[0].overrideYAML != "" {
+				t.Fatalf("help/metadata proxying must not inject an override, got:\n%s", calls[0].overrideYAML)
+			}
+			if len(calls[0].args) != len(tc.wantArgs) {
+				t.Fatalf("args = %v, want %v", calls[0].args, tc.wantArgs)
+			}
+			for i := range tc.wantArgs {
+				if calls[0].args[i] != tc.wantArgs[i] {
+					t.Fatalf("args = %v, want %v", calls[0].args, tc.wantArgs)
+				}
+			}
+		})
+	}
+}
+
+func TestComposeBackedCompletionIsQuietAndDisablesFileFallback(t *testing.T) {
+	for _, args := range [][]string{
+		{"__complete", "compose", ""},
+		{"__complete", "up", ""},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			setExecDockerComposeForTest(t, func(inv *ComposeInvocation, overrideYAML string, extraEnv []string) error {
+				t.Fatalf("completion must not execute docker compose, got args %v", inv.Args)
+				return nil
+			})
+
+			root := newRootCmd(&RootInvocation{VakaFile: "vaka.yaml", VakaInitPresent: true, Rest: args})
+			var stdout, stderr bytes.Buffer
+			root.SetArgs(args)
+			root.SetOut(&stdout)
+			root.SetErr(&stderr)
+
+			if err := root.Execute(); err != nil {
+				t.Fatalf("execute completion: %v", err)
+			}
+			if got := stdout.String(); got != ":4\n" {
+				t.Fatalf("completion stdout = %q, want no-file directive only", got)
+			}
+			if strings.Contains(stderr.String(), "docker compose") {
+				t.Fatalf("completion stderr should not contain docker compose proxy output:\n%s", stderr.String())
+			}
+		})
+	}
+}
+
+func TestComposeNamespaceKeepsComposeGlobals(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	writeFixtureFiles(t, dir, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+`, `
+services:
+  app:
+    image: alpine:3.20
+    user: "1000:1000"
+    entrypoint: ["sleep"]
+    command: ["infinity"]
+`)
+
+	calls, err := runRootCapturingExec(t, []string{"compose", "-f", "docker-compose.yaml", "up", "-d"})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("expected one compose execution, got %+v", calls)
+	}
+	assertArgv(t, []string{"-f", "docker-compose.yaml", "up", "-d"}, calls[0].args)
+	if calls[0].overrideYAML == "" {
+		t.Fatal("render path must inject an override")
+	}
+}
+
+func TestShowNftArgErrorsNameTheMissingService(t *testing.T) {
+	t.Run("no args", func(t *testing.T) {
+		_, err := runRootCapturingExec(t, []string{"show-nft"})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		for _, want := range []string{"missing required <service> argument", "vaka show-nft <service>"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("error %q missing %q", err.Error(), want)
+			}
+		}
+	})
+
+	t.Run("too many args", func(t *testing.T) {
+		_, err := runRootCapturingExec(t, []string{"show-nft", "app", "db"})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "expected exactly one <service> argument, got 2") {
+			t.Fatalf("error %q missing arg-count explanation", err.Error())
+		}
+	})
+}
+
+func TestRootWithoutArgsShowsHelp(t *testing.T) {
+	calls, err := runRootCapturingExec(t, nil)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if len(calls) != 0 {
+		t.Fatalf("bare vaka must not execute docker compose, got %+v", calls)
+	}
+}

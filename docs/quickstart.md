@@ -55,17 +55,18 @@ vaka doctor --fix
 vaka up
 ```
 
-Use regular Compose flags as usual:
+Use regular Compose flags after the command as usual; Compose global flags
+such as `-f` require the `vaka compose` form:
 
 ```bash
 vaka up --build -d
-vaka -f compose.prod.yaml up -d
+vaka compose -f compose.prod.yaml up -d
 ```
 
-Use `--vaka-file=<path>` before the subcommand when the policy file is not named `vaka.yaml`:
+Use `--vaka-file=<path>` before the command when the policy file is not named `vaka.yaml`:
 
 ```bash
-vaka --vaka-file=policies/prod.yaml -f compose.prod.yaml up -d
+vaka --vaka-file=policies/prod.yaml compose -f compose.prod.yaml up -d
 ```
 
 ## 6. Operate The Stack
@@ -98,23 +99,5 @@ vaka show-compose -o /tmp/vaka-override.yaml
 
 ## Build-Only Services
 
-If a Compose service has `build:` but no `image:`, vaka may not be able to inspect image defaults before the build. Either add an `image:` name or provide runtime metadata explicitly:
-
-```yaml
-services:
-  app:
-    build: .
-    image: app:local
-```
-
-or:
-
-```yaml
-services:
-  app:
-    build: .
-    user: "1000:1000"
-    entrypoint: ["/usr/local/bin/app"]
-```
-
-Without image inspection or explicit metadata, `vaka up` fails before containers start.
+For build-only service failures, see
+[Build-Only Services](troubleshooting.md#build-only-services).

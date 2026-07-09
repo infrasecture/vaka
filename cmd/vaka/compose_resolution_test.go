@@ -13,9 +13,9 @@ func TestResolveComposeInputDefaultsComposeYaml(t *testing.T) {
 	writeComposeFile(t, filepath.Join(dir, "compose.yaml"))
 	writeComposeFile(t, filepath.Join(dir, "compose.override.yaml"))
 
-	inv, err := ParseInvocation([]string{"up"})
+	inv, err := ParseComposeInvocation([]string{"up"})
 	if err != nil {
-		t.Fatalf("ParseInvocation: %v", err)
+		t.Fatalf("ParseComposeInvocation: %v", err)
 	}
 	got, err := resolveComposeInput(inv)
 	if err != nil {
@@ -36,9 +36,9 @@ func TestResolveComposeInputDefaultsDockerComposeFallback(t *testing.T) {
 	writeComposeFile(t, filepath.Join(dir, "docker-compose.yaml"))
 	writeComposeFile(t, filepath.Join(dir, "docker-compose.override.yml"))
 
-	inv, err := ParseInvocation([]string{"up"})
+	inv, err := ParseComposeInvocation([]string{"up"})
 	if err != nil {
-		t.Fatalf("ParseInvocation: %v", err)
+		t.Fatalf("ParseComposeInvocation: %v", err)
 	}
 	got, err := resolveComposeInput(inv)
 	if err != nil {
@@ -62,9 +62,9 @@ func TestResolveComposeInputTraversesParents(t *testing.T) {
 	}
 	chdirForTest(t, child)
 
-	inv, err := ParseInvocation([]string{"up"})
+	inv, err := ParseComposeInvocation([]string{"up"})
 	if err != nil {
-		t.Fatalf("ParseInvocation: %v", err)
+		t.Fatalf("ParseComposeInvocation: %v", err)
 	}
 	got, err := resolveComposeInput(inv)
 	if err != nil {
@@ -86,9 +86,9 @@ func TestResolveComposeInputUsesComposeFileEnv(t *testing.T) {
 
 	t.Setenv("COMPOSE_FILE", a+string(os.PathListSeparator)+b)
 
-	inv, err := ParseInvocation([]string{"up"})
+	inv, err := ParseComposeInvocation([]string{"up"})
 	if err != nil {
-		t.Fatalf("ParseInvocation: %v", err)
+		t.Fatalf("ParseComposeInvocation: %v", err)
 	}
 	got, err := resolveComposeInput(inv)
 	if err != nil {
@@ -105,9 +105,9 @@ func TestResolveComposeInputHonorsProjectDirectory(t *testing.T) {
 	otherDir := t.TempDir()
 	chdirForTest(t, otherDir)
 
-	inv, err := ParseInvocation([]string{"--project-directory", projectDir, "up"})
+	inv, err := ParseComposeInvocation([]string{"--project-directory", projectDir, "up"})
 	if err != nil {
-		t.Fatalf("ParseInvocation: %v", err)
+		t.Fatalf("ParseComposeInvocation: %v", err)
 	}
 	got, err := resolveComposeInput(inv)
 	if err != nil {
@@ -130,9 +130,9 @@ func TestResolveComposeInputExplicitFilesWinOverEnv(t *testing.T) {
 	writeComposeFile(t, viaEnv)
 	t.Setenv("COMPOSE_FILE", viaEnv)
 
-	inv, err := ParseInvocation([]string{"-f", explicit, "up"})
+	inv, err := ParseComposeInvocation([]string{"-f", explicit, "up"})
 	if err != nil {
-		t.Fatalf("ParseInvocation: %v", err)
+		t.Fatalf("ParseComposeInvocation: %v", err)
 	}
 	got, err := resolveComposeInput(inv)
 	if err != nil {
@@ -142,18 +142,18 @@ func TestResolveComposeInputExplicitFilesWinOverEnv(t *testing.T) {
 	assertArgv(t, want, got.Files)
 }
 
-func TestParseInvocationProjectDirectory(t *testing.T) {
-	inv, err := ParseInvocation([]string{"--project-directory", "/tmp/proj", "up"})
+func TestParseComposeInvocationProjectDirectory(t *testing.T) {
+	inv, err := ParseComposeInvocation([]string{"--project-directory", "/tmp/proj", "up"})
 	if err != nil {
-		t.Fatalf("ParseInvocation: %v", err)
+		t.Fatalf("ParseComposeInvocation: %v", err)
 	}
 	if inv.ProjectDirectory != "/tmp/proj" {
 		t.Fatalf("ProjectDirectory=%q, want /tmp/proj", inv.ProjectDirectory)
 	}
 
-	inv, err = ParseInvocation([]string{"--project-directory=/tmp/a", "--project-directory=/tmp/b", "up"})
+	inv, err = ParseComposeInvocation([]string{"--project-directory=/tmp/a", "--project-directory=/tmp/b", "up"})
 	if err != nil {
-		t.Fatalf("ParseInvocation: %v", err)
+		t.Fatalf("ParseComposeInvocation: %v", err)
 	}
 	if inv.ProjectDirectory != "/tmp/b" {
 		t.Fatalf("ProjectDirectory=%q, want /tmp/b", inv.ProjectDirectory)

@@ -75,10 +75,6 @@ Full install options are in [docs/installation.md](docs/installation.md).
 
 ## Quickstart
 
-The fastest way to see a realistic policy is the [Codex + LiteLLM example](examples/codex). It runs Codex in one container, routes model traffic through a LiteLLM sidecar, and uses vaka to prevent the Codex container from reaching the internet directly.
-
-Use its policy as the starting point: [`examples/codex/vaka.yaml`](examples/codex/vaka.yaml).
-
 For your own Compose project, create `vaka.yaml` next to `docker-compose.yaml`. Each key under `services:` must match a Compose service name.
 
 Check the setup:
@@ -100,6 +96,14 @@ Use normal Compose commands through vaka:
 vaka logs -f agent
 vaka exec agent sh
 vaka down
+```
+
+The full docker compose surface (including compose global flags such as `-f`
+and `--profile`) lives under `vaka compose`:
+
+```bash
+vaka compose -f compose.prod.yaml up -d
+vaka compose pull
 ```
 
 For a slower walkthrough, see [docs/quickstart.md](docs/quickstart.md).
@@ -133,7 +137,9 @@ If the firewall cannot be installed, the app does not start.
 
 ## Examples
 
-The first complete example is [examples/codex](examples/codex): Codex runs in one container, LiteLLM runs as a local gateway, and vaka prevents Codex from reaching the internet directly.
+The fastest way to see a realistic policy is the [Codex + LiteLLM example](examples/codex). It runs Codex in one container, routes model traffic through a LiteLLM sidecar, and uses vaka to prevent the Codex container from reaching the internet directly.
+
+Use its policy as the starting point: [`examples/codex/vaka.yaml`](examples/codex/vaka.yaml).
 
 That example demonstrates the recommended sidecar pattern for agent containers:
 

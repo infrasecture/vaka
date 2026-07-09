@@ -63,9 +63,9 @@ func chdirForTest(t *testing.T, dir string) {
 func setDockerServicesFactoryForTest(t *testing.T, ds DockerServices, captures ...*[][]string) {
 	t.Helper()
 	old := newDockerServices
-	newDockerServices = func(inv *Invocation) (DockerServices, error) {
+	newDockerServices = func(inv *ComposeInvocation) (DockerServices, error) {
 		if len(captures) > 0 && captures[0] != nil {
-			*captures[0] = append(*captures[0], append([]string{}, inv.ComposeArgs...))
+			*captures[0] = append(*captures[0], append([]string{}, inv.Args...))
 		}
 		return ds, nil
 	}
@@ -74,7 +74,7 @@ func setDockerServicesFactoryForTest(t *testing.T, ds DockerServices, captures .
 	})
 }
 
-func setExecDockerComposeForTest(t *testing.T, fn func(inv *Invocation, overrideYAML string, extraEnv []string) error) {
+func setExecDockerComposeForTest(t *testing.T, fn func(inv *ComposeInvocation, overrideYAML string, extraEnv []string) error) {
 	t.Helper()
 	old := execDockerComposeFn
 	execDockerComposeFn = fn

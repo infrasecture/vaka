@@ -6,13 +6,19 @@ import (
 	"strings"
 )
 
-// Invocation is the canonical parsed representation of one vaka CLI invocation.
-// It preserves argv token ordering while separating vaka-only flags from compose
-// argv and precomputing compose-aware metadata used across execution paths.
-type Invocation struct {
-	RawArgs     []string
-	VakaFlags   map[string]string
-	ComposeArgs []string
+// RootInvocation is the parsed root layer of one vaka CLI invocation: the
+// vaka-owned flags plus the remaining argv destined for command dispatch.
+type RootInvocation struct {
+	VakaFile        string
+	VakaInitPresent bool
+	Rest            []string
+}
+
+// ComposeInvocation is the canonical parsed representation of one compose-bound
+// argv slice (vaka root flags already stripped). It preserves token ordering
+// and precomputes compose-aware metadata used across execution paths.
+type ComposeInvocation struct {
+	Args []string
 
 	Subcommand     string
 	SubcommandIdx  int
@@ -26,7 +32,7 @@ type Invocation struct {
 	ProjectDirectory string
 	BuildRequested   bool
 
-	lastFileTokenIdx int // index in ComposeArgs for the last pre-subcommand -f/--file value token
+	lastFileTokenIdx int // index in Args for the last pre-subcommand -f/--file value token
 }
 
 // composeGlobalFlagsWithValue is the set of docker compose global flags that
@@ -73,18 +79,30 @@ var vakaFlagsBool = map[string]bool{
 	"--vaka-init-present": true,
 }
 
-// ParseInvocation parses raw os.Args[1:] into a single invocation model used by
-// all execution paths.
-func ParseInvocation(argv []string) (*Invocation, error) {
-	flags, composeArgs, err := extractVakaFlags(argv)
+// parseRootArgs parses raw os.Args[1:] into the vaka root layer: strict
+// --vaka-* flags plus the remaining argv for command dispatch.
+func parseRootArgs(argv []string) (*RootInvocation, error) {
+	flags, rest, err := extractVakaFlags(argv)
 	if err != nil {
 		return nil, err
 	}
+	root := &RootInvocation{
+		VakaFile:        flags["--vaka-file"],
+		VakaInitPresent: flags["--vaka-init-present"] == "true",
+		Rest:            rest,
+	}
+	if root.VakaFile == "" {
+		root.VakaFile = "vaka.yaml"
+	}
+	return root, nil
+}
 
-	inv := &Invocation{
-		RawArgs:          append([]string{}, argv...),
-		VakaFlags:        flags,
-		ComposeArgs:      composeArgs,
+// ParseComposeInvocation parses a compose-bound argv slice (vaka root flags
+// already stripped) into the invocation model used by all compose execution
+// paths.
+func ParseComposeInvocation(argv []string) (*ComposeInvocation, error) {
+	inv := &ComposeInvocation{
+		Args:             append([]string{}, argv...),
 		SubcommandIdx:    -1,
 		lastFileTokenIdx: -1,
 	}
@@ -96,20 +114,22 @@ func ParseInvocation(argv []string) (*Invocation, error) {
 }
 
 // extractVakaFlags splits raw os.Args[1:] into vaka-specific flags and
-// compose-destined args.
+// command-destined args.
 //
 // Strict mode:
-//   - `--vaka-*` flags are accepted only before the compose subcommand.
+//   - `--vaka-*` flags are accepted only before the command.
 //   - value-taking `--vaka-*` flags require `=` form: `--flag=<value>`.
-//   - unknown pre-subcommand `--vaka-*` flags are hard errors with suggestion.
-//   - post-subcommand tokens are forwarded unchanged, except known misplaced
+//   - unknown pre-command `--vaka-*` flags are hard errors with suggestion.
+//   - any other pre-command flag is a hard error (`-h`/`--help` excepted):
+//     compose global flags belong after the `compose` command.
+//   - post-command tokens are forwarded unchanged, except known misplaced
 //     vaka flags which fail fast with a positioning hint.
 func extractVakaFlags(argv []string) (map[string]string, []string, error) {
 	flags := make(map[string]string)
 	rest := make([]string, 0, len(argv))
 
-	subcommand := ""
-	seenSubcommand := false
+	command := ""
+	seenCommand := false
 	for i := 0; i < len(argv); i++ {
 		tok := argv[i]
 		if tok == "--" {
@@ -117,18 +137,7 @@ func extractVakaFlags(argv []string) (map[string]string, []string, error) {
 			break
 		}
 
-		if !seenSubcommand {
-			if _, _, consumed, _, ok := parseValueTakingToken(argv, i, composeGlobalFlagsWithValue); ok {
-				rest = append(rest, argv[i:i+consumed]...)
-				i += consumed - 1
-				continue
-			}
-			if _, _, consumed, _, ok := parseValueTakingToken(argv, i, dockerGlobalFlagsWithValue); ok {
-				rest = append(rest, argv[i:i+consumed]...)
-				i += consumed - 1
-				continue
-			}
-
+		if !seenCommand {
 			if flag, value, err := parseVakaValueFlag(tok); err != nil {
 				return nil, nil, err
 			} else if flag != "" {
@@ -142,27 +151,47 @@ func extractVakaFlags(argv []string) (map[string]string, []string, error) {
 			if strings.HasPrefix(tok, "--vaka-") {
 				return nil, nil, unknownVakaFlagError(tok)
 			}
-
-			if !strings.HasPrefix(tok, "-") {
-				seenSubcommand = true
-				subcommand = tok
+			if tok == "-h" || tok == "--help" {
 				rest = append(rest, tok)
 				continue
 			}
+			if strings.HasPrefix(tok, "-") {
+				return nil, nil, rootLeadingFlagError(argv[i:])
+			}
+
+			seenCommand = true
+			command = tok
 			rest = append(rest, tok)
 			continue
 		}
 
 		if isKnownVakaFlagToken(tok) {
-			return nil, nil, fmt.Errorf("vaka flag %q must appear before subcommand %q", tok, subcommand)
+			return nil, nil, fmt.Errorf("vaka flag %q must appear before subcommand %q", tok, command)
 		}
 		rest = append(rest, tok)
 	}
 	return flags, rest, nil
 }
 
-func (inv *Invocation) scanComposeArgs() error {
-	args := inv.ComposeArgs
+// rootLeadingFlagError explains a non-vaka flag encountered before the command.
+// Docker top-level globals keep their targeted guidance; compose globals point
+// at the `vaka compose` form; anything else gets the generic placement rule.
+func rootLeadingFlagError(tail []string) error {
+	tok := tail[0]
+	if matched, value, _, usedEquals, ok := parseValueTakingToken(tail, 0, dockerGlobalFlagsWithValue); ok {
+		return unsupportedDockerGlobalError(matched, value, usedEquals)
+	}
+	if dockerGlobalBoolFlags[tok] {
+		return unsupportedDockerGlobalError(tok, "", false)
+	}
+	if matched, _, _, _, ok := parseValueTakingToken(tail, 0, composeGlobalFlagsWithValue); ok {
+		return fmt.Errorf("compose global flag %q must follow the compose command: try `vaka compose %s`", matched, strings.Join(tail, " "))
+	}
+	return fmt.Errorf("unknown flag %q before command; only --vaka-* flags may precede the command, and compose global flags belong after it: `vaka compose %s`", tok, strings.Join(tail, " "))
+}
+
+func (inv *ComposeInvocation) scanComposeArgs() error {
+	args := inv.Args
 	for i := 0; i < len(args); i++ {
 		tok := args[i]
 		if tok == "--" {
@@ -220,7 +249,7 @@ func (inv *Invocation) scanComposeArgs() error {
 	return nil
 }
 
-func (inv *Invocation) detectBuildRequested() {
+func (inv *ComposeInvocation) detectBuildRequested() {
 	if inv.Subcommand == "" {
 		return
 	}
@@ -235,10 +264,10 @@ func (inv *Invocation) detectBuildRequested() {
 	}
 }
 
-func (inv *Invocation) dockerComposeArgs() []string {
-	out := make([]string, 0, len(inv.ComposeArgs)+1)
+func (inv *ComposeInvocation) dockerComposeArgs() []string {
+	out := make([]string, 0, len(inv.Args)+1)
 	out = append(out, "compose")
-	out = append(out, inv.ComposeArgs...)
+	out = append(out, inv.Args...)
 	return out
 }
 

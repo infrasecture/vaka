@@ -20,7 +20,7 @@ type composeResolution struct {
 //  1. explicit -f/--file flags
 //  2. COMPOSE_FILE (from env / .env via compose-go)
 //  3. default compose file discovery with parent traversal
-func resolveComposeInput(inv *Invocation) (*composeResolution, error) {
+func resolveComposeInput(inv *ComposeInvocation) (*composeResolution, error) {
 	explicitFiles := inv.GlobalFiles
 	workingDir := inv.ProjectDirectory
 	if len(explicitFiles) > 0 {

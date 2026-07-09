@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -9,57 +10,69 @@ import (
 	"testing"
 )
 
-func TestParseShowComposeFlags(t *testing.T) {
+func TestShowComposeCmdBuildsSyntheticComposeArgv(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+
+	policyYAML := `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+`
+	composeYAML := `
+services:
+  app:
+    image: alpine:3.20
+    user: "1000:1000"
+    entrypoint: ["sleep"]
+    command: ["infinity"]
+`
+	writeFixtureFiles(t, dir, policyYAML, composeYAML)
+
 	tests := []struct {
 		name            string
 		args            []string
-		wantOutput      string
-		wantPassthrough []string
+		wantFactoryArgs []string
 		wantErr         string
 	}{
 		{
-			name:            "stdout default",
+			name:            "no flags",
 			args:            []string{"show-compose"},
-			wantOutput:      "",
-			wantPassthrough: []string{"show-compose"},
+			wantFactoryArgs: []string{"show-compose"},
 		},
 		{
-			name:            "short output flag",
-			args:            []string{"-f", "prod.yml", "show-compose", "-o", "ovr.yaml"},
-			wantOutput:      "ovr.yaml",
-			wantPassthrough: []string{"-f", "prod.yml", "show-compose"},
+			name:            "compose file and build flags",
+			args:            []string{"show-compose", "-f", "docker-compose.yaml", "--build"},
+			wantFactoryArgs: []string{"-f", "docker-compose.yaml", "show-compose", "--build"},
 		},
 		{
-			name:            "long output equals form",
-			args:            []string{"show-compose", "--output=ovr.yaml"},
-			wantOutput:      "ovr.yaml",
-			wantPassthrough: []string{"show-compose"},
-		},
-		{
-			name:            "build flag forwarded",
-			args:            []string{"show-compose", "--build"},
-			wantOutput:      "",
-			wantPassthrough: []string{"show-compose", "--build"},
-		},
-		{
-			name:    "unknown show-compose flag",
+			name:    "unknown flag",
 			args:    []string{"show-compose", "--wat"},
-			wantErr: "unknown show-compose flag",
+			wantErr: "unknown flag",
 		},
 		{
 			name:    "missing output value",
 			args:    []string{"show-compose", "-o"},
-			wantErr: "requires a value",
+			wantErr: "flag needs an argument",
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			inv, err := ParseInvocation(tc.args)
-			if err != nil {
-				t.Fatalf("ParseInvocation: %v", err)
-			}
-			gotOutput, gotPassthrough, err := parseShowComposeFlags(inv)
+			ds := &fakeBuilderDockerServices{}
+			var gotFactoryArgs [][]string
+			setDockerServicesFactoryForTest(t, ds, &gotFactoryArgs)
+
+			root := newRootCmd(&RootInvocation{VakaFile: "vaka.yaml", VakaInitPresent: true})
+			root.SetArgs(tc.args)
+			root.SetOut(io.Discard)
+			root.SetErr(io.Discard)
+			_, err := captureStdout(t, root.Execute)
+
 			if tc.wantErr != "" {
 				if err == nil {
 					t.Fatalf("expected error containing %q, got nil", tc.wantErr)
@@ -70,13 +83,13 @@ func TestParseShowComposeFlags(t *testing.T) {
 				return
 			}
 			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
+				t.Fatalf("execute: %v", err)
 			}
-			if gotOutput != tc.wantOutput {
-				t.Fatalf("output = %q, want %q", gotOutput, tc.wantOutput)
+			if len(gotFactoryArgs) != 1 {
+				t.Fatalf("newDockerServices called %d times, want 1", len(gotFactoryArgs))
 			}
-			if !reflect.DeepEqual(gotPassthrough.ComposeArgs, tc.wantPassthrough) {
-				t.Fatalf("passthrough = %v, want %v", gotPassthrough.ComposeArgs, tc.wantPassthrough)
+			if !reflect.DeepEqual(gotFactoryArgs[0], tc.wantFactoryArgs) {
+				t.Fatalf("factory args = %v, want %v", gotFactoryArgs[0], tc.wantFactoryArgs)
 			}
 		})
 	}
@@ -109,9 +122,9 @@ services:
 	var gotFactoryArgs [][]string
 	setDockerServicesFactoryForTest(t, ds, &gotFactoryArgs)
 
-	baseInv, err := ParseInvocation([]string{"show-compose"})
+	baseInv, err := ParseComposeInvocation([]string{"show-compose"})
 	if err != nil {
-		t.Fatalf("ParseInvocation: %v", err)
+		t.Fatalf("ParseComposeInvocation: %v", err)
 	}
 	wantYAML, extraEnv, err := buildInjectionOverride(context.Background(), ds, "vaka.yaml", baseInv, true)
 	if err != nil {
@@ -119,11 +132,11 @@ services:
 	}
 
 	gotStdout, err := captureStdout(t, func() error {
-		inv, parseErr := ParseInvocation([]string{"show-compose"})
+		inv, parseErr := ParseComposeInvocation([]string{"show-compose"})
 		if parseErr != nil {
 			return parseErr
 		}
-		return runShowCompose("vaka.yaml", inv, true)
+		return runShowCompose("vaka.yaml", inv, true, "")
 	})
 	if err != nil {
 		t.Fatalf("runShowCompose: %v", err)
@@ -181,9 +194,9 @@ services:
 	var gotFactoryArgs [][]string
 	setDockerServicesFactoryForTest(t, ds, &gotFactoryArgs)
 
-	baseInv, err := ParseInvocation([]string{"show-compose"})
+	baseInv, err := ParseComposeInvocation([]string{"show-compose"})
 	if err != nil {
-		t.Fatalf("ParseInvocation: %v", err)
+		t.Fatalf("ParseComposeInvocation: %v", err)
 	}
 	wantYAML, _, err := buildInjectionOverride(context.Background(), ds, "vaka.yaml", baseInv, true)
 	if err != nil {
@@ -191,11 +204,11 @@ services:
 	}
 
 	outPath := filepath.Join(dir, "override.yaml")
-	inv, err := ParseInvocation([]string{"show-compose", "-o", outPath})
+	inv, err := ParseComposeInvocation([]string{"show-compose"})
 	if err != nil {
-		t.Fatalf("ParseInvocation: %v", err)
+		t.Fatalf("ParseComposeInvocation: %v", err)
 	}
-	if err := runShowCompose("vaka.yaml", inv, true); err != nil {
+	if err := runShowCompose("vaka.yaml", inv, true, outPath); err != nil {
 		t.Fatalf("runShowCompose: %v", err)
 	}
 

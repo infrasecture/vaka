@@ -3,13 +3,12 @@ package main
 import (
 	"bytes"
 	"errors"
+	"os"
 	"strings"
 	"testing"
-
-	"github.com/spf13/cobra"
 )
 
-func TestDiscoverComposeCommandHelpLines(t *testing.T) {
+func TestDiscoverComposeVerbs(t *testing.T) {
 	old := dockerComposeHelpOutput
 	dockerComposeHelpOutput = func() ([]byte, error) {
 		return []byte(`Usage:  docker compose [OPTIONS] COMMAND
@@ -26,17 +25,21 @@ Options:
 		dockerComposeHelpOutput = old
 	})
 
-	lines, err := discoverComposeCommandHelpLines()
+	verbs, err := discoverComposeVerbs()
 	if err != nil {
-		t.Fatalf("discoverComposeCommandHelpLines: %v", err)
+		t.Fatalf("discoverComposeVerbs: %v", err)
 	}
-	got := strings.Join(lines, "\n")
-	if !strings.Contains(got, "build") || !strings.Contains(got, "up") || !strings.Contains(got, "ps") {
-		t.Fatalf("parsed command lines missing expected entries: %v", lines)
+	for _, want := range []string{"build", "up", "ps"} {
+		if !verbs[want] {
+			t.Fatalf("parsed verbs missing %q: %v", want, verbs)
+		}
+	}
+	if verbs["--ansi"] || verbs["string"] {
+		t.Fatalf("parsed verbs must not include option tokens: %v", verbs)
 	}
 }
 
-func TestProxiedComposeCommandsHelpSectionFallback(t *testing.T) {
+func TestDiscoverComposeVerbsUnavailable(t *testing.T) {
 	old := dockerComposeHelpOutput
 	dockerComposeHelpOutput = func() ([]byte, error) {
 		return nil, errors.New("docker unavailable")
@@ -45,34 +48,13 @@ func TestProxiedComposeCommandsHelpSectionFallback(t *testing.T) {
 		dockerComposeHelpOutput = old
 	})
 
-	section := proxiedComposeCommandsHelpSection()
-	if !strings.Contains(section, "unavailable") {
-		t.Fatalf("expected fallback section, got %q", section)
+	if _, err := discoverComposeVerbs(); err == nil {
+		t.Fatal("expected error when docker compose --help is unavailable")
 	}
 }
 
-func TestConfigureRootHelpAppendsProxySection(t *testing.T) {
-	old := dockerComposeHelpOutput
-	dockerComposeHelpOutput = func() ([]byte, error) {
-		return []byte(`Commands:
-  up     Create and start containers
-`), nil
-	}
-	t.Cleanup(func() {
-		dockerComposeHelpOutput = old
-	})
-
-	root := &cobra.Command{
-		Use:   "vaka",
-		Short: "test",
-	}
-	root.AddCommand(&cobra.Command{
-		Use:   "version",
-		Short: "Print version",
-		Run:   func(*cobra.Command, []string) {},
-	})
-	root.AddCommand(newShowComposeCmd())
-	configureRootHelp(root)
+func TestRootHelpListsShorthandsAndCompose(t *testing.T) {
+	root := newRootCmd(&RootInvocation{VakaFile: "vaka.yaml"})
 
 	var out bytes.Buffer
 	root.SetOut(&out)
@@ -82,23 +64,53 @@ func TestConfigureRootHelpAppendsProxySection(t *testing.T) {
 		t.Fatalf("root.Execute: %v", err)
 	}
 	got := out.String()
-	if !strings.Contains(got, "Proxied docker compose commands") {
-		t.Fatalf("help output missing proxied section:\n%s", got)
+
+	for _, want := range []string{
+		"Vaka Commands:",
+		"Compose Commands:",
+		"compose ",
+		"show-compose",
+		"validate",
+		"doctor",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("root help missing %q:\n%s", want, got)
+		}
 	}
-	if !strings.Contains(got, "show-compose") {
-		t.Fatalf("help output missing native show-compose command:\n%s", got)
+	for _, shorthand := range composeShorthands {
+		if !strings.Contains(got, "vaka compose "+shorthand) {
+			t.Fatalf("root help missing shorthand %q:\n%s", shorthand, got)
+		}
 	}
-	if strings.Contains(got, "Additional vaka command") {
-		t.Fatalf("help output should not use show-compose footer:\n%s", got)
+}
+
+// TestRootHelpUsageShowsGrammarOnce guards against cobra's default two-line
+// usage for runnable roots ("vaka [flags]" + "vaka [command]"): root help must
+// show exactly the vaka grammar line.
+func TestRootHelpUsageShowsGrammarOnce(t *testing.T) {
+	root := newRootCmd(&RootInvocation{VakaFile: "vaka.yaml"})
+
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"--help"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("root.Execute: %v", err)
+	}
+	got := out.String()
+
+	if !strings.Contains(got, "Usage:\n  vaka [--vaka-file=<path>] [--vaka-init-present] <command>\n") {
+		t.Fatalf("root help missing grammar usage line:\n%s", got)
+	}
+	for _, stale := range []string{"vaka [flags]", "\n  vaka [command]"} {
+		if strings.Contains(got, stale) {
+			t.Fatalf("root help contains stale usage line %q:\n%s", stale, got)
+		}
 	}
 }
 
 func TestShowComposeRegisteredForCobraHelp(t *testing.T) {
-	root := &cobra.Command{
-		Use:   "vaka",
-		Short: "test",
-	}
-	root.AddCommand(newShowComposeCmd())
+	root := newRootCmd(&RootInvocation{VakaFile: "vaka.yaml"})
 
 	var out bytes.Buffer
 	root.SetOut(&out)
@@ -111,7 +123,32 @@ func TestShowComposeRegisteredForCobraHelp(t *testing.T) {
 	if !strings.Contains(got, "Print the generated compose override YAML used by vaka injection.") {
 		t.Fatalf("show-compose help missing description:\n%s", got)
 	}
-	if !strings.Contains(got, "vaka [--vaka-file=<path>] [--vaka-init-present] [compose-global-flags...] show-compose") {
-		t.Fatalf("show-compose help missing custom usage:\n%s", got)
+	if !strings.Contains(got, "--vaka-file") {
+		t.Fatalf("show-compose help missing root-flag placement note:\n%s", got)
+	}
+}
+
+func TestBashCompletionPinsGeneratorExecutable(t *testing.T) {
+	root := newRootCmd(&RootInvocation{VakaFile: "vaka.yaml"})
+
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"completion", "bash"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("root.Execute: %v", err)
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	got := out.String()
+	if strings.Contains(got, `requestComp="${words[0]} __complete ${args[*]}"`) {
+		t.Fatalf("bash completion still calls the command from the input line")
+	}
+	want := `requestComp="` + shellQuote(exe) + ` __complete ${args[*]}"`
+	if !strings.Contains(got, want) {
+		t.Fatalf("bash completion missing pinned request command %q", want)
 	}
 }

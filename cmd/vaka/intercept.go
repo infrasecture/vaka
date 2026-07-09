@@ -42,24 +42,23 @@ var defaultDockerCaps = map[string]bool{
 	"CAP_AUDIT_WRITE": true, "CAP_SETFCAP": true,
 }
 
-// dispatchPath classifies how a subcommand is handled.
-type dispatchPath int
+// composeVerbClass classifies how a compose subcommand is handled.
+type composeVerbClass int
 
 const (
-	pathNative    dispatchPath = iota // vaka-native commands (cobra-handled and wrapper-native)
-	pathRender                        // up, run, create
-	pathReference                     // all other compose commands
+	verbRender    composeVerbClass = iota // up, run, create: full policy injection
+	verbReference                         // every other compose verb: minimal __vaka-init override
 )
 
-// classifySubcmd maps a subcommand name to its dispatch path.
-func classifySubcmd(subcmd string) dispatchPath {
-	switch subcmd {
-	case "validate", "show-nft", "doctor", "version", "help", "completion", "__complete", "__completeNoDesc", "show-compose", "":
-		return pathNative
+// classifyComposeVerb maps a compose subcommand name to its execution class.
+// Unknown verbs default to reference forwarding so future docker compose
+// subcommands keep working (docker rejects truly bogus ones itself).
+func classifyComposeVerb(verb string) composeVerbClass {
+	switch verb {
 	case "up", "run", "create":
-		return pathRender
+		return verbRender
 	default:
-		return pathReference
+		return verbReference
 	}
 }
 
@@ -69,14 +68,14 @@ func classifySubcmd(subcmd string) dispatchPath {
 // bytes are streamed through an inherited pipe FD so stdin remains attached to
 // the user's terminal.
 // extraEnv, when non-nil, is appended to the inherited environment.
-func execDockerCompose(inv *Invocation, overrideYAML string, extraEnv []string) error {
+func execDockerCompose(inv *ComposeInvocation, overrideYAML string, extraEnv []string) error {
 	var dockerArgs []string
 	if overrideYAML != "" {
 		defaults := []string{}
 		if len(inv.GlobalFiles) == 0 {
 			resolved, err := resolveComposeInput(inv)
 			if err != nil {
-				if classifySubcmd(inv.Subcommand) == pathReference {
+				if classifyComposeVerb(inv.Subcommand) == verbReference {
 					return fmt.Errorf("reference command requires compose configuration (%w); run from the project directory or pass -f/--project-directory", err)
 				}
 				return err
@@ -132,7 +131,7 @@ func execDockerCompose(inv *Invocation, overrideYAML string, extraEnv []string) 
 // runFull handles full-override commands: up, run, create, volumes.
 // It loads and validates vaka.yaml, ensures the __vaka-init image when needed,
 // builds the full compose override, and delegates to execDockerCompose.
-func runFull(vakaFile string, inv *Invocation, vakaInitPresent bool) error {
+func runFull(vakaFile string, inv *ComposeInvocation, vakaInitPresent bool) error {
 	ctx := context.Background()
 	ds, err := newDockerServices(inv)
 	if err != nil {
@@ -154,7 +153,7 @@ func buildInjectionOverride(
 	ctx context.Context,
 	ds DockerServices,
 	vakaFile string,
-	inv *Invocation,
+	inv *ComposeInvocation,
 	vakaInitPresent bool,
 ) (overrideYAML string, extraEnv []string, err error) {
 	composeInput, err := resolveComposeInput(inv)
@@ -183,8 +182,8 @@ func buildInjectionOverride(
 		buildArgs := append([]string{}, inv.ComposeGlobals...)
 		buildArgs = append(buildArgs, "build")
 		buildArgs = append(buildArgs, toBuild...)
-		buildInv := &Invocation{
-			ComposeArgs: buildArgs,
+		buildInv := &ComposeInvocation{
+			Args: buildArgs,
 		}
 		if err := execDockerComposeFn(buildInv, "", nil); err != nil {
 			return "", nil, fmt.Errorf("pre-build: %w", err)
@@ -278,12 +277,12 @@ func referenceOverrideYAML(vakaInitPresent bool, imageRef string) (string, error
 
 // runReference handles all reference commands by injecting only the minimal
 // __vaka-init compose service override.
-func runReference(inv *Invocation, vakaInitPresent bool) error {
+func runReference(inv *ComposeInvocation, vakaInitPresent bool) error {
 	overrideYAML, err := referenceOverrideYAML(vakaInitPresent, vakaInitBaseImage+":"+version)
 	if err != nil {
 		return fmt.Errorf("build vaka-init container override: %w", err)
 	}
-	return execDockerCompose(inv, overrideYAML, nil)
+	return execDockerComposeFn(inv, overrideYAML, nil)
 }
 
 // servicesNeedingPrebuild returns the sorted list of services whose image must

@@ -1,54 +1,111 @@
 # CLI Reference
 
-`vaka` has native commands and Compose-proxy commands.
+`vaka` has three command forms:
+
+```bash
+vaka [--vaka-file=<path>] [--vaka-init-present] <native-command> [flags...]
+vaka [--vaka-file=<path>] [--vaka-init-present] <shorthand> [args...]
+vaka [--vaka-file=<path>] [--vaka-init-present] compose [compose-global-flags...] <compose-command> [args...]
+```
 
 ## Command Paths
 
 | Path | Commands | Behavior |
 |------|----------|----------|
 | Native | `validate`, `show-nft`, `doctor`, `show-compose`, `version`, `help`, `completion` | Handled by vaka itself. |
-| Full render | `up`, `run`, `create` | Validate policy, generate the full Compose override, inject secrets and entrypoint changes, then call Compose. |
-| Reference | Other Compose commands such as `logs`, `exec`, `ps`, `pull`, `volumes`, `down`, `stop`, `kill`, `rm` | Call Compose with a minimal `__vaka-init` overlay so helper resources remain visible. |
+| Compose full render | `vaka compose up`, `vaka compose run`, `vaka compose create` | Validate policy, generate the full Compose override, inject secrets and entrypoint changes, then call Compose. |
+| Compose reference | Other `vaka compose` commands such as `logs`, `exec`, `ps`, `pull`, `down`, `stop`, `kill`, `rm` | Call Compose with a minimal `__vaka-init` overlay so helper resources remain visible. |
+| Compose metadata | `vaka compose version`, `vaka compose ls` | Proxied to Compose without any overlay; they work outside project directories. |
+| Shorthands | `up`, `down`, `start`, `stop`, `run`, `exec`, `logs`, `ps` | Permanent top-level aliases: `vaka up ...` executes exactly like `vaka compose up ...`. |
 
-## `vaka up`
+The shorthand set is intentionally small and fixed. Every other Compose
+command requires the `compose` namespace, which keeps the top-level namespace
+free for future vaka commands:
 
 ```bash
-vaka [--vaka-file=<path>] [--vaka-init-present] [compose-global-flags...] up [compose-flags...]
+vaka pull          # error: use `vaka compose pull`
+vaka compose pull  # works
 ```
 
-Starts the stack with policy enforcement. All `docker compose up` flags are passed through.
-
-## `vaka run`
+## `vaka compose`
 
 ```bash
-vaka [--vaka-file=<path>] [--vaka-init-present] [compose-global-flags...] run [compose-flags...] <service> [command...]
+vaka [vaka-flags...] compose [compose-global-flags...] <command> [args...]
+```
+
+The full docker compose surface with vaka policy injection. Compose global
+flags (`-f/--file`, `-p/--project-name`, `--profile`, `--env-file`,
+`--project-directory`, ...) are accepted only here, between `compose` and the
+Compose command:
+
+```bash
+vaka compose -f compose.yml up -d
+vaka compose --profile dev up
+vaka compose --project-directory srv logs -f app
+```
+
+Compose commands vaka does not know about are forwarded with the reference
+overlay, so new docker compose subcommands keep working.
+
+## Compose Help
+
+Help for the Compose namespace and its shorthands comes from the installed
+Docker Compose plugin:
+
+```bash
+vaka compose --help
+vaka compose <command> --help
+vaka <shorthand> --help
+vaka help compose
+vaka help <shorthand>
+```
+
+These forms run Docker Compose help without loading a project or injecting a
+vaka override, so the available commands and options match the installed
+Compose version. Running bare `vaka compose` also displays Docker Compose
+usage.
+
+## `vaka up` (shorthand)
+
+```bash
+vaka [vaka-flags...] up [compose-up-flags...]
+```
+
+Starts the stack with policy enforcement; identical to `vaka compose up`.
+All `docker compose up` flags after the command are passed through.
+
+## `vaka run` (shorthand)
+
+```bash
+vaka [vaka-flags...] run [compose-run-flags...] <service> [command...]
 ```
 
 Runs a one-off service with the same injection path as `up`.
 
-## `vaka create`
+## `vaka compose create`
 
 ```bash
-vaka [--vaka-file=<path>] [--vaka-init-present] [compose-global-flags...] create [compose-flags...]
+vaka [vaka-flags...] compose create [compose-flags...]
 ```
 
-Creates containers with the `vaka-init` entrypoint override but does not start application services.
+Creates containers with the `vaka-init` entrypoint override but does not start
+application services. `create` has no top-level shorthand.
 
-## Teardown And Reference Commands
+## Teardown And Reference Shorthands
 
 ```bash
 vaka down
 vaka down --volumes
 vaka stop
-vaka kill
-vaka rm
-vaka volumes
 vaka logs -f app
 vaka exec app sh
 vaka ps
+vaka compose kill
+vaka compose rm
 ```
 
-`down`, `stop`, `kill`, and `rm` include the `__vaka-init` helper unless you pass `--vaka-init-present` before the subcommand.
+Reference commands include the `__vaka-init` helper unless you pass
+`--vaka-init-present` before the command.
 
 Use `vaka down --volumes` or `vaka up -V` after upgrading to refresh anonymous helper volumes and avoid `vakaVersion` mismatches.
 
@@ -85,16 +142,17 @@ Current behavior: hostnames in `to:` lists are printed as comments instead of be
 ## `vaka show-compose`
 
 ```bash
-vaka [--vaka-file=<path>] [--vaka-init-present] [compose-global-flags...] show-compose [--build] [-o override.yaml]
+vaka [--vaka-file=<path>] [--vaka-init-present] show-compose [-f compose.yml ...] [--project-directory <dir>] [-p <name>] [--profile <name> ...] [--env-file <path> ...] [--build] [-o override.yaml]
 ```
 
-Prints the generated Compose override used by `up`, `run`, and `create`.
+Prints the generated Compose override used by `vaka compose up`, `run`, and
+`create`.
 
 Notes:
 
 - `--vaka-file` and `--vaka-init-present` must appear before `show-compose`.
-- Compose global flags must appear before `show-compose`.
-- After `show-compose`, only `--build` and `-o/--output` are accepted.
+- Compose inputs are command-local flags after `show-compose` (unlike
+  `vaka compose`, where they precede the Compose command).
 - Encoded per-service `VAKA_<SERVICE>_CONF` values are not printed.
 
 ## `vaka version`
@@ -105,6 +163,33 @@ vaka version
 
 Prints the version stamped at build time.
 
+## `vaka completion`
+
+Generate a completion script for Bash, Zsh, Fish, or PowerShell:
+
+```bash
+# Bash
+source <(vaka completion bash)
+
+# Zsh
+source <(vaka completion zsh)
+
+# Fish
+vaka completion fish | source
+
+# PowerShell
+vaka completion powershell | Out-String | Invoke-Expression
+```
+
+Save the generated script in the shell's completion directory to load it in
+future sessions. Bash scripts embed the path of the `vaka` executable that
+generated them; regenerate a saved script if the executable moves.
+
+Vaka completes its native command tree. Compose-backed commands and
+shorthands intentionally provide no vaka-generated argument candidates and
+disable filename fallback; use Docker Compose documentation for their flags
+and arguments.
+
 ## Vaka Wrapper Flags
 
 | Flag | Default | Description |
@@ -112,18 +197,20 @@ Prints the version stamped at build time.
 | `--vaka-file=<path>` | `vaka.yaml` | Policy file for injection/proxy paths. |
 | `--vaka-init-present` | off | Skip automatic helper injection; assume helper binaries already exist at `/opt/vaka/sbin/` in service images. |
 
-Vaka wrapper flags must appear before the subcommand. Value-taking vaka flags require `=` form.
+Vaka wrapper flags must appear before the command. Value-taking vaka flags require `=` form.
 
 Correct:
 
 ```bash
 vaka --vaka-file=policies/prod.yaml up
+vaka --vaka-file=policies/prod.yaml compose -f compose.yml up
 ```
 
 Incorrect:
 
 ```bash
 vaka up --vaka-file policies/prod.yaml
+vaka compose --vaka-file=policies/prod.yaml up
 ```
 
-Compose globals such as `-f`, `-p`, `--profile`, `--env-file`, and `--project-directory` are passed through. Docker top-level globals such as `--context`, `-c`, `--host`, `-H`, `--config`, TLS flags, `--debug`, and `--log-level` are rejected; use Docker environment or context configuration instead.
+Docker top-level globals such as `--context`, `-c`, `--host`, `-H`, `--config`, TLS flags, `--debug`, and `--log-level` are rejected; use Docker environment or context configuration instead.

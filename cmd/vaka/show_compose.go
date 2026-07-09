@@ -3,46 +3,84 @@ package main
 
 import (
 	"context"
-	"fmt"
-	"io"
 	"os"
-	"strings"
 
 	"github.com/spf13/cobra"
 )
 
-func newShowComposeCmd() *cobra.Command {
+// newShowComposeCmd prints the generated compose override YAML that vaka would
+// inject for `vaka compose up`. Compose inputs are command-local flags here
+// (not compose globals): `vaka show-compose -f compose.yml --build`.
+func newShowComposeCmd(root *RootInvocation) *cobra.Command {
+	var (
+		files            []string
+		projectDirectory string
+		projectName      string
+		profiles         []string
+		envFiles         []string
+		build            bool
+		output           string
+	)
 	cmd := &cobra.Command{
-		Use:   "show-compose",
+		Use:   "show-compose [-f compose.yml ...] [--build] [-o override.yaml]",
 		Short: "Print the generated compose override YAML used by vaka injection",
-		Long:  "Print the generated compose override YAML used by vaka injection.",
+		Long: `Print the generated compose override YAML used by vaka injection.
+
+Pass --vaka-file and --vaka-init-present before the command:
+  vaka --vaka-file=prod.yaml show-compose
+
+VAKA_<SERVICE>_CONF values are never printed.`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return cmd.Help()
+			argv := make([]string, 0, 2*(len(files)+len(profiles)+len(envFiles))+8)
+			for _, f := range files {
+				argv = append(argv, "-f", f)
+			}
+			if projectDirectory != "" {
+				argv = append(argv, "--project-directory", projectDirectory)
+			}
+			if projectName != "" {
+				argv = append(argv, "--project-name", projectName)
+			}
+			for _, p := range profiles {
+				argv = append(argv, "--profile", p)
+			}
+			for _, e := range envFiles {
+				argv = append(argv, "--env-file", e)
+			}
+			argv = append(argv, "show-compose")
+			if build {
+				argv = append(argv, "--build")
+			}
+			inv, err := ParseComposeInvocation(argv)
+			if err != nil {
+				return err
+			}
+			return runShowCompose(root.VakaFile, inv, root.VakaInitPresent, output)
 		},
 	}
-	cmd.Flags().Bool("build", false, "Pre-build eligible services before resolving image runtime metadata")
-	cmd.Flags().StringP("output", "o", "", "Write override YAML to a file instead of stdout")
-	cmd.SetHelpFunc(func(cmd *cobra.Command, args []string) {
-		printShowComposeHelp(cmd.OutOrStdout())
-	})
+	cmd.Flags().StringArrayVarP(&files, "file", "f", nil, "Compose configuration files")
+	cmd.Flags().StringVar(&projectDirectory, "project-directory", "", "Alternate working directory for compose file discovery")
+	cmd.Flags().StringVarP(&projectName, "project-name", "p", "", "Project name")
+	cmd.Flags().StringArrayVar(&profiles, "profile", nil, "Compose profiles to enable")
+	cmd.Flags().StringArrayVar(&envFiles, "env-file", nil, "Alternate environment files")
+	cmd.Flags().BoolVar(&build, "build", false, "Pre-build eligible services before resolving image runtime metadata")
+	cmd.Flags().StringVarP(&output, "output", "o", "", "Write override YAML to a file instead of stdout")
 	return cmd
 }
 
 // runShowCompose builds the same compose override as runFull and prints it to
-// stdout, or writes it to a file when -o/--output is provided.
-func runShowCompose(vakaFile string, inv *Invocation, vakaInitPresent bool) error {
-	output, passthrough, err := parseShowComposeFlags(inv)
-	if err != nil {
-		return err
-	}
-
+// stdout, or writes it to output when non-empty. inv is the synthetic compose
+// invocation assembled from show-compose flags so the shared builder receives
+// the same input shape as `vaka compose up`.
+func runShowCompose(vakaFile string, inv *ComposeInvocation, vakaInitPresent bool, output string) error {
 	ctx := context.Background()
-	ds, err := newDockerServices(passthrough)
+	ds, err := newDockerServices(inv)
 	if err != nil {
 		return err
 	}
 
-	overrideYAML, _, err := buildInjectionOverride(ctx, ds, vakaFile, passthrough, vakaInitPresent)
+	overrideYAML, _, err := buildInjectionOverride(ctx, ds, vakaFile, inv, vakaInitPresent)
 	if err != nil {
 		return err
 	}
@@ -52,69 +90,4 @@ func runShowCompose(vakaFile string, inv *Invocation, vakaInitPresent bool) erro
 		return err
 	}
 	return os.WriteFile(output, []byte(overrideYAML), 0o644)
-}
-
-// parseShowComposeFlags parses show-compose-specific flags from args.
-// It preserves all non-output tokens so the shared builder receives the same
-// input shape, while stripping -o/--output from the final passthrough argv.
-func parseShowComposeFlags(inv *Invocation) (output string, passthrough *Invocation, err error) {
-	if inv.Subcommand != "show-compose" {
-		return "", nil, fmt.Errorf("show-compose: subcommand not found")
-	}
-	subcmdIdx := inv.SubcommandIdx
-	if subcmdIdx < 0 {
-		return "", nil, fmt.Errorf("show-compose: subcommand not found")
-	}
-
-	passthroughArgs := append([]string{}, inv.ComposeArgs[:subcmdIdx+1]...)
-
-	for i := subcmdIdx + 1; i < len(inv.ComposeArgs); i++ {
-		tok := inv.ComposeArgs[i]
-		switch {
-		case tok == "-o" || tok == "--output":
-			if i+1 >= len(inv.ComposeArgs) {
-				return "", nil, fmt.Errorf("%s requires a value", tok)
-			}
-			output = inv.ComposeArgs[i+1]
-			i++
-		case strings.HasPrefix(tok, "--output="):
-			output = strings.TrimPrefix(tok, "--output=")
-			if strings.TrimSpace(output) == "" {
-				return "", nil, fmt.Errorf("--output requires a value")
-			}
-		case tok == "--":
-			passthroughArgs = append(passthroughArgs, inv.ComposeArgs[i:]...)
-			parsed, parseErr := ParseInvocation(passthroughArgs)
-			if parseErr != nil {
-				return "", nil, parseErr
-			}
-			return output, parsed, nil
-		case tok == "--build":
-			// Keep --build so Invocation.BuildRequested mirrors runFull behavior.
-			passthroughArgs = append(passthroughArgs, tok)
-		case strings.HasPrefix(tok, "-"):
-			return "", nil, fmt.Errorf("unknown show-compose flag: %s", tok)
-		default:
-			passthroughArgs = append(passthroughArgs, tok)
-		}
-	}
-
-	parsed, parseErr := ParseInvocation(passthroughArgs)
-	if parseErr != nil {
-		return "", nil, parseErr
-	}
-	return output, parsed, nil
-}
-
-func printShowComposeHelp(w io.Writer) {
-	fmt.Fprintln(w, "Print the generated compose override YAML used by vaka injection.")
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Usage:")
-	fmt.Fprintln(w, "  vaka [--vaka-file=<path>] [--vaka-init-present] [compose-global-flags...] show-compose [--build] [-o, --output <path>]")
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Notes:")
-	fmt.Fprintln(w, "  - pass --vaka-file and --vaka-init-present before `show-compose`")
-	fmt.Fprintln(w, "  - pass compose global flags before `show-compose`")
-	fmt.Fprintln(w, "  - after `show-compose`, only --build and -o/--output are accepted")
-	fmt.Fprintln(w, "  - VAKA_<SERVICE>_CONF values are never printed")
 }

@@ -11,36 +11,28 @@ import (
 	"vaka.dev/vaka/pkg/policy"
 )
 
-func TestClassifySubcmd(t *testing.T) {
+func TestClassifyComposeVerb(t *testing.T) {
 	tests := []struct {
-		subcmd string
-		want   dispatchPath
+		verb string
+		want composeVerbClass
 	}{
-		{"up", pathRender},
-		{"run", pathRender},
-		{"create", pathRender},
-		{"volumes", pathReference},
-		{"down", pathReference},
-		{"stop", pathReference},
-		{"kill", pathReference},
-		{"rm", pathReference},
-		{"validate", pathNative},
-		{"show-nft", pathNative},
-		{"doctor", pathNative},
-		{"show-compose", pathNative},
-		{"version", pathNative},
-		{"help", pathNative},
-		{"completion", pathNative},
-		{"", pathNative},
-		{"logs", pathReference},
-		{"ps", pathReference},
-		{"exec", pathReference},
-		{"pull", pathReference},
-		{"foo", pathReference},
+		{"up", verbRender},
+		{"run", verbRender},
+		{"create", verbRender},
+		{"volumes", verbReference},
+		{"down", verbReference},
+		{"stop", verbReference},
+		{"kill", verbReference},
+		{"rm", verbReference},
+		{"logs", verbReference},
+		{"ps", verbReference},
+		{"exec", verbReference},
+		{"pull", verbReference},
+		{"foo", verbReference},
 	}
 	for _, tc := range tests {
-		if got := classifySubcmd(tc.subcmd); got != tc.want {
-			t.Errorf("classifySubcmd(%q) = %v, want %v", tc.subcmd, got, tc.want)
+		if got := classifyComposeVerb(tc.verb); got != tc.want {
+			t.Errorf("classifyComposeVerb(%q) = %v, want %v", tc.verb, got, tc.want)
 		}
 	}
 }
@@ -81,9 +73,9 @@ func TestExecDockerComposeReferenceRequiresComposeConfig(t *testing.T) {
 		_ = os.Unsetenv("COMPOSE_FILE")
 	})
 
-	inv, err := ParseInvocation([]string{"down"})
+	inv, err := ParseComposeInvocation([]string{"down"})
 	if err != nil {
-		t.Fatalf("ParseInvocation: %v", err)
+		t.Fatalf("ParseComposeInvocation: %v", err)
 	}
 	err = execDockerCompose(inv, "services: {}\n", nil)
 	if err == nil {
@@ -219,7 +211,7 @@ func TestServicesNeedingPrebuildForceRebuild(t *testing.T) {
 	}
 }
 
-func TestParseInvocationComposeGlobals(t *testing.T) {
+func TestParseComposeInvocationComposeGlobals(t *testing.T) {
 	tests := []struct {
 		name string
 		args []string
@@ -234,9 +226,9 @@ func TestParseInvocationComposeGlobals(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			inv, err := ParseInvocation(tc.args)
+			inv, err := ParseComposeInvocation(tc.args)
 			if err != nil {
-				t.Fatalf("ParseInvocation: %v", err)
+				t.Fatalf("ParseComposeInvocation: %v", err)
 			}
 			got := inv.ComposeGlobals
 			if strings.Join(got, " ") != strings.Join(tc.want, " ") {
@@ -272,17 +264,17 @@ func TestComputeCapDelta(t *testing.T) {
 	}
 }
 
-func TestParseInvocationVakaInitPresentBool(t *testing.T) {
+func TestParseRootArgsVakaInitPresentBool(t *testing.T) {
 	// --vaka-init-present is a boolean flag and must appear before subcommand.
-	inv, err := ParseInvocation([]string{"--vaka-init-present", "up", "--remove-orphans"})
+	root, err := parseRootArgs([]string{"--vaka-init-present", "up", "--remove-orphans"})
 	if err != nil {
-		t.Fatalf("ParseInvocation: %v", err)
+		t.Fatalf("parseRootArgs: %v", err)
 	}
-	if inv.VakaFlags["--vaka-init-present"] != "true" {
-		t.Errorf("expected --vaka-init-present=true, got %q", inv.VakaFlags["--vaka-init-present"])
+	if !root.VakaInitPresent {
+		t.Error("expected VakaInitPresent=true")
 	}
 	want := []string{"up", "--remove-orphans"}
-	if strings.Join(inv.ComposeArgs, " ") != strings.Join(want, " ") {
-		t.Errorf("compose args = %v, want %v", inv.ComposeArgs, want)
+	if strings.Join(root.Rest, " ") != strings.Join(want, " ") {
+		t.Errorf("rest args = %v, want %v", root.Rest, want)
 	}
 }
