@@ -1,6 +1,7 @@
 # Design: vaka Recipes Registry
 
-Status: draft for discussion
+Status: accepted — ready for Phase 1 implementation (amendments expected as
+implementation feedback, not further paper review)
 Scope: `vaka get`, `vaka search`, `vaka recipes`, `vaka registry` and the
 registry repository format. Nothing here is implemented yet.
 
@@ -196,12 +197,22 @@ vaka registry refresh [name]                  # re-fetch index(es)
 **Update semantics.** vaka is not a merge tool: an update only ever replaces
 pristine files, and it never overwrites anything the user created or
 modified. Files fall into exactly two classes — **tracked** (shipped by the
-recipe, hashed in the lock) and **untracked** (created by the user).
+recipe, hashed in the lock) and **untracked** (created by the user). The
+`.vaka-*` name prefix inside a recipe directory is **reserved for vaka's own
+state** (lock, journal, update lock, staging): the matrix below never
+classifies such paths, recipes may not ship them (§7, §8), and users should
+not create them.
 
 1. **Single updater (before anything is read):** vaka takes an exclusive
-   advisory lock (`flock`) on `.vaka-recipe.lock` and holds it from pre-check
-   through journal cleanup. A concurrent `vaka get` on the same directory
-   fails fast ("another vaka get is updating this directory"). The lock is
+   advisory lock (`flock`) on `.vaka-recipe.update.lock` — a dedicated,
+   stable lock file, created on first update and never renamed, replaced, or
+   deleted — held from pre-check through cleanup. Locking the data lock
+   would not work: `flock` binds to the inode, and the commit rename below
+   replaces `.vaka-recipe.lock` with a new inode, which would admit a second
+   updater before cleanup finishes. Never deleting the lock file avoids the
+   unlink/recreate race, and a crashed holder's lock is released by the
+   kernel automatically. A concurrent `vaka get` on the same directory fails
+   fast ("another vaka get is updating this directory"). The lock is
    advisory: it serializes vaka against vaka, which is the concurrency this
    design defends against.
 2. **Pre-check (before anything is written):** every path in the old lock and
@@ -234,8 +245,10 @@ recipe, hashed in the lock) and **untracked** (created by the user).
    the future lock file itself: it records the target, the per-path plan with
    its accepted states, and the canonical final `RecipeLock` document to be
    installed at commit. Skipped collisions and kept-user-copies are absent
-   from the plan and the final lock, so they remain user-owned on every
-   subsequent update.
+   from the plan and from the final lock's `files:` map — they remain
+   user-owned on every subsequent update — but they are recorded in the
+   final lock's `deviations:` section, so the lock never silently attests to
+   a published version the directory does not actually match.
 
    ```yaml
    # .vaka-recipe.lock.new — update journal, removed after commit
@@ -259,9 +272,28 @@ recipe, hashed in the lock) and **untracked** (created by the user).
      # ...
    ```
 
+   All updater I/O is **contained and staged**:
+
+   - Every path operation in the recipe directory — staging, rename, delete,
+     lock and journal writes — resolves beneath the recipe root with
+     symlinks disabled and types revalidated on the opened descriptor at
+     mutation time (Go's `os.Root`), so a concurrently planted symlink — by
+     another process, or by a running container that bind-mounts the
+     directory — cannot redirect a write outside the tree. This is the same
+     discipline as the §7 extractor, implemented once as a shared safe-I/O
+     primitive; the recipe's own in-tree symlinks remain data and are never
+     followed.
+   - Every temporary file (journal, replacement content, final lock) is
+     created with `O_EXCL` inside `.vaka-staging/`, a journal-owned scratch
+     directory in the recipe root (same filesystem, so the renames below
+     stay atomic). Recovery needs no temp-file bookkeeping: whenever no
+     apply is in progress, the entire staging directory is disposable and is
+     removed — orphaned temporaries can never masquerade as untracked user
+     files.
+
    The write sequence, in order:
 
-   1. **Journal first**: write to a temp name, `fsync` the file, rename to
+   1. **Journal first**: write into staging, `fsync` the file, rename to
       `.vaka-recipe.lock.new`, `fsync` the directory — all before any tree
       mutation. When a dangling journal from an interrupted update exists,
       the new journal's `accepted` sets are the union of the committed lock's
@@ -269,24 +301,37 @@ recipe, hashed in the lock) and **untracked** (created by the user).
       target states (including expected absences, types, and modes) — the
       chain grows only across consecutive failed updates and resets at the
       first successful commit.
-   2. **Apply the matrix**: each installed file is written to a temp name,
-      `fsync`ed, renamed into place; parent-directory `fsync`s may be batched
-      after the renames. Deletions follow the matrix.
-   3. **Commit**: write the journal's embedded `finalLock` to a temp name,
+   2. **Apply the matrix**: each installed file is written into staging,
+      `fsync`ed, renamed into place; directory `fsync`s may be batched after
+      the renames. Deletions follow the matrix.
+   3. **Commit**: write the journal's embedded `finalLock` into staging,
       `fsync`, atomically rename it over `.vaka-recipe.lock`, `fsync` the
       directory. **This rename is the commit point.** (Renaming the journal
       itself would be wrong: it is a `RecipeLockPending` envelope, and a
       rename changes a file's name, not its contents.)
-   4. **Cleanup**: unlink `.vaka-recipe.lock.new`, `fsync` the directory. A
-      crash between commit and cleanup leaves a stale journal; any journal
-      whose target version and digest equal the committed lock's is
-      recognized as completed and removed silently on the next run.
+   4. **Cleanup**: unlink `.vaka-recipe.lock.new`, remove `.vaka-staging/`,
+      `fsync` the directory. A crash between commit and cleanup leaves a
+      stale journal and/or staging remnants: any journal whose target version
+      and digest equal the committed lock's is recognized as completed and
+      removed silently on the next run, and staging is always removed
+      whenever no apply is in progress.
 5. Untracked files are never written, never deleted, never read; the
    collision row above is this rule applied to installation.
 
 Warnings repeat on every update until the user resolves the underlying state,
 and resolving it converges: e.g. removing a colliding user file and re-running
 `vaka get` installs and tracks the recipe's copy.
+
+**Deviations are recorded and surfaced.** The two graceful matrix rows that
+leave the directory diverging from the published recipe — a skipped
+collision (a shipped file was not installed) and a kept-user-copy (an
+upstream-dropped file was retained) — are written to the lock's
+`deviations:` section. `vaka get` warns when they occur; the render verbs
+(`up`, `run`, `create`) print a one-line notice while deviations exist; and
+the future `vaka recipes verify` reports "directory matches lock; lock
+records N deviations from <name>@<version>" instead of a clean pass.
+Resolving the underlying state and re-running `vaka get` drops the entry, so
+the notices converge to silence.
 
 Local customizations therefore belong in untracked files: `.env`,
 `compose.override.yaml` (which compose auto-loads, so overrides survive every
@@ -310,8 +355,12 @@ installs materialize as a single directory rename.
 **Scope of the guarantee.** `vaka get` is idempotent and crash-consistent
 against process crashes (Ctrl-C, SIGKILL, OOM) and — via the fsync protocol
 above — power loss, on a local POSIX filesystem, with concurrent updaters
-excluded by the advisory lock. Network filesystems weaken both `fsync` and
-`flock` semantics; there the same behavior is best-effort. Claims beyond
+excluded by the advisory lock. Containment guarantees updater writes cannot
+escape the recipe directory even under concurrent tree mutation; it does not
+make the update immune to such mutation — the pre-check is a moment-in-time
+scan, and a non-vaka writer racing the apply can still produce a tree the
+next pre-check will flag. Network filesystems weaken `fsync`, `flock`, and
+`O_EXCL` semantics; there the same behavior is best-effort. Claims beyond
 these stated assumptions are deliberately not made.
 
 Provenance lock written by `get` into the recipe dir:
@@ -330,6 +379,7 @@ files:                                   # every extracted file
   docker-compose.yaml: link:compose.yaml # symlinks record their target path
   vaka.yaml: sha256:...
   myCodex: sha256:...+x                  # +x records the executable bit
+deviations: []             # e.g. {path: litellm.config.yaml, kind: skipped-collision}
 ```
 
 Symlink entries store the literal target path (`link:<target>`), git-style,
@@ -373,7 +423,13 @@ supply chain and must be treated like one:
   scripts like `myCodex`) but nothing else.
 - Enforce limits: max unpacked size, max file count, max single-file size
   (decompression-bomb defense).
+- Reject entries under the reserved `.vaka-*` namespace (lock, journal,
+  update lock, staging): a recipe that ships vaka's own state files could
+  forge provenance or corrupt update state on install.
 - Extract to temp dir + atomic rename; no partially-installed recipes.
+- Extraction and the §6 updater share one safe recipe-dir I/O primitive
+  (beneath-root, no-follow, type-revalidating; Go's `os.Root`) — the
+  hardening is implemented once, not twice.
 
 **Risk surfacing (lint), not gatekeeping.** After every `get` (and computed by
 CI into the index for search/info), vaka derives `riskFlags` from the actual
@@ -406,7 +462,8 @@ get the same guarantees by copying two workflow files):
 1. **validate** (every PR): for each changed recipe — `recipe.yaml` schema
    check, name/dir match, semver bump enforced when content changes,
    `docker compose config` parses, `vaka validate --compose` passes, README
-   present, risk lint (fail on undeclared flags), secret scan.
+   present, no reserved `.vaka-*` paths, risk lint (fail on undeclared
+   flags), secret scan.
 2. **publish** (tag `<name>-<version>`): package `<name>-<version>.tar.gz`,
    compute digest, attach to a GitHub Release, regenerate `index.yaml`, and
    publish it (GitHub Pages branch or release asset behind a stable URL).
@@ -454,8 +511,10 @@ New packages, keeping `cmd/vaka` thin like the compose path:
 
 - `pkg/registry`: registries config load/save, index fetch+cache (ETag),
   index model, name resolution (uniqueness rule), semver selection.
-- `pkg/recipe`: manifest + lock models, hardened tar extractor, digest
-  verification, install/update engine (hash comparison), risk lint (reuses
+- `pkg/recipe`: manifest + lock models, a shared safe recipe-dir I/O
+  primitive (`os.Root`) used by both the extractor and the updater, hardened
+  tar extractor, digest verification, install/update engine (hash
+  comparison), risk lint (reuses
   `compose-go` and `pkg/policy` already in go.mod; policy summary reuses
   `loadAndValidate`).
 - `cmd/vaka`: `get.go`, `search.go`, `recipes.go`, `registry.go` — normal
@@ -477,9 +536,15 @@ New packages, keeping `cmd/vaka` thin like the compose path:
   journals inherit accepted states — that the final lock is installed via a
   single atomic rename, that a stale journal left after commit is removed,
   that a dangling journal never classifies genuine user edits as pristine,
-  and that a concurrent `vaka get` is refused while the update flock is held;
-  catalog-list tests verify that listing consumes registry indexes without
-  repository fetching or filesystem scanning;
+  that staging remnants are removed on the next run, and that a concurrent
+  `vaka get` is refused while `.vaka-recipe.update.lock` is held (which is
+  never renamed or deleted); containment tests swap parent path components
+  for symlinks mid-update and assert no write lands outside the recipe root;
+  deviation tests verify entries are recorded in the lock, surfaced by the
+  render verbs, and dropped once resolved; extractor tests reject archive
+  entries under the reserved `.vaka-*` namespace; catalog-list tests verify
+  that listing consumes registry indexes without repository fetching or
+  filesystem scanning;
   version-selection tests cover exact-version and latest selection plus
   SemVer ordering through the selected library.
 
