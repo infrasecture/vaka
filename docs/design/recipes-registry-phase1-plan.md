@@ -170,9 +170,13 @@ every boundary rather than relying on process-kill heroics.
 
 ## Risks / watch items
 
-- `os.Root` API coverage: confirm rename/remove/readlink coverage on Go 1.25
-  in commit 2; if a primitive is missing, fall back to `unix.Openat2`-based
-  helpers inside `saferoot.go` without changing its interface.
+- `os.Root` API coverage: **verified** against go1.25.0 — every primitive
+  saferoot needs is present (`OpenFile`+`O_EXCL`, `Rename`, `Remove`/
+  `RemoveAll`, `Mkdir`, `Symlink`, `Readlink`, `Lstat`, `Chmod`, `FS()` for
+  walks, file/dir `Sync` via the returned handles, flock via `Fd()`).
+  `Rename`, `Symlink`, `Readlink`, `RemoveAll`, and `Chmod` are Go 1.25
+  additions, so **go.mod's `go 1.25.0` is a hard floor** — Go 1.24 would
+  require an `openat2` fallback that we deliberately do not carry.
 - ETag behavior of GitHub Pages is well-defined, but the fetcher must treat
   *any* 2xx without ETag as cacheable-but-always-refetched (correctness over
   optimization).
