@@ -198,18 +198,25 @@ pristine files, and it never overwrites anything the user created or
 modified. Files fall into exactly two classes — **tracked** (shipped by the
 recipe, hashed in the lock) and **untracked** (created by the user).
 
-1. **Pre-check (before anything is written):** every path in the old lock and
-   in the new version is classified against the disk. A file counts as
-   **pristine** when its content matches any recorded upstream state — the
-   old lock, a dangling update journal (step 3), or the version being
+1. **Single updater (before anything is read):** vaka takes an exclusive
+   advisory lock (`flock`) on `.vaka-recipe.lock` and holds it from pre-check
+   through journal cleanup. A concurrent `vaka get` on the same directory
+   fails fast ("another vaka get is updating this directory"). The lock is
+   advisory: it serializes vaka against vaka, which is the concurrency this
+   design defends against.
+2. **Pre-check (before anything is written):** every path in the old lock and
+   in the new version is classified against the disk. A path counts as
+   **pristine** when its content, entry type, and executable bit match any
+   **accepted state**: the committed lock, any accepted or target state
+   recorded in a dangling update journal (step 4), or the version being
    installed — so a half-applied earlier update is never mistaken for user
    edits. Exactly **one** case blocks the update: a tracked file whose
-   content was locally modified (or whose type changed) *and* which the new
-   version still ships — replacing it would destroy the user's edits, and
-   vaka does not merge. The rejection lists the offending files; there is no
-   override flag. Every other situation resolves per the matrix below with at
-   most a warning.
-2. **Decision matrix (per path):**
+   content was locally modified (or whose type or mode changed) *and* which
+   the new version still ships — replacing it would destroy the user's edits,
+   and vaka does not merge. The rejection lists the offending files; there is
+   no override flag. Every other situation resolves per the matrix below with
+   at most a warning.
+3. **Decision matrix (per path):**
 
    | On disk | In new version | Action |
    |---|---|---|
@@ -222,16 +229,59 @@ recipe, hashed in the lock) and **untracked** (created by the user).
    | untracked file exists at a path the new version ships | yes | **never overwrite**: skip installing that path, keep the user's file, warn with recovery ("rename or remove it and re-run `vaka get` to receive the recipe's version") |
    | absent | yes (new in this version) | install and track |
 
-3. **Apply (journaled two-phase commit):** the pre-check's decisions are
-   first written to an update journal, `.vaka-recipe.lock.new`
-   (`kind: RecipeLockPending`, same schema as the lock plus the resolved
-   decision per path). The journal *is* the future lock: target version,
-   digest, and the hashes of what will actually be tracked — skipped
-   collisions and kept-user-copies are absent from it, so they remain
-   user-owned on every subsequent update. Files are then applied per-file
-   (write-then-rename), and the atomic rename of `.vaka-recipe.lock.new` over
-   `.vaka-recipe.lock` is the commit point.
-4. Untracked files are never written, never deleted, never read; the
+4. **Apply — durable, journaled two-phase commit.** The journal
+   `.vaka-recipe.lock.new` (`kind: RecipeLockPending`) is an *envelope*, not
+   the future lock file itself: it records the target, the per-path plan with
+   its accepted states, and the canonical final `RecipeLock` document to be
+   installed at commit. Skipped collisions and kept-user-copies are absent
+   from the plan and the final lock, so they remain user-owned on every
+   subsequent update.
+
+   ```yaml
+   # .vaka-recipe.lock.new — update journal, removed after commit
+   apiVersion: recipes.vaka/v1alpha1
+   kind: RecipeLockPending
+   target:
+     registry: official
+     name: codex
+     version: 0.4.0
+     digest: sha256:41c8...
+   plan:                       # per path: what may be replaced, with what
+     compose.yaml:
+       accepted: [sha256:9f2a..., sha256:77b0...]  # lock ∪ prior journal chain
+       final: sha256:41c8...
+     legacy-hook.sh:
+       accepted: [sha256:c001...]
+       final: absent                               # dropped by the new version
+   finalLock:                  # canonical RecipeLock, installed verbatim at commit
+     apiVersion: recipes.vaka/v1alpha1
+     kind: RecipeLock
+     # ...
+   ```
+
+   The write sequence, in order:
+
+   1. **Journal first**: write to a temp name, `fsync` the file, rename to
+      `.vaka-recipe.lock.new`, `fsync` the directory — all before any tree
+      mutation. When a dangling journal from an interrupted update exists,
+      the new journal's `accepted` sets are the union of the committed lock's
+      states, the prior journal's `accepted` states, and the prior journal's
+      target states (including expected absences, types, and modes) — the
+      chain grows only across consecutive failed updates and resets at the
+      first successful commit.
+   2. **Apply the matrix**: each installed file is written to a temp name,
+      `fsync`ed, renamed into place; parent-directory `fsync`s may be batched
+      after the renames. Deletions follow the matrix.
+   3. **Commit**: write the journal's embedded `finalLock` to a temp name,
+      `fsync`, atomically rename it over `.vaka-recipe.lock`, `fsync` the
+      directory. **This rename is the commit point.** (Renaming the journal
+      itself would be wrong: it is a `RecipeLockPending` envelope, and a
+      rename changes a file's name, not its contents.)
+   4. **Cleanup**: unlink `.vaka-recipe.lock.new`, `fsync` the directory. A
+      crash between commit and cleanup leaves a stale journal; any journal
+      whose target version and digest equal the committed lock's is
+      recognized as completed and removed silently on the next run.
+5. Untracked files are never written, never deleted, never read; the
    collision row above is this rule applied to installation.
 
 Warnings repeat on every update until the user resolves the underlying state,
@@ -247,15 +297,22 @@ authoring guideline.
 
 The pre-check prevents accidental breakage of modified stacks, and the
 journal makes interruption recoverable: a crash or Ctrl-C mid-apply leaves a
-dangling journal whose hashes identify every half-applied file as pristine,
-so re-running `vaka get` resumes and completes the update — including when
-the re-run resolves a newer version than the interrupted one, and without
-ever masking genuine user edits (those match no recorded upstream state and
-still block). The journal disappears only at the commit rename or by being
-superseded by the next update's journal; a journal without a lock cannot
-occur, because fresh installs materialize as a single directory rename.
-`vaka get` is therefore unconditionally idempotent: interrupted installs
-leave nothing behind, and interrupted updates converge on re-run.
+dangling journal whose accepted and target states identify every
+half-applied file as pristine, so re-running `vaka get` resumes and completes
+the update. Because each new journal inherits its predecessor's accepted
+states, this holds across *chains* of interruptions and across re-runs that
+resolve a newer version than the interrupted one (lock has `x = A`, an
+interrupted update wrote `x = B`, the re-run targets `C`: `B` remains an
+accepted state and is replaceable). Genuine user edits match no accepted
+state and still block. A journal without a lock cannot occur, because fresh
+installs materialize as a single directory rename.
+
+**Scope of the guarantee.** `vaka get` is idempotent and crash-consistent
+against process crashes (Ctrl-C, SIGKILL, OOM) and — via the fsync protocol
+above — power loss, on a local POSIX filesystem, with concurrent updaters
+excluded by the advisory lock. Network filesystems weaken both `fsync` and
+`flock` semantics; there the same behavior is best-effort. Claims beyond
+these stated assumptions are deliberately not made.
 
 Provenance lock written by `get` into the recipe dir:
 
@@ -272,14 +329,16 @@ files:                                   # every extracted file
   compose.yaml: sha256:...
   docker-compose.yaml: link:compose.yaml # symlinks record their target path
   vaka.yaml: sha256:...
-  myCodex: sha256:...
+  myCodex: sha256:...+x                  # +x records the executable bit
 ```
 
 Symlink entries store the literal target path (`link:<target>`), git-style,
 rather than a hash: the target file's content is already covered by its own
 tracked entry, and the plaintext path makes repointing and file↔symlink type
 changes directly visible to the update pre-check (and to human readers of the
-lock).
+lock). Regular-file entries carry a `+x` suffix when the executable bit is
+set, so the pre-check compares content, entry type, and mode — a chmod of a
+tracked file counts as a local modification.
 
 The lock makes every instantiated recipe self-describing (no global installed
 database; a dir's provenance lives in the dir, which also survives the user
@@ -407,16 +466,20 @@ New packages, keeping `cmd/vaka` thin like the compose path:
   indexes/tarballs; extractor gets adversarial-archive tests (traversal,
   symlink escape, bombs). Installer tests reject every existing unlocked target,
   including empty directories; update tests exercise every row of the §6
-  decision matrix — the single rejection case (modified/retyped tracked file
-  still shipped, incl. symlink repointing), untrack-and-keep, reinstall of
-  locally deleted files, dropped-file deletion, and the untracked-collision
-  skip that must never overwrite a user file; interrupted-update tests abort
-  the apply at every step boundary (journal written, each file replaced,
-  pre-commit) and verify that re-running `vaka get` converges — to the same
-  and to a newer target version — that the journal commits via a single
-  rename, and that a dangling journal never classifies genuine user edits as
-  pristine; catalog-list tests verify that listing consumes registry indexes
-  without repository fetching or filesystem scanning;
+  decision matrix — the single rejection case (modified/retyped/re-moded
+  tracked file still shipped, incl. symlink repointing and chmod),
+  untrack-and-keep, reinstall of locally deleted files, dropped-file
+  deletion, and the untracked-collision skip that must never overwrite a user
+  file; interrupted-update tests abort the apply at every step boundary
+  (journal written, each file replaced, pre-commit, post-commit/pre-cleanup)
+  and verify that re-running `vaka get` converges — to the same and to a
+  newer target version, including chains of interrupted updates whose
+  journals inherit accepted states — that the final lock is installed via a
+  single atomic rename, that a stale journal left after commit is removed,
+  that a dangling journal never classifies genuine user edits as pristine,
+  and that a concurrent `vaka get` is refused while the update flock is held;
+  catalog-list tests verify that listing consumes registry indexes without
+  repository fetching or filesystem scanning;
   version-selection tests cover exact-version and latest selection plus
   SemVer ordering through the selected library.
 
