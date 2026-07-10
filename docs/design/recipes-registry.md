@@ -199,12 +199,16 @@ modified. Files fall into exactly two classes — **tracked** (shipped by the
 recipe, hashed in the lock) and **untracked** (created by the user).
 
 1. **Pre-check (before anything is written):** every path in the old lock and
-   in the new version is classified against the disk. Exactly **one** case
-   blocks the update: a tracked file whose content was locally modified (or
-   whose type changed) *and* which the new version still ships — replacing it
-   would destroy the user's edits, and vaka does not merge. The rejection
-   lists the offending files; there is no override flag. Every other
-   situation resolves per the matrix below with at most a warning.
+   in the new version is classified against the disk. A file counts as
+   **pristine** when its content matches any recorded upstream state — the
+   old lock, a dangling update journal (step 3), or the version being
+   installed — so a half-applied earlier update is never mistaken for user
+   edits. Exactly **one** case blocks the update: a tracked file whose
+   content was locally modified (or whose type changed) *and* which the new
+   version still ships — replacing it would destroy the user's edits, and
+   vaka does not merge. The rejection lists the offending files; there is no
+   override flag. Every other situation resolves per the matrix below with at
+   most a warning.
 2. **Decision matrix (per path):**
 
    | On disk | In new version | Action |
@@ -218,10 +222,15 @@ recipe, hashed in the lock) and **untracked** (created by the user).
    | untracked file exists at a path the new version ships | yes | **never overwrite**: skip installing that path, keep the user's file, warn with recovery ("rename or remove it and re-run `vaka get` to receive the recipe's version") |
    | absent | yes (new in this version) | install and track |
 
-3. **Apply:** per-file write-then-rename for everything the matrix installs;
-   the lock is rewritten last and records what is *actually* tracked after
-   the update — skipped collisions and kept-user-copies are absent from it,
-   so they remain user-owned on every subsequent update.
+3. **Apply (journaled two-phase commit):** the pre-check's decisions are
+   first written to an update journal, `.vaka-recipe.lock.new`
+   (`kind: RecipeLockPending`, same schema as the lock plus the resolved
+   decision per path). The journal *is* the future lock: target version,
+   digest, and the hashes of what will actually be tracked — skipped
+   collisions and kept-user-copies are absent from it, so they remain
+   user-owned on every subsequent update. Files are then applied per-file
+   (write-then-rename), and the atomic rename of `.vaka-recipe.lock.new` over
+   `.vaka-recipe.lock` is the commit point.
 4. Untracked files are never written, never deleted, never read; the
    collision row above is this rule applied to installation.
 
@@ -236,11 +245,17 @@ user-edited configuration must ship `*.example` templates rather than expect
 edits to tracked files; the risk lint and registry CI treat this as an
 authoring guideline.
 
-The pre-check prevents accidental breakage of modified stacks, and per-file
-write-then-rename keeps each step atomic — but an update is deliberately
-**not** claimed to be atomic as a whole: a hard crash mid-apply can leave a
-mixed tree, which the next pre-check will reject. Recovery is a fresh
-`vaka get` into a new directory plus copying the untracked files over.
+The pre-check prevents accidental breakage of modified stacks, and the
+journal makes interruption recoverable: a crash or Ctrl-C mid-apply leaves a
+dangling journal whose hashes identify every half-applied file as pristine,
+so re-running `vaka get` resumes and completes the update — including when
+the re-run resolves a newer version than the interrupted one, and without
+ever masking genuine user edits (those match no recorded upstream state and
+still block). The journal disappears only at the commit rename or by being
+superseded by the next update's journal; a journal without a lock cannot
+occur, because fresh installs materialize as a single directory rename.
+`vaka get` is therefore unconditionally idempotent: interrupted installs
+leave nothing behind, and interrupted updates converge on re-run.
 
 Provenance lock written by `get` into the recipe dir:
 
@@ -395,9 +410,13 @@ New packages, keeping `cmd/vaka` thin like the compose path:
   decision matrix — the single rejection case (modified/retyped tracked file
   still shipped, incl. symlink repointing), untrack-and-keep, reinstall of
   locally deleted files, dropped-file deletion, and the untracked-collision
-  skip that must never overwrite a user file; catalog-list tests verify that
-  listing consumes registry indexes without repository fetching or filesystem
-  scanning;
+  skip that must never overwrite a user file; interrupted-update tests abort
+  the apply at every step boundary (journal written, each file replaced,
+  pre-commit) and verify that re-running `vaka get` converges — to the same
+  and to a newer target version — that the journal commits via a single
+  rename, and that a dangling journal never classifies genuine user edits as
+  pristine; catalog-list tests verify that listing consumes registry indexes
+  without repository fetching or filesystem scanning;
   version-selection tests cover exact-version and latest selection plus
   SemVer ordering through the selected library.
 
@@ -411,8 +430,8 @@ existing `gopkg.in/yaml.v3`.
 
 1. **Phase 1 — read-only consumption**: registries config + `official`
    default, index fetch/cache, `vaka search`, `vaka recipes list|info`,
-   `vaka get` (install + idempotent update, digest verify, hardened extract,
-   lock file, local risk lint). Registry repo with codex recipe + CI.
+   `vaka get` (install + idempotent journaled update, digest verify, hardened
+   extract, lock file, local risk lint). Registry repo with codex recipe + CI.
 2. **Phase 2 — management & polish**: `vaka registry add|remove|refresh`
    UX hardening, `vaka recipes info` full version history, shell completion
    for recipe names (from cached index), `minVakaVersion` enforcement
