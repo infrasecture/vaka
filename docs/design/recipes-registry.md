@@ -194,18 +194,40 @@ vaka registry refresh [name]                  # re-fetch index(es)
    steps (`cd codex && vaka up`).
 
 **Update semantics.** vaka is not a merge tool: an update only ever replaces
-pristine files. Files fall into exactly two classes — **tracked** (shipped by
-the recipe, hashed in the lock) and **untracked** (created by the user, never
-touched in either direction).
+pristine files, and it never overwrites anything the user created or
+modified. Files fall into exactly two classes — **tracked** (shipped by the
+recipe, hashed in the lock) and **untracked** (created by the user).
 
-1. **Pre-check (before anything is written):** every tracked file must be
-   present, unmodified, and of unchanged type per the lock hashes. Any
-   locally modified, deleted, or retyped tracked file → the whole update is
-   rejected with the offending files listed. There is no override flag.
-2. **Apply:** replace tracked files with the new version's content (per-file
-   write-then-rename), add files new in this version, delete tracked files
-   the new version dropped, then rewrite the lock last.
-3. Untracked files are never written, never deleted, never read.
+1. **Pre-check (before anything is written):** every path in the old lock and
+   in the new version is classified against the disk. Exactly **one** case
+   blocks the update: a tracked file whose content was locally modified (or
+   whose type changed) *and* which the new version still ships — replacing it
+   would destroy the user's edits, and vaka does not merge. The rejection
+   lists the offending files; there is no override flag. Every other
+   situation resolves per the matrix below with at most a warning.
+2. **Decision matrix (per path):**
+
+   | On disk | In new version | Action |
+   |---|---|---|
+   | tracked, pristine | yes | replace with the new content |
+   | tracked, pristine | no | delete (upstream dropped it) |
+   | tracked, modified/retyped | yes | **reject the entire update** — the only blocking case |
+   | tracked, modified/retyped | no | keep the user's file, stop tracking it, warn: "no longer shipped; your modified copy is now user-owned" |
+   | tracked, locally deleted | yes | reinstall pristine, warn — nothing user-made exists to lose, and restoring keeps the recipe (and its policy) intact |
+   | tracked, locally deleted | no | nothing to do |
+   | untracked file exists at a path the new version ships | yes | **never overwrite**: skip installing that path, keep the user's file, warn with recovery ("rename or remove it and re-run `vaka get` to receive the recipe's version") |
+   | absent | yes (new in this version) | install and track |
+
+3. **Apply:** per-file write-then-rename for everything the matrix installs;
+   the lock is rewritten last and records what is *actually* tracked after
+   the update — skipped collisions and kept-user-copies are absent from it,
+   so they remain user-owned on every subsequent update.
+4. Untracked files are never written, never deleted, never read; the
+   collision row above is this rule applied to installation.
+
+Warnings repeat on every update until the user resolves the underlying state,
+and resolving it converges: e.g. removing a colliding user file and re-running
+`vaka get` installs and tracks the recipe's copy.
 
 Local customizations therefore belong in untracked files: `.env`,
 `compose.override.yaml` (which compose auto-loads, so overrides survive every
@@ -369,10 +391,13 @@ New packages, keeping `cmd/vaka` thin like the compose path:
   `execDockerComposeFn`) so all commands are testable offline with fixture
   indexes/tarballs; extractor gets adversarial-archive tests (traversal,
   symlink escape, bombs). Installer tests reject every existing unlocked target,
-  including empty directories; update tests cover the pre-check rejection
-  matrix (modified, deleted, retyped tracked files; symlink repointing) and
-  dropped-file deletion; catalog-list tests verify that listing consumes
-  registry indexes without repository fetching or filesystem scanning;
+  including empty directories; update tests exercise every row of the §6
+  decision matrix — the single rejection case (modified/retyped tracked file
+  still shipped, incl. symlink repointing), untrack-and-keep, reinstall of
+  locally deleted files, dropped-file deletion, and the untracked-collision
+  skip that must never overwrite a user file; catalog-list tests verify that
+  listing consumes registry indexes without repository fetching or filesystem
+  scanning;
   version-selection tests cover exact-version and latest selection plus
   SemVer ordering through the selected library.
 
