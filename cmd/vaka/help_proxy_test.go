@@ -67,11 +67,16 @@ func TestRootHelpListsShorthandsAndCompose(t *testing.T) {
 
 	for _, want := range []string{
 		"Vaka Commands:",
+		"Recipe Commands:",
 		"Compose Commands:",
 		"compose ",
 		"show-compose",
 		"validate",
 		"doctor",
+		"get ",
+		"search",
+		"recipes",
+		"registry",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("root help missing %q:\n%s", want, got)

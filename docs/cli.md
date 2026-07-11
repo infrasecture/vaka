@@ -13,6 +13,7 @@ vaka [--vaka-file=<path>] [--vaka-init-present] compose [compose-global-flags...
 | Path | Commands | Behavior |
 |------|----------|----------|
 | Native | `validate`, `show-nft`, `doctor`, `show-compose`, `version`, `help`, `completion` | Handled by vaka itself. |
+| Recipes | `get`, `search`, `recipes`, `registry` | Registry consumption: fetch and update recipes, browse catalogs. Never runs docker. |
 | Compose full render | `vaka compose up`, `vaka compose run`, `vaka compose create` | Validate policy, generate the full Compose override, inject secrets and entrypoint changes, then call Compose. |
 | Compose reference | Other `vaka compose` commands such as `logs`, `exec`, `ps`, `pull`, `down`, `stop`, `kill`, `rm` | Call Compose with a minimal `__vaka-init` overlay so helper resources remain visible. |
 | Compose metadata | `vaka compose version`, `vaka compose ls` | Proxied to Compose without any overlay; they work outside project directories. |
@@ -162,6 +163,76 @@ vaka version
 ```
 
 Prints the version stamped at build time.
+
+## Recipe Commands
+
+Recipes are ready-to-run, security-hardened compose projects published by
+registries (see the
+[registry design](design/recipes-registry.md) for the format and security
+model). The official registry is
+`https://github.com/infrasecture/vaka-registry`.
+
+### `vaka get`
+
+```bash
+vaka get <[registry/]name>[@version] [dir]
+```
+
+Fetches a recipe into `dir` (default `./<name>`), verified against the
+registry index's sha256 digest, and prints the locally computed egress
+policy summary, risk flags, and any required-but-unset environment
+variables. Versions are exact SemVer; omitted means newest.
+
+Running `vaka get` again on the same directory **updates** it:
+
+- Updates only ever replace pristine files. A locally modified tracked file
+  that the new version still ships rejects the whole update — vaka does not
+  merge, and there is no override flag. Keep customizations in untracked
+  files: `.env`, `compose.override.yaml`, or files the recipe does not ship.
+- User-created files are never overwritten. A new recipe file colliding with
+  yours is skipped and recorded as a deviation; the render commands print a
+  notice while deviations exist.
+- Interrupted installs leave nothing behind; interrupted updates converge by
+  re-running `vaka get` (journaled two-phase commit).
+- `vaka get` never adopts an existing non-recipe directory and never runs
+  docker.
+
+### `vaka search` / `vaka recipes`
+
+```bash
+vaka search [term]                  # search names, descriptions, tags
+vaka recipes list                   # full catalogs (newest version each)
+vaka recipes info <name>[@version]  # published metadata of one recipe
+```
+
+Catalog commands read the registries' published indexes (cached with ETag
+revalidation; a cache younger than 15 minutes is served without network).
+They never scan the local filesystem. The policy block they display is the
+registry's advisory copy — `vaka get` always recomputes it locally.
+
+### `vaka registry`
+
+```bash
+vaka registry list
+```
+
+Lists configured registries and cache freshness. Registries are configured
+in `registries.yaml` (path shown by `list`; defaults to the official
+registry when absent):
+
+```yaml
+apiVersion: recipes.vaka/v1alpha1
+kind: RegistriesConfig
+registries:
+  - name: official
+    url: https://infrasecture.github.io/vaka-registry/index.yaml
+```
+
+Registry names match `[a-z0-9-]+` and index URLs must be `https://`
+(`file://` is allowed for local/air-gapped registries). An unqualified
+recipe name resolves only when it is unique across all configured
+registries; otherwise vaka lists the qualified candidates
+(`registry/name`).
 
 ## `vaka completion`
 

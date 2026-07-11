@@ -237,7 +237,7 @@ not create them.
    | tracked, modified/retyped | no | keep the user's file, stop tracking it, warn: "no longer shipped; your modified copy is now user-owned" |
    | tracked, locally deleted | yes | reinstall pristine, warn — nothing user-made exists to lose, and restoring keeps the recipe (and its policy) intact |
    | tracked, locally deleted | no | nothing to do |
-   | untracked file exists at a path the new version ships | yes | **never overwrite**: skip installing that path, keep the user's file, warn with recovery ("rename or remove it and re-run `vaka get` to receive the recipe's version") |
+   | untracked file exists at a path the new version ships | yes | **never overwrite**: skip installing that path, keep the user's file, warn with recovery ("rename or remove it and re-run `vaka get` to receive the recipe's version"). A byte-identical untracked file is adopted and tracked instead — indistinguishable from installing it, and it converges rather than warning forever. |
    | absent | yes (new in this version) | install and track |
 
 4. **Apply — durable, journaled two-phase commit.** The journal

@@ -106,6 +106,15 @@ vaka compose -f compose.prod.yaml up -d
 vaka compose pull
 ```
 
+Ready-made, policy-hardened stacks are published in the
+[recipe registry](https://github.com/infrasecture/vaka-registry):
+
+```bash
+vaka search agent
+vaka get codex        # fetch the recipe, digest-verified; never runs docker
+cd codex && vaka up
+```
+
 For a slower walkthrough, see [docs/quickstart.md](docs/quickstart.md).
 
 ## Mental Model

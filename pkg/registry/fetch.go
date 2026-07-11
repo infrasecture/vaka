@@ -76,6 +76,19 @@ func validateIndexURL(raw string) error {
 	}
 }
 
+// CacheAge reports the age of the registry's cached index, if one exists.
+func (c *Client) CacheAge(reg Registry) (time.Duration, bool) {
+	dir, err := c.cacheDir()
+	if err != nil {
+		return 0, false
+	}
+	st, err := os.Stat(filepath.Join(dir, reg.Name, "index.yaml"))
+	if err != nil {
+		return 0, false
+	}
+	return time.Since(st.ModTime()), true
+}
+
 // FetchIndex returns the registry's index, revalidating the cache per
 // c.MaxIndexAge. On network failure a cached copy is returned with
 // Stale=true; without a cache the failure is fatal.
