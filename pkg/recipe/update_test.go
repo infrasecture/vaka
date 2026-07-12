@@ -51,6 +51,35 @@ func demoTarball(t *testing.T, compose string, withConf, withNewFile bool) strin
 	return path
 }
 
+// demoTarballWith builds a demo tarball plus a set of extra relative paths
+// (their parent directories are created automatically by the extractor).
+func demoTarballWith(t *testing.T, compose string, withConf, withNewFile bool, extra map[string]string) string {
+	t.Helper()
+	entries := []tarEntry{
+		{name: "demo/", typeflag: tar.TypeDir},
+		{name: "demo/compose.yaml", typeflag: tar.TypeReg, content: compose},
+		{name: "demo/docker-compose.yaml", typeflag: tar.TypeSymlink, linkname: "compose.yaml"},
+		{name: "demo/vaka.yaml", typeflag: tar.TypeReg, content: policyV1},
+		{name: "demo/run.sh", typeflag: tar.TypeReg, content: "#!/bin/sh\n", mode: 0o755},
+	}
+	if withConf {
+		entries = append(entries,
+			tarEntry{name: "demo/conf/", typeflag: tar.TypeDir},
+			tarEntry{name: "demo/conf/app.yaml", typeflag: tar.TypeReg, content: "conf v1\n"})
+	}
+	if withNewFile {
+		entries = append(entries, tarEntry{name: "demo/newfile.txt", typeflag: tar.TypeReg, content: newFileV2})
+	}
+	for rel, content := range extra {
+		entries = append(entries, tarEntry{name: "demo/" + rel, typeflag: tar.TypeReg, content: content})
+	}
+	path := filepath.Join(t.TempDir(), "demo.tar.gz")
+	if err := os.WriteFile(path, makeTarGz(t, entries).Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func tarballV1(t *testing.T) string { return demoTarball(t, composeV1, true, false) }
 func tarballV2(t *testing.T) string { return demoTarball(t, composeV2, false, true) }
 func tarballV3(t *testing.T) string { return demoTarball(t, composeV3, false, true) }
@@ -495,6 +524,157 @@ func TestUpdateRequiresLock(t *testing.T) {
 	_, err := updateTo(dir, "2.0.0", digestV2, tarballV2(t))
 	if err == nil || !strings.Contains(err.Error(), "not a vaka-managed recipe directory") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestUpdateRefusesDifferentRecipeIdentity(t *testing.T) {
+	target := installedV1(t)
+	before := readFile(t, target, LockFileName)
+
+	// Wrong recipe name.
+	_, err := Update(UpdateSpec{
+		Registry: "official", Name: "other", Version: "2.0.0",
+		Digest: digestV2, TarballPath: tarballV2(t), Target: target,
+	})
+	if err == nil || !strings.Contains(err.Error(), "refusing to update a different recipe") {
+		t.Fatalf("name mismatch err = %v", err)
+	}
+
+	// Wrong registry.
+	_, err = Update(UpdateSpec{
+		Registry: "evil", Name: "demo", Version: "2.0.0",
+		Digest: digestV2, TarballPath: tarballV2(t), Target: target,
+	})
+	if err == nil || !strings.Contains(err.Error(), "refusing to update a different recipe") {
+		t.Fatalf("registry mismatch err = %v", err)
+	}
+
+	if readFile(t, target, LockFileName) != before {
+		t.Fatal("identity refusal mutated the lock")
+	}
+	if hasResidue(t, target, JournalFileName) || hasResidue(t, target, StagingDirName) {
+		t.Fatal("identity refusal left residue")
+	}
+}
+
+func TestUpdateRefusesObstructedParent(t *testing.T) {
+	target := installedV1(t)
+	// Replace the tracked conf/ directory with a regular file.
+	if err := os.RemoveAll(filepath.Join(target, "conf")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "conf"), []byte("user file where a dir was\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Update to a version that still ships conf/app.yaml, so the plan wants
+	// to put a file under the now-obstructed parent.
+	tarball := demoTarball(t, composeV2, true, false)
+	_, err := updateTo(target, "2.0.0", digestV2, tarball)
+	var obstruction *obstructionError
+	if !errors.As(err, &obstruction) {
+		t.Fatalf("err = %v, want obstructionError", err)
+	}
+	if !strings.Contains(err.Error(), "conf/app.yaml") || !strings.Contains(err.Error(), "non-directory") {
+		t.Fatalf("error text = %q", err.Error())
+	}
+	// Refused in the pre-check, before the journal is written — the key
+	// property is no wedged journal (staging is disposable, cleaned next run,
+	// same as the blocked case). The user file is untouched.
+	if hasResidue(t, target, JournalFileName) {
+		t.Fatal("obstruction refusal left a wedged journal")
+	}
+	if readFile(t, target, "conf") != "user file where a dir was\n" {
+		t.Fatal("obstruction refusal touched the user's file")
+	}
+}
+
+func TestUpdateInstallsNewNestedFile(t *testing.T) {
+	target := installedV1(t)
+	// v2 tarball with a file under a new nested directory.
+	tarball := demoTarballWith(t, composeV2, false, false, map[string]string{
+		"conf/extra/deep.yaml": "nested new file\n",
+	})
+	if _, err := updateTo(target, "2.0.0", digestV2, tarball); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if got := readFile(t, target, "conf/extra/deep.yaml"); got != "nested new file\n" {
+		t.Fatalf("nested file = %q", got)
+	}
+	if lockOf(t, target).Files["conf/extra/deep.yaml"] == "" {
+		t.Fatal("nested new file not tracked")
+	}
+}
+
+func TestUpdateKeepsPendingSameVersionJournal(t *testing.T) {
+	target := installedV1(t)
+
+	// Craft a dangling journal whose target equals the committed version and
+	// digest, but whose finalLock differs from the on-disk lock (an extra
+	// tracked file) — i.e. a still-PENDING same-version repair, not a
+	// completed commit. The old version+digest heuristic would delete it.
+	root, err := OpenSafeRoot(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock, _, err := ReadLock(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finalLock := NewLock(lock.Registry, lock.Name, lock.Version, lock.Digest)
+	finalLock.Fetched = lock.Fetched
+	for p, s := range lock.Files {
+		finalLock.Files[p] = s
+	}
+	finalLock.Files["phantom.yaml"] = "sha256:" + sha256Of("phantom")
+	j := &Journal{
+		APIVersion: APIVersion,
+		Kind:       "RecipeLockPending",
+		Target:     JournalTarget{Registry: lock.Registry, Name: lock.Name, Version: lock.Version, Digest: lock.Digest},
+		Plan: map[string]PlanEntry{
+			"phantom.yaml": {Accepted: []string{AbsentState}, Final: "sha256:" + sha256Of("phantom")},
+		},
+		FinalLock: finalLock,
+	}
+	data, err := j.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := root.WriteFileSync(JournalFileName, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	root.Close()
+
+	abortAt(t, "stale-cleaned")
+	if _, err := updateTo(target, "1.0.0", digestV1, tarballV1(t)); !errors.Is(err, errAbort) {
+		t.Fatalf("err = %v, want simulated crash at stale-cleaned", err)
+	}
+	if !hasResidue(t, target, JournalFileName) {
+		t.Fatal("a still-pending same-version journal was wrongly deleted as a completed commit")
+	}
+}
+
+func TestUpToDate(t *testing.T) {
+	target := installedV1(t)
+
+	ok, err := UpToDate(target, digestV1)
+	if err != nil || !ok {
+		t.Fatalf("pristine matching dir: ok=%v err=%v", ok, err)
+	}
+	if ok, _ := UpToDate(target, digestV2); ok {
+		t.Fatal("digest mismatch must not be up to date")
+	}
+
+	mutate(t, target, "compose.yaml", "drifted\n")
+	if ok, _ := UpToDate(target, digestV1); ok {
+		t.Fatal("drifted tracked file must not be up to date")
+	}
+
+	if ok, err := UpToDate(t.TempDir(), digestV1); err != nil || ok {
+		t.Fatalf("lock-less dir: ok=%v err=%v", ok, err)
+	}
+	if ok, err := UpToDate(filepath.Join(t.TempDir(), "nope"), digestV1); err != nil || ok {
+		t.Fatalf("missing dir: ok=%v err=%v", ok, err)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -214,13 +215,16 @@ func writeCache(cachePath, etagPath string, data []byte, etag string) error {
 	if err := os.Rename(tmp.Name(), cachePath); err != nil {
 		return err
 	}
+	// The index is now durably cached; ETag persistence is best-effort. A
+	// failure here must not discard a valid fetched index — at worst a lost
+	// or stale ETag makes the next revalidation an unconditional refetch,
+	// which is safe. So these errors are intentionally ignored.
 	if etag != "" {
-		return os.WriteFile(etagPath, []byte(etag), 0o644)
-	}
-	// No validator from the server: drop any old ETag so the next
-	// revalidation is an unconditional refetch rather than a false 304.
-	if err := os.Remove(etagPath); err != nil && !os.IsNotExist(err) {
-		return err
+		_ = os.WriteFile(etagPath, []byte(etag), 0o644)
+	} else {
+		// No validator from the server: drop any old ETag so the next
+		// revalidation cannot send a stale conditional and get a false 304.
+		_ = os.Remove(etagPath)
 	}
 	return nil
 }
@@ -238,6 +242,8 @@ func readLimited(r io.Reader, limit int64) ([]byte, error) {
 
 // FetchTarball downloads a recipe tarball into a temporary file, verifying
 // its sha256 digest before returning. The caller removes the returned path.
+// Every URL in the index entry is tried in order (mirrors); a URL that fails
+// transport or digest verification falls through to the next.
 func (c *Client) FetchTarball(reg Registry, name string, entry IndexEntry) (string, error) {
 	if !digestRE.MatchString(entry.Digest) {
 		return "", fmt.Errorf("%s@%s: index digest %q is not sha256:<64 hex>", name, entry.Version, entry.Digest)
@@ -245,9 +251,27 @@ func (c *Client) FetchTarball(reg Registry, name string, entry IndexEntry) (stri
 	if len(entry.URLs) == 0 {
 		return "", fmt.Errorf("%s@%s: index entry has no download URL", name, entry.Version)
 	}
-	raw := entry.URLs[0]
+
+	var failures []string
+	for _, raw := range entry.URLs {
+		path, err := c.fetchTarballURL(raw, entry.Digest)
+		if err == nil {
+			return path, nil
+		}
+		failures = append(failures, fmt.Sprintf("%s: %v", raw, err))
+	}
+	if len(failures) == 1 {
+		return "", fmt.Errorf("%s@%s: download failed: %s", name, entry.Version, failures[0])
+	}
+	return "", fmt.Errorf("%s@%s: all %d download URLs failed:\n\t%s",
+		name, entry.Version, len(entry.URLs), strings.Join(failures, "\n\t"))
+}
+
+// fetchTarballURL downloads and digest-verifies a single URL, returning the
+// temp file path on success (removed on any failure).
+func (c *Client) fetchTarballURL(raw, wantDigest string) (string, error) {
 	if err := validateIndexURL(raw); err != nil {
-		return "", fmt.Errorf("%s@%s: %w", name, entry.Version, err)
+		return "", err
 	}
 	u, _ := url.Parse(raw)
 
@@ -255,21 +279,21 @@ func (c *Client) FetchTarball(reg Registry, name string, entry IndexEntry) (stri
 	if u.Scheme == "file" {
 		f, err := os.Open(u.Path)
 		if err != nil {
-			return "", fmt.Errorf("%s@%s: %w", name, entry.Version, err)
+			return "", err
 		}
 		body = f
 	} else {
 		req, err := http.NewRequest(http.MethodGet, raw, nil)
 		if err != nil {
-			return "", fmt.Errorf("%s@%s: %w", name, entry.Version, err)
+			return "", err
 		}
 		resp, err := httpDo(req)
 		if err != nil {
-			return "", fmt.Errorf("%s@%s: download: %w", name, entry.Version, err)
+			return "", err
 		}
 		if resp.StatusCode != http.StatusOK {
 			resp.Body.Close()
-			return "", fmt.Errorf("%s@%s: download: unexpected HTTP status %s", name, entry.Version, resp.Status)
+			return "", fmt.Errorf("unexpected HTTP status %s", resp.Status)
 		}
 		body = resp.Body
 	}
@@ -289,15 +313,13 @@ func (c *Client) FetchTarball(reg Registry, name string, entry IndexEntry) (stri
 	}
 	if err != nil {
 		os.Remove(tmp.Name())
-		return "", fmt.Errorf("%s@%s: download: %w", name, entry.Version, err)
+		return "", err
 	}
 
 	got := "sha256:" + hex.EncodeToString(h.Sum(nil))
-	if got != entry.Digest {
+	if got != wantDigest {
 		os.Remove(tmp.Name())
-		return "", fmt.Errorf(
-			"%s@%s: digest mismatch: index promises %s but the download is %s — refusing the artifact",
-			name, entry.Version, entry.Digest, got)
+		return "", fmt.Errorf("digest mismatch: index promises %s but the download is %s — refusing the artifact", wantDigest, got)
 	}
 	return tmp.Name(), nil
 }

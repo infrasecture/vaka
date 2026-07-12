@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -41,7 +40,10 @@ func runGet(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	world, err := loadRegistryWorld(0, errOut)
+	// A qualified reference needs only its own registry's index; an
+	// unqualified one needs all of them for the uniqueness rule. get always
+	// revalidates (maxAge 0) on this security-sensitive path.
+	world, err := loadRegistryWorld(0, ref.Registry, errOut)
 	if err != nil {
 		return err
 	}
@@ -55,15 +57,29 @@ func runGet(cmd *cobra.Command, args []string) error {
 		target = args[1]
 	}
 
-	tarball, err := world.client.FetchTarball(res.Registry, res.Name, res.Entry)
+	var (
+		verb     string
+		lock     *recipe.Lock
+		warnings []string
+	)
+	// Fast path: a directory already at exactly this digest and fully
+	// pristine needs no download or update.
+	upToDate, err := recipe.UpToDate(target, res.Entry.Digest)
 	if err != nil {
 		return err
 	}
-	defer os.Remove(tarball)
-
-	verb, lock, warnings, err := installOrUpdate(res, tarball, target)
-	if err != nil {
-		return err
+	if upToDate {
+		verb = "already up to date in"
+	} else {
+		tarball, err := world.client.FetchTarball(res.Registry, res.Name, res.Entry)
+		if err != nil {
+			return err
+		}
+		defer os.Remove(tarball)
+		verb, lock, warnings, err = installOrUpdate(res, tarball, target)
+		if err != nil {
+			return err
+		}
 	}
 	for _, w := range warnings {
 		fmt.Fprintf(errOut, "vaka: warning: %s\n", w)
@@ -112,12 +128,11 @@ func installOrUpdate(res *registry.Resolved, tarball, target string) (verb strin
 		return "installed into", lock, nil, err
 	}
 
-	root, err := recipe.OpenSafeRoot(target)
-	if err != nil {
-		return "", nil, nil, err
-	}
-	existing, hasLock, err := recipe.ReadLock(root)
-	root.Close()
+	// Route install vs update by lock presence, and refuse to adopt a
+	// foreign (non-recipe) directory. The recipe-identity guard (right
+	// recipe/registry) is enforced authoritatively inside recipe.Update,
+	// under its update lock.
+	_, hasLock, err := recipe.LockForDir(target)
 	if err != nil {
 		return "", nil, nil, err
 	}
@@ -125,11 +140,6 @@ func installOrUpdate(res *registry.Resolved, tarball, target string) (verb strin
 		return "", nil, nil, fmt.Errorf(
 			"target %q already exists and is not a vaka-managed recipe directory; vaka get never adopts or writes into an existing path",
 			target)
-	}
-	if existing.Name != res.Name || existing.Registry != res.Registry.Name {
-		return "", nil, nil, fmt.Errorf(
-			"target %q contains %s/%s, not %s/%s; refusing to update a different recipe in place",
-			target, existing.Registry, existing.Name, res.Registry.Name, res.Name)
 	}
 
 	updRes, err := recipe.Update(recipe.UpdateSpec{
@@ -176,7 +186,8 @@ func printPolicySummary(out io.Writer, s *recipe.LocalPolicySummary) {
 func printUnsetRequiredEnv(out io.Writer, env []registry.EnvVar) {
 	var missing []string
 	for _, e := range env {
-		if e.Required && os.Getenv(e.Name) == "" {
+		// Only truly-absent counts as unset; an explicitly empty value is set.
+		if _, ok := os.LookupEnv(e.Name); e.Required && !ok {
 			missing = append(missing, e.Name)
 		}
 	}
@@ -187,16 +198,14 @@ func printUnsetRequiredEnv(out io.Writer, env []registry.EnvVar) {
 
 // printDeviationNotice is the render-verb hook (design §6): a one-line
 // notice while an instantiated recipe deviates from its published version.
+// The lock is read through a confinement root with a bounded read
+// (recipe.LockForDir), since the project directory is untrusted content.
 func printDeviationNotice(w io.Writer, projectDir string) {
 	if projectDir == "" {
 		projectDir = "."
 	}
-	data, err := os.ReadFile(filepath.Join(projectDir, recipe.LockFileName))
-	if err != nil {
-		return
-	}
-	lock, err := recipe.ParseLock(data)
-	if err != nil || len(lock.Deviations) == 0 {
+	lock, exists, err := recipe.LockForDir(projectDir)
+	if err != nil || !exists || len(lock.Deviations) == 0 {
 		return
 	}
 	fmt.Fprintf(w, "vaka: note: this directory deviates from published %s@%s in %d file(s); run 'vaka get %s' after resolving to converge\n",

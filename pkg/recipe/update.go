@@ -53,6 +53,16 @@ func (e *blockedError) Error() string {
 		strings.Join(e.paths, "\n\t"))
 }
 
+// obstructionError reports recipe paths whose parent directory has been
+// replaced by a non-directory, so the recipe file cannot be installed.
+type obstructionError struct{ paths []string }
+
+func (e *obstructionError) Error() string {
+	return fmt.Sprintf(
+		"update rejected: a parent directory of recipe file(s) has been replaced by a non-directory:\n\t%s\nrestore the directory (or move your file aside) and re-run vaka get",
+		strings.Join(e.paths, "\n\t"))
+}
+
 // planAction is what the update will do to one path.
 type planAction int
 
@@ -72,6 +82,45 @@ type planRow struct {
 	warning   string
 }
 
+// UpToDate reports whether the recipe directory at target is already exactly
+// the given digest and fully pristine, so `vaka get` can skip the download
+// and update entirely. It is conservative: any doubt (missing lock, digest
+// mismatch, dangling journal, recorded deviation, drifted or missing tracked
+// file) returns false, and the caller falls through to the authoritative
+// Update, which is the only path that mutates. Being read-only and advisory,
+// it does not take the update lock.
+func UpToDate(target, digest string) (bool, error) {
+	root, err := OpenSafeRoot(target)
+	if err != nil {
+		if isNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	defer root.Close()
+
+	lock, exists, err := ReadLock(root)
+	if err != nil || !exists {
+		return false, err
+	}
+	if lock.Digest != digest || len(lock.Deviations) > 0 {
+		return false, nil
+	}
+	if _, hasJournal, err := ReadJournal(root); err != nil || hasJournal {
+		return false, err
+	}
+	for p, want := range lock.Files {
+		got, absent, err := diskStateOf(root, p)
+		if err != nil {
+			return false, err
+		}
+		if absent || got != want {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
 // Update applies the §6 journaled update transaction to spec.Target.
 func Update(spec UpdateSpec) (*UpdateResult, error) {
 	root, err := OpenSafeRoot(spec.Target)
@@ -80,17 +129,20 @@ func Update(spec UpdateSpec) (*UpdateResult, error) {
 	}
 	defer root.Close()
 
-	lock, exists, err := ReadLock(root)
-	if err != nil {
+	// A recipe directory is one that carries a lock. Gate on its presence
+	// with a cheap stat for a friendly error before taking the update lock;
+	// the authoritative read happens under the lock below.
+	if _, err := root.Lstat(LockFileName); err != nil {
+		if isNotExist(err) {
+			return nil, fmt.Errorf("%s has no %s; it is not a vaka-managed recipe directory", spec.Target, LockFileName)
+		}
 		return nil, err
-	}
-	if !exists {
-		return nil, fmt.Errorf("%s has no %s; it is not a vaka-managed recipe directory", spec.Target, LockFileName)
 	}
 
 	// Step 1 — single updater: flock on the dedicated, never-replaced,
 	// never-deleted lock file (flock binds to the inode; the data lock is
-	// replaced at commit and cannot serve as the exclusion point).
+	// replaced at commit and cannot serve as the exclusion point). Held from
+	// before every authoritative read through cleanup.
 	unlock, err := acquireUpdateLock(root)
 	if err != nil {
 		return nil, err
@@ -100,17 +152,37 @@ func Update(spec UpdateSpec) (*UpdateResult, error) {
 		return nil, err
 	}
 
-	// Step 2 — stale journal and staging cleanup.
-	journal, hasJournal, err := ReadJournal(root)
+	// Read the committed lock only now, under the update lock: a concurrent
+	// updater that committed while we waited for the lock must not leave us
+	// planning the decision matrix against a stale pre-lock snapshot.
+	lock, exists, err := ReadLock(root)
 	if err != nil {
 		return nil, err
 	}
-	if hasJournal && journal.Target.Version == lock.Version && journal.Target.Digest == lock.Digest {
-		// The previous update committed but crashed before cleanup.
+	if !exists {
+		return nil, fmt.Errorf("%s has no %s; it is not a vaka-managed recipe directory", spec.Target, LockFileName)
+	}
+	if lock.Name != spec.Name || lock.Registry != spec.Registry {
+		return nil, fmt.Errorf(
+			"%s holds %s/%s, not %s/%s; refusing to update a different recipe in place",
+			spec.Target, lock.Registry, lock.Name, spec.Registry, spec.Name)
+	}
+
+	// Step 2 — stale journal and staging cleanup.
+	journal, _, err := ReadJournal(root)
+	if err != nil {
+		return nil, err
+	}
+	if journal != nil && lock.equal(journal.FinalLock) {
+		// The committed lock is this journal's finalLock, so the previous
+		// update's commit rename succeeded and only cleanup was interrupted.
+		// Keying on the commit marker (not target version+digest) preserves a
+		// still-pending same-version repair journal and its accepted-state
+		// chain instead of discarding it.
 		if err := root.Remove(JournalFileName); err != nil {
 			return nil, err
 		}
-		journal, hasJournal = nil, false
+		journal = nil
 	}
 	if err := root.RemoveAll(StagingDirName); err != nil {
 		return nil, err
@@ -122,25 +194,28 @@ func Update(spec UpdateSpec) (*UpdateResult, error) {
 		return nil, err
 	}
 
-	// Stage the incoming version so its states are known before anything
-	// in the visible tree is touched.
+	// Stage the incoming version so its states are known before anything in
+	// the visible tree is touched. The staging root is nested under the held
+	// root, so extraction and its renames stay within the confinement we
+	// already own — no path is reconstructed or re-resolved from the
+	// filesystem root.
 	if err := root.MkdirAll(path.Join(StagingDirName, "new"), 0o755); err != nil {
 		return nil, err
 	}
-	tarball, err := os.Open(spec.TarballPath)
-	if err != nil {
-		return nil, err
-	}
-	err = ExtractRecipe(tarball, spec.Name, root.Name()+"/"+StagingDirName+"/new")
-	tarball.Close()
-	if err != nil {
-		return nil, err
-	}
-	newRoot, err := OpenSafeRoot(root.Name() + "/" + StagingDirName + "/new")
+	newRoot, err := root.OpenRoot(path.Join(StagingDirName, "new"))
 	if err != nil {
 		return nil, err
 	}
 	defer newRoot.Close()
+	tarball, err := os.Open(spec.TarballPath)
+	if err != nil {
+		return nil, err
+	}
+	err = ExtractRecipe(tarball, spec.Name, newRoot)
+	tarball.Close()
+	if err != nil {
+		return nil, err
+	}
 	newStates := map[string]string{}
 	if err := newRoot.WalkFiles(func(p string, _ fs.DirEntry) error {
 		state, err := EntryState(newRoot, p)
@@ -164,6 +239,9 @@ func Update(spec UpdateSpec) (*UpdateResult, error) {
 	if len(blocked) > 0 {
 		sort.Strings(blocked)
 		return nil, &blockedError{paths: blocked}
+	}
+	if obstructed := obstructedParents(root, rows); len(obstructed) > 0 {
+		return nil, &obstructionError{paths: obstructed}
 	}
 	if err := afterStep("prechecked"); err != nil {
 		return nil, err
@@ -247,7 +325,10 @@ func Update(spec UpdateSpec) (*UpdateResult, error) {
 			if err := root.Rename(path.Join(StagingDirName, "new", p), p); err != nil {
 				return nil, err
 			}
-			dirsToSync[path.Dir(p)] = true
+			// Sync the target's directory and every ancestor MkdirAll may
+			// have newly created, so a nested new subtree is durable before
+			// the commit rename (not just the file's immediate parent).
+			addDirAndParents(dirsToSync, path.Dir(p))
 			if err := afterStep("applied " + p); err != nil {
 				return nil, err
 			}
@@ -407,6 +488,43 @@ func buildPlan(root *SafeRoot, lock *Lock, journal *Journal, newStates map[strin
 
 func collisionWarning(p string) string {
 	return fmt.Sprintf("%s: kept your file; the recipe's version was not installed (rename or remove it and re-run vaka get to receive it)", p)
+}
+
+// obstructedParents reports actPut targets whose nearest existing ancestor
+// directory is not a directory (the user replaced it with a file or
+// symlink). Such a put would fail with ENOTDIR mid-apply, after the journal
+// is written — catching it in the pre-check refuses the update cleanly with
+// nothing written and no wedged journal.
+func obstructedParents(root *SafeRoot, rows map[string]planRow) []string {
+	var bad []string
+	for p, row := range rows {
+		if row.action != actPut {
+			continue
+		}
+		for dir := path.Dir(p); dir != "."; dir = path.Dir(dir) {
+			fi, err := root.Lstat(dir)
+			if err == nil {
+				if !fi.IsDir() {
+					bad = append(bad, p)
+				}
+				break // the nearest existing ancestor decides
+			}
+			if !isNotExist(err) && !errors.Is(err, unix.ENOTDIR) {
+				break // unexpected; let the apply surface it
+			}
+		}
+	}
+	sort.Strings(bad)
+	return bad
+}
+
+// addDirAndParents adds dir and every ancestor up to (but excluding) "." to
+// the set, so newly created intermediate directories are all fsynced.
+func addDirAndParents(set map[string]bool, dir string) {
+	for dir != "." && dir != "" {
+		set[dir] = true
+		dir = path.Dir(dir)
+	}
 }
 
 func journalKnows(j *Journal, p string) bool {

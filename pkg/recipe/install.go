@@ -50,20 +50,20 @@ func Install(spec InstallSpec) (*Lock, error) {
 		}
 	}()
 
-	tarball, err := os.Open(spec.TarballPath)
-	if err != nil {
-		return nil, err
-	}
-	defer tarball.Close()
-	if err := ExtractRecipe(tarball, spec.Name, staging); err != nil {
-		return nil, err
-	}
-
 	root, err := OpenSafeRoot(staging)
 	if err != nil {
 		return nil, err
 	}
 	defer root.Close()
+
+	tarball, err := os.Open(spec.TarballPath)
+	if err != nil {
+		return nil, err
+	}
+	defer tarball.Close()
+	if err := ExtractRecipe(tarball, spec.Name, root); err != nil {
+		return nil, err
+	}
 
 	lock := NewLock(spec.Registry, spec.Name, spec.Version, spec.Digest)
 	if err := root.WalkFiles(func(path string, _ fs.DirEntry) error {

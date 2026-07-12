@@ -22,27 +22,24 @@ var (
 // Archives shipping such paths could forge provenance and are refused.
 const reservedPrefix = ".vaka-"
 
-// ExtractRecipe extracts a digest-verified recipe tarball into destDir
-// (which must already exist and be empty). The archive must contain exactly
-// one top-level directory named recipeName, which is stripped.
+// ExtractRecipe extracts a digest-verified recipe tarball into root (a
+// confinement root over an existing, empty directory). The archive must
+// contain exactly one top-level directory named recipeName, which is
+// stripped. Passing the caller's own SafeRoot keeps every write beneath the
+// confinement it already holds — no path is re-resolved from the filesystem
+// root.
 //
 // Hardening (design §7): path traversal, absolute paths, hardlinks, and
 // device/special entries are rejected; symlinks must have relative,
 // in-tree targets; reserved `.vaka-*` paths are refused; only the
 // executable bit survives from archive modes; size, file-size, and
 // entry-count limits bound extraction.
-func ExtractRecipe(tarball io.Reader, recipeName, destDir string) error {
+func ExtractRecipe(tarball io.Reader, recipeName string, root *SafeRoot) error {
 	gz, err := gzip.NewReader(tarball)
 	if err != nil {
 		return fmt.Errorf("recipe archive: %w", err)
 	}
 	defer gz.Close()
-
-	root, err := OpenSafeRoot(destDir)
-	if err != nil {
-		return err
-	}
-	defer root.Close()
 
 	tr := tar.NewReader(gz)
 	var (
@@ -77,6 +74,17 @@ func ExtractRecipe(tarball io.Reader, recipeName, destDir string) error {
 		for _, seg := range strings.Split(rel, "/") {
 			if strings.HasPrefix(seg, reservedPrefix) {
 				return fmt.Errorf("recipe archive: entry %q is inside the reserved %s* namespace", hdr.Name, reservedPrefix)
+			}
+		}
+
+		// Create the entry's parent directories independently of whether the
+		// archive included explicit directory entries (tar producers vary);
+		// every path segment was already reserved-namespace-checked above.
+		if hdr.Typeflag == tar.TypeReg || hdr.Typeflag == tar.TypeSymlink {
+			if dir := path.Dir(rel); dir != "." {
+				if err := root.MkdirAll(dir, 0o755); err != nil {
+					return fmt.Errorf("recipe archive: %s: %w", rel, err)
+				}
 			}
 		}
 

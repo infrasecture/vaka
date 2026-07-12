@@ -280,3 +280,56 @@ deviations:
 		t.Fatalf("notice for lock-less dir: %q", buf.String())
 	}
 }
+
+func TestGetQualifiedRefSkipsOtherRegistries(t *testing.T) {
+	digest := fixtureRegistry(t, matchingPolicyBlock())
+	_ = digest
+
+	// Add a second, unreachable registry ahead of testreg. A qualified
+	// `get testreg/demo` must fetch only testreg, so the unreachable one is
+	// never contacted (no warning about it).
+	oldCfg := loadRegistriesConfig
+	loadRegistriesConfig = func() (*registry.Config, error) {
+		base, _ := oldCfg()
+		return &registry.Config{
+			APIVersion: registry.APIVersion,
+			Kind:       "RegistriesConfig",
+			Registries: append([]registry.Registry{
+				{Name: "deadreg", URL: "file:///vaka/no/such/index.yaml"},
+			}, base.Registries...),
+		}, nil
+	}
+	t.Cleanup(func() { loadRegistriesConfig = oldCfg })
+
+	target := filepath.Join(t.TempDir(), "demo")
+	stdout, stderr, err := runRecipeCmd(t, "get", "testreg/demo", target)
+	if err != nil {
+		t.Fatalf("get: %v (stderr: %s)", err, stderr)
+	}
+	if !strings.Contains(stdout, "installed into") {
+		t.Fatalf("stdout: %s", stdout)
+	}
+	if strings.Contains(stderr, "deadreg") {
+		t.Fatalf("qualified get contacted the other registry:\n%s", stderr)
+	}
+}
+
+func TestPrintUnsetRequiredEnv(t *testing.T) {
+	env := []registry.EnvVar{
+		{Name: "VAKA_TEST_ABSENT_VAR", Required: true},
+		{Name: "VAKA_TEST_EMPTY_VAR", Required: true},
+		{Name: "VAKA_TEST_OPTIONAL_VAR", Required: false},
+	}
+	t.Setenv("VAKA_TEST_EMPTY_VAR", "") // explicitly set, empty
+	os.Unsetenv("VAKA_TEST_ABSENT_VAR")
+
+	var buf bytes.Buffer
+	printUnsetRequiredEnv(&buf, env)
+	got := buf.String()
+	if !strings.Contains(got, "VAKA_TEST_ABSENT_VAR") {
+		t.Fatalf("truly-absent required var not reported: %q", got)
+	}
+	if strings.Contains(got, "VAKA_TEST_EMPTY_VAR") {
+		t.Fatalf("explicitly-empty var must count as set: %q", got)
+	}
+}

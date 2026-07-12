@@ -315,8 +315,12 @@ not create them.
       and digest equal the committed lock's is recognized as completed and
       removed silently on the next run, and staging is always removed
       whenever no apply is in progress.
-5. Untracked files are never written, never deleted, never read; the
-   collision row above is this rule applied to installation.
+5. Untracked files are never written and never deleted; the collision row
+   above is this rule applied to installation. The one exception to "never
+   read" is that an untracked file at a path the incoming version also ships
+   is hashed (a streaming hash, no buffering) solely to decide the
+   byte-identical adoption case above; its content is never copied, moved, or
+   exposed.
 
 Warnings repeat on every update until the user resolves the underlying state,
 and resolving it converges: e.g. removing a colliding user file and re-running

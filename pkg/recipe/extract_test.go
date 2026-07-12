@@ -73,7 +73,12 @@ func goodRecipe(t *testing.T) *bytes.Buffer {
 func extractInto(t *testing.T, buf *bytes.Buffer) (string, error) {
 	t.Helper()
 	dest := t.TempDir()
-	return dest, ExtractRecipe(buf, "demo", dest)
+	root, err := OpenSafeRoot(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	return dest, ExtractRecipe(buf, "demo", root)
 }
 
 func TestExtractRecipeHappyPath(t *testing.T) {

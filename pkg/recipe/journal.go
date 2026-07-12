@@ -90,7 +90,7 @@ func (j *Journal) Marshal() ([]byte, error) {
 // ReadJournal reads a dangling update journal from a recipe directory.
 // exists is false when no journal is present.
 func ReadJournal(root *SafeRoot) (j *Journal, exists bool, err error) {
-	data, err := root.ReadFile(JournalFileName)
+	data, err := root.ReadFileLimited(JournalFileName, maxLockBytes)
 	if err != nil {
 		if isNotExist(err) {
 			return nil, false, nil

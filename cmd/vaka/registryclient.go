@@ -32,11 +32,14 @@ type registryWorld struct {
 	indexes map[string]*registry.Index
 }
 
-// loadRegistryWorld loads the config and fetches every registry's index.
-// Per-registry fetch failures and stale-cache fallbacks become warnings on
-// warnOut; a registry without an index is simply absent from the map
-// (unqualified resolution skips it, qualified resolution errors).
-func loadRegistryWorld(maxAge time.Duration, warnOut io.Writer) (*registryWorld, error) {
+// loadRegistryWorld loads the config and fetches registry indexes. When only
+// is non-empty, just that one registry is fetched (a qualified reference
+// needs no others); when empty, every configured registry is fetched (browse
+// and unqualified-resolution need all of them). Per-registry fetch failures
+// and stale-cache fallbacks become warnings on warnOut; a registry without an
+// index is simply absent from the map (unqualified resolution skips it,
+// qualified resolution errors).
+func loadRegistryWorld(maxAge time.Duration, only string, warnOut io.Writer) (*registryWorld, error) {
 	cfg, err := loadRegistriesConfig()
 	if err != nil {
 		return nil, err
@@ -47,6 +50,9 @@ func loadRegistryWorld(maxAge time.Duration, warnOut io.Writer) (*registryWorld,
 		indexes: map[string]*registry.Index{},
 	}
 	for _, reg := range cfg.Registries {
+		if only != "" && reg.Name != only {
+			continue
+		}
 		res, err := w.client.FetchIndex(reg)
 		if err != nil {
 			fmt.Fprintf(warnOut, "vaka: warning: registry %q unavailable: %v\n", reg.Name, err)

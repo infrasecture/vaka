@@ -119,10 +119,41 @@ func (l *Lock) Marshal() ([]byte, error) {
 	return yaml.Marshal(l)
 }
 
+// maxLockBytes caps lock/journal reads. These documents are small (one line
+// per file) and may live in untrusted directories, so the read is bounded.
+const maxLockBytes = 4 << 20
+
+// equal reports whether two locks are byte-equivalent in every recorded
+// field. It is the commit marker for the update journal: after a successful
+// commit the on-disk lock is exactly the journal's finalLock.
+func (l *Lock) equal(o *Lock) bool {
+	if o == nil {
+		return false
+	}
+	if l.Registry != o.Registry || l.Name != o.Name || l.Version != o.Version ||
+		l.Digest != o.Digest || l.Fetched != o.Fetched {
+		return false
+	}
+	if len(l.Files) != len(o.Files) || len(l.Deviations) != len(o.Deviations) {
+		return false
+	}
+	for p, s := range l.Files {
+		if o.Files[p] != s {
+			return false
+		}
+	}
+	for i := range l.Deviations {
+		if l.Deviations[i] != o.Deviations[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // ReadLock reads the lock from a recipe directory. exists is false when the
 // directory has no lock (i.e. it is not a vaka-managed recipe directory).
 func ReadLock(root *SafeRoot) (l *Lock, exists bool, err error) {
-	data, err := root.ReadFile(LockFileName)
+	data, err := root.ReadFileLimited(LockFileName, maxLockBytes)
 	if err != nil {
 		if isNotExist(err) {
 			return nil, false, nil
@@ -134,6 +165,19 @@ func ReadLock(root *SafeRoot) (l *Lock, exists bool, err error) {
 		return nil, true, err
 	}
 	return l, true, nil
+}
+
+// LockForDir reads the recipe lock of an on-disk directory through a
+// confinement root with a bounded read — the safe way to inspect the lock of
+// a possibly untrusted project directory (symlinks are not followed, size is
+// capped). exists is false when the directory has no lock.
+func LockForDir(dir string) (l *Lock, exists bool, err error) {
+	root, err := OpenSafeRoot(dir)
+	if err != nil {
+		return nil, false, err
+	}
+	defer root.Close()
+	return ReadLock(root)
 }
 
 func strictDecode(data []byte, v any) error {

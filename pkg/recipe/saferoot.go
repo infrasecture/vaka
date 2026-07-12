@@ -7,6 +7,7 @@ package recipe
 
 import (
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 )
@@ -34,6 +35,19 @@ func OpenSafeRoot(dir string) (*SafeRoot, error) {
 	return &SafeRoot{r: r}, nil
 }
 
+// OpenRoot opens a subdirectory of this root as its own confinement root,
+// resolved beneath the parent's file descriptor — no path component is
+// re-resolved from the filesystem root, so a symlink planted in the parent's
+// ancestry cannot redirect the child. This is the confined alternative to
+// reopening a reconstructed absolute path.
+func (s *SafeRoot) OpenRoot(name string) (*SafeRoot, error) {
+	r, err := s.r.OpenRoot(name)
+	if err != nil {
+		return nil, err
+	}
+	return &SafeRoot{r: r}, nil
+}
+
 // Close releases the root handle.
 func (s *SafeRoot) Close() error { return s.r.Close() }
 
@@ -51,6 +65,25 @@ func (s *SafeRoot) Open(path string) (*os.File, error) { return s.r.Open(path) }
 
 // ReadFile reads the file at path.
 func (s *SafeRoot) ReadFile(path string) ([]byte, error) { return s.r.ReadFile(path) }
+
+// ReadFileLimited reads at most max bytes from path, erroring if the file is
+// larger — used for vaka's own state files, which are small and may live in
+// untrusted directories.
+func (s *SafeRoot) ReadFileLimited(path string, max int64) ([]byte, error) {
+	f, err := s.r.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, max+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > max {
+		return nil, fmt.Errorf("%s exceeds the %d byte limit", path, max)
+	}
+	return data, nil
+}
 
 // CreateExcl creates path exclusively (O_EXCL): it fails if path exists.
 func (s *SafeRoot) CreateExcl(path string, perm fs.FileMode) (*os.File, error) {

@@ -256,4 +256,31 @@ func TestFetchTarball(t *testing.T) {
 			t.Fatalf("err = %v, want size cap error", err)
 		}
 	})
+
+	t.Run("falls through to a working mirror", func(t *testing.T) {
+		got, err := c.FetchTarball(reg, "demo", IndexEntry{
+			Version: "1.0.0", Digest: goodDigest,
+			URLs: []string{
+				"file:///vaka/does/not/exist.tar.gz", // dead primary
+				"file://" + path,                     // healthy mirror
+			},
+		})
+		if err != nil {
+			t.Fatalf("FetchTarball with mirror: %v", err)
+		}
+		os.Remove(got)
+	})
+
+	t.Run("all URLs failing reports each", func(t *testing.T) {
+		_, err := c.FetchTarball(reg, "demo", IndexEntry{
+			Version: "1.0.0", Digest: goodDigest,
+			URLs: []string{
+				"file:///vaka/nope-a.tar.gz",
+				"file:///vaka/nope-b.tar.gz",
+			},
+		})
+		if err == nil || !strings.Contains(err.Error(), "all 2 download URLs failed") {
+			t.Fatalf("err = %v, want all-failed summary", err)
+		}
+	})
 }

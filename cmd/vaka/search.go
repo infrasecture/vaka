@@ -23,7 +23,7 @@ on every get.`,
 			if len(args) == 1 {
 				term = strings.ToLower(args[0])
 			}
-			world, err := loadRegistryWorld(browseIndexMaxAge, cmd.ErrOrStderr())
+			world, err := loadRegistryWorld(browseIndexMaxAge, "", cmd.ErrOrStderr())
 			if err != nil {
 				return err
 			}
