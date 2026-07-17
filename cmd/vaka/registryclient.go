@@ -35,11 +35,16 @@ type registryWorld struct {
 // loadRegistryWorld loads the config and fetches registry indexes. When only
 // is non-empty, just that one registry is fetched (a qualified reference
 // needs no others); when empty, every configured registry is fetched (browse
-// and unqualified-resolution need all of them). Per-registry fetch failures
-// and stale-cache fallbacks become warnings on warnOut; a registry without an
-// index is simply absent from the map (unqualified resolution skips it,
-// qualified resolution errors).
-func loadRegistryWorld(maxAge time.Duration, only string, warnOut io.Writer) (*registryWorld, error) {
+// and unqualified-resolution need all of them).
+//
+// strict controls what an index that cannot be loaded (no network and no
+// cache) means. In non-strict (browse) mode it is a warning and the registry
+// is omitted — best-effort listing. In strict mode it is a hard error: `vaka
+// get` uses strict so that an unqualified resolution can never "prove"
+// uniqueness against only the reachable registries, which would defeat the
+// anti-typosquatting guarantee. A stale cache (reachable-before, unreachable
+// now) still warns in both modes, since it still lets uniqueness be checked.
+func loadRegistryWorld(maxAge time.Duration, only string, strict bool, warnOut io.Writer) (*registryWorld, error) {
 	cfg, err := loadRegistriesConfig()
 	if err != nil {
 		return nil, err
@@ -55,6 +60,9 @@ func loadRegistryWorld(maxAge time.Duration, only string, warnOut io.Writer) (*r
 		}
 		res, err := w.client.FetchIndex(reg)
 		if err != nil {
+			if strict {
+				return nil, fmt.Errorf("registry %q: %w", reg.Name, err)
+			}
 			fmt.Fprintf(warnOut, "vaka: warning: registry %q unavailable: %v\n", reg.Name, err)
 			continue
 		}

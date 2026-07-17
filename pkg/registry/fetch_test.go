@@ -176,6 +176,25 @@ func TestFetchIndexNoEtagAlwaysRefetches(t *testing.T) {
 	}
 }
 
+func TestHTTPSOnlyRedirect(t *testing.T) {
+	mkReq := func(scheme string) *http.Request {
+		r, _ := http.NewRequest(http.MethodGet, scheme+"://example.test/x", nil)
+		return r
+	}
+	if err := httpsOnlyRedirect(mkReq("https"), nil); err != nil {
+		t.Fatalf("https redirect rejected: %v", err)
+	}
+	if err := httpsOnlyRedirect(mkReq("http"), nil); err == nil ||
+		!strings.Contains(err.Error(), "downgrade") {
+		t.Fatalf("http redirect err = %v, want downgrade refusal", err)
+	}
+	via := make([]*http.Request, 10)
+	if err := httpsOnlyRedirect(mkReq("https"), via); err == nil ||
+		!strings.Contains(err.Error(), "10 redirects") {
+		t.Fatalf("redirect cap err = %v", err)
+	}
+}
+
 func TestFetchIndexFileScheme(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "index.yaml")

@@ -42,8 +42,9 @@ func runGet(cmd *cobra.Command, args []string) error {
 	}
 	// A qualified reference needs only its own registry's index; an
 	// unqualified one needs all of them for the uniqueness rule. get always
-	// revalidates (maxAge 0) on this security-sensitive path.
-	world, err := loadRegistryWorld(0, ref.Registry, errOut)
+	// revalidates (maxAge 0) and is strict (an unreachable, uncached registry
+	// is fatal, not a warning) on this security-sensitive path.
+	world, err := loadRegistryWorld(0, ref.Registry, true, errOut)
 	if err != nil {
 		return err
 	}
@@ -62,9 +63,9 @@ func runGet(cmd *cobra.Command, args []string) error {
 		lock     *recipe.Lock
 		warnings []string
 	)
-	// Fast path: a directory already at exactly this digest and fully
-	// pristine needs no download or update.
-	upToDate, err := recipe.UpToDate(target, res.Entry.Digest)
+	// Fast path: a directory already at exactly this recipe and digest and
+	// fully pristine needs no download or update.
+	upToDate, err := recipe.UpToDate(target, res.Registry.Name, res.Name, res.Entry.Digest)
 	if err != nil {
 		return err
 	}

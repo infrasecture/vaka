@@ -27,8 +27,25 @@ var digestRE = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 // httpDo is the transport seam: tests replace it to run fully offline.
 var httpDo = func(req *http.Request) (*http.Response, error) {
-	client := &http.Client{Timeout: 60 * time.Second}
+	client := &http.Client{
+		Timeout:       60 * time.Second,
+		CheckRedirect: httpsOnlyRedirect,
+	}
 	return client.Do(req)
+}
+
+// httpsOnlyRedirect refuses any redirect to a non-https URL, so an https
+// endpoint cannot be transparently downgraded to http mid-chain (GitHub
+// Pages/Releases legitimately redirect, but always to https). It also caps
+// the redirect chain, since setting CheckRedirect overrides the default cap.
+func httpsOnlyRedirect(req *http.Request, via []*http.Request) error {
+	if req.URL.Scheme != "https" {
+		return fmt.Errorf("refusing redirect to non-https URL %q (downgrade)", req.URL.Redacted())
+	}
+	if len(via) >= 10 {
+		return fmt.Errorf("stopped after 10 redirects")
+	}
+	return nil
 }
 
 // Client fetches registry indexes (with an ETag cache) and recipe tarballs.

@@ -60,6 +60,45 @@ services:
 	}
 }
 
+func TestLintDirIgnoresComposeFileEnv(t *testing.T) {
+	// The recipe under lint is clean.
+	dir := writeRecipeDir(t, `
+services:
+  app:
+    image: alpine:3.20
+`, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+`)
+
+	// A decoy project elsewhere is dangerous. If lint honored COMPOSE_FILE it
+	// would analyze the decoy and report its risk flags.
+	decoy := filepath.Join(t.TempDir(), "decoy-compose.yaml")
+	if err := os.WriteFile(decoy, []byte("services:\n  evil:\n    image: x\n    privileged: true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("COMPOSE_FILE", decoy)
+
+	sum, err := LintDir(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("LintDir: %v", err)
+	}
+	if _, ok := sum.DefaultActions["evil"]; ok {
+		t.Fatal("lint was redirected to the decoy project via COMPOSE_FILE")
+	}
+	if _, ok := sum.DefaultActions["app"]; !ok {
+		t.Fatalf("lint did not analyze the recipe's own service: %v", sum.DefaultActions)
+	}
+	if len(sum.RiskFlags) != 0 {
+		t.Fatalf("clean recipe reported flags (decoy leakage?): %v", sum.RiskFlags)
+	}
+}
+
 func TestLintDirFlagsEverything(t *testing.T) {
 	dir := writeRecipeDir(t, `
 services:

@@ -28,7 +28,7 @@ registry-bound command: it reads the published indexes and never scans the
 local filesystem for instantiated recipes.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			world, err := loadRegistryWorld(browseIndexMaxAge, "", cmd.ErrOrStderr())
+			world, err := loadRegistryWorld(browseIndexMaxAge, "", false, cmd.ErrOrStderr())
 			if err != nil {
 				return err
 			}
@@ -57,7 +57,7 @@ get; this view is what the registry claims.`,
 			if err != nil {
 				return err
 			}
-			world, err := loadRegistryWorld(browseIndexMaxAge, "", cmd.ErrOrStderr())
+			world, err := loadRegistryWorld(browseIndexMaxAge, "", false, cmd.ErrOrStderr())
 			if err != nil {
 				return err
 			}

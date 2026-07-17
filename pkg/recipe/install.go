@@ -7,8 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"syscall"
-
-	"golang.org/x/sys/unix"
 )
 
 // InstallSpec describes one fresh install of a fetched, digest-verified
@@ -102,9 +100,10 @@ func Install(spec InstallSpec) (*Lock, error) {
 // commitNewDir atomically renames staging to target, failing (instead of
 // replacing) if anything exists at target — this closes the race between
 // the early existence check and the rename: even an empty directory or
-// symlink planted at target in between cannot be replaced.
+// symlink planted at target in between cannot be replaced. The no-replace
+// rename is platform-specific (see rename_*.go).
 func commitNewDir(staging, target string) error {
-	err := unix.Renameat2(unix.AT_FDCWD, staging, unix.AT_FDCWD, target, unix.RENAME_NOREPLACE)
+	err := renameNoReplace(staging, target)
 	if err == nil {
 		return nil
 	}

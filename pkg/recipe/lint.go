@@ -51,17 +51,41 @@ type LocalPolicySummary struct {
 	RiskFlags []string
 }
 
-// LintDir loads the recipe directory's compose project (default compose
-// file discovery, scoped to dir) and vaka.yaml, and computes the policy
-// summary and risk flags from the actual files.
+// composeFileNames are recognized compose file names in docker's precedence
+// order (compose.* wins over docker-compose.*).
+var composeFileNames = []string{"compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml"}
+
+// findComposeFile returns the recipe's canonical compose file within dir.
+func findComposeFile(dir string) (string, error) {
+	for _, name := range composeFileNames {
+		p := filepath.Join(dir, name)
+		if fi, err := os.Lstat(p); err == nil && !fi.IsDir() {
+			return p, nil
+		}
+	}
+	return "", fmt.Errorf("no compose file in %s (looked for %s)", dir, strings.Join(composeFileNames, ", "))
+}
+
+// LintDir loads the recipe's own compose file and vaka.yaml and computes the
+// policy summary and risk flags from those files.
+//
+// The compose project is pinned to the recipe's canonical compose file with a
+// controlled (empty) interpolation environment: the lint deliberately does
+// not honor COMPOSE_FILE, the ambient OS environment, or a local .env, so it
+// analyzes the recipe as shipped (with compose defaults) and cannot be
+// steered to a different project or external files by the caller's
+// environment.
 func LintDir(ctx context.Context, dir string) (*LocalPolicySummary, error) {
-	opts, err := composecli.NewProjectOptions(nil,
+	composeFile, err := findComposeFile(dir)
+	if err != nil {
+		return nil, err
+	}
+	opts, err := composecli.NewProjectOptions(
+		[]string{composeFile},
 		composecli.WithWorkingDirectory(dir),
-		composecli.WithOsEnv,
-		composecli.WithEnvFiles(),
-		composecli.WithDotEnv,
-		composecli.WithConfigFileEnv,
-		composecli.WithDefaultConfigPath,
+		composecli.WithName("vaka-lint"),
+		composecli.WithEnv(nil),
+		composecli.WithInterpolation(true),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("compose project options: %w", err)

@@ -83,13 +83,15 @@ type planRow struct {
 }
 
 // UpToDate reports whether the recipe directory at target is already exactly
-// the given digest and fully pristine, so `vaka get` can skip the download
-// and update entirely. It is conservative: any doubt (missing lock, digest
-// mismatch, dangling journal, recorded deviation, drifted or missing tracked
-// file) returns false, and the caller falls through to the authoritative
-// Update, which is the only path that mutates. Being read-only and advisory,
-// it does not take the update lock.
-func UpToDate(target, digest string) (bool, error) {
+// this registry/name/digest and fully pristine, so `vaka get` can skip the
+// download and update entirely. It is conservative: any doubt (missing lock,
+// identity mismatch, digest mismatch, dangling journal, recorded deviation,
+// drifted or missing tracked file) returns false, and the caller falls
+// through to the authoritative Update, which is the only path that mutates
+// and which enforces identity under its lock. Being read-only and advisory,
+// it does not take the update lock; a torn read during a concurrent commit
+// simply yields false and the caller then contends for the lock.
+func UpToDate(target, registryName, name, digest string) (bool, error) {
 	root, err := OpenSafeRoot(target)
 	if err != nil {
 		if isNotExist(err) {
@@ -102,6 +104,12 @@ func UpToDate(target, digest string) (bool, error) {
 	lock, exists, err := ReadLock(root)
 	if err != nil || !exists {
 		return false, err
+	}
+	// Identity must match, so the fast path never bypasses the registry/name
+	// guard that Update enforces (a different recipe with a colliding digest
+	// must still be routed through Update, which rejects it).
+	if lock.Registry != registryName || lock.Name != name {
+		return false, nil
 	}
 	if lock.Digest != digest || len(lock.Deviations) > 0 {
 		return false, nil
@@ -168,22 +176,23 @@ func Update(spec UpdateSpec) (*UpdateResult, error) {
 			spec.Target, lock.Registry, lock.Name, spec.Registry, spec.Name)
 	}
 
-	// Step 2 — stale journal and staging cleanup.
+	// Step 2 — recover any interrupted prior update, then clear staging.
+	//
+	// A surviving journal is always treated as pending: its accepted-state
+	// chain is inherited by the pre-check below, and this transaction
+	// re-commits and clears it. A journal from a commit that crashed before
+	// cleanup is safe to re-run because the re-commit is idempotent, so we
+	// never need to distinguish "committed but uncleaned" from "still
+	// pending" — a distinction that is not reliable anyway (for a
+	// same-version repair the two differ only by the lock's Fetched
+	// timestamp). Because the journal is always kept here, even an otherwise
+	// no-op run must execute the transaction to commit and clear it, rather
+	// than short-circuit to NoChange and leave it dangling forever.
 	journal, _, err := ReadJournal(root)
 	if err != nil {
 		return nil, err
 	}
-	if journal != nil && lock.equal(journal.FinalLock) {
-		// The committed lock is this journal's finalLock, so the previous
-		// update's commit rename succeeded and only cleanup was interrupted.
-		// Keying on the commit marker (not target version+digest) preserves a
-		// still-pending same-version repair journal and its accepted-state
-		// chain instead of discarding it.
-		if err := root.Remove(JournalFileName); err != nil {
-			return nil, err
-		}
-		journal = nil
-	}
+	pendingJournal := journal != nil
 	if err := root.RemoveAll(StagingDirName); err != nil {
 		return nil, err
 	}
@@ -267,8 +276,9 @@ func Update(spec UpdateSpec) (*UpdateResult, error) {
 		}
 	}
 
-	// Idempotent no-op: same version, same digest, nothing to write.
-	if !hasOps && lock.Version == spec.Version && lock.Digest == spec.Digest &&
+	// Idempotent no-op: same version, same digest, nothing to write — and no
+	// pending journal to commit and clear.
+	if !hasOps && !pendingJournal && lock.Version == spec.Version && lock.Digest == spec.Digest &&
 		locksEquivalent(lock, finalLock) {
 		if err := root.RemoveAll(StagingDirName); err != nil {
 			return nil, err
@@ -388,6 +398,16 @@ func Update(spec UpdateSpec) (*UpdateResult, error) {
 
 // buildPlan classifies every relevant path per the §6 decision matrix.
 func buildPlan(root *SafeRoot, lock *Lock, journal *Journal, newStates map[string]string) (map[string]planRow, []string, error) {
+	// Prior kept-user-copy deviations must be reconsidered every update, or
+	// they silently vanish from the rebuilt lock (their paths are untracked
+	// and no longer shipped, so they are in neither lock.Files nor newStates).
+	priorKeptUserCopy := map[string]bool{}
+	for _, d := range lock.Deviations {
+		if d.Kind == DeviationKeptUserCopy {
+			priorKeptUserCopy[d.Path] = true
+		}
+	}
+
 	universe := map[string]bool{}
 	for p := range lock.Files {
 		universe[p] = true
@@ -399,6 +419,9 @@ func buildPlan(root *SafeRoot, lock *Lock, journal *Journal, newStates map[strin
 		for p := range journal.Plan {
 			universe[p] = true
 		}
+	}
+	for p := range priorKeptUserCopy {
+		universe[p] = true
 	}
 
 	rows := map[string]planRow{}
@@ -462,14 +485,22 @@ func buildPlan(root *SafeRoot, lock *Lock, journal *Journal, newStates map[strin
 			case !vakaOwned && !inNew:
 				if tracked {
 					row.deviation = DeviationKeptUserCopy
-					row.warning = fmt.Sprintf("%s: no longer shipped by the recipe; your modified copy is now user-owned", p)
+					row.warning = keptUserCopyWarning(p)
 				}
 			}
 
 		default: // untracked by lock and journal
 			switch {
 			case !inNew:
-				// Not in the universe unless tracked or in new; unreachable.
+				// Only reachable for a prior kept-user-copy deviation (added
+				// to the universe above). While the user's file is still
+				// present and still not shipped, carry the deviation forward
+				// so warnings and the render notice persist until resolved;
+				// once the user removes it (absent), it converges away.
+				if !absent && priorKeptUserCopy[p] {
+					row.deviation = DeviationKeptUserCopy
+					row.warning = keptUserCopyWarning(p)
+				}
 			case absent:
 				row.action, row.tracked = actPut, true
 			case disk == newState:
@@ -488,6 +519,10 @@ func buildPlan(root *SafeRoot, lock *Lock, journal *Journal, newStates map[strin
 
 func collisionWarning(p string) string {
 	return fmt.Sprintf("%s: kept your file; the recipe's version was not installed (rename or remove it and re-run vaka get to receive it)", p)
+}
+
+func keptUserCopyWarning(p string) string {
+	return fmt.Sprintf("%s: no longer shipped by the recipe; your modified copy is now user-owned", p)
 }
 
 // obstructedParents reports actPut targets whose nearest existing ancestor

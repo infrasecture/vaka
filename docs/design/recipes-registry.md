@@ -568,10 +568,31 @@ existing `gopkg.in/yaml.v3`.
    UX hardening, `vaka recipes info` full version history, shell completion
    for recipe names (from cached index), `minVakaVersion` enforcement
    (skipped with a warning on `version=dev` builds, whose self-version is not
-   a SemVer).
+   a SemVer). **New risk-lint flag `unpinned-image`** — flag compose services
+   whose `image:` uses a mutable tag (implicit `latest`, `main-stable`, …)
+   rather than an `@sha256:` digest, both locally and in registry CI, so the
+   tarball digest's promise ("this is the code you'll run") is enforced
+   rather than assumed (review finding #9).
 3. **Phase 3 — provenance hardening**: signed indexes (key pinned at
    `registry add`), `vaka get name@sha256:...` digest pinning, `vaka recipes
-   verify` (re-check a dir against its lock).
+   verify` (re-check a dir against its lock). **Registry publish-CI
+   hardening** (review finding #8): pin GitHub Actions to commit SHAs and
+   Python deps to versions, pin the `infrasecture/vaka` ref the publish job
+   builds vaka from, run the gitleaks secret scan in `publish` (a tag can
+   point at a commit that skipped PR validation), and make publishing
+   retry-safe by regenerating/pushing the index *before* creating the GitHub
+   Release (an index failure must not leave a release that blocks a clean
+   rerun). This sits with signing because it is all supply-chain integrity of
+   the publish path.
+
+### Deferred review findings (registry repo / recipe content)
+
+- **#8 — publish workflow trust boundary** (`vaka-registry/.github/workflows/publish.yml`):
+  scheduled into Phase 3 above.
+- **#9 — official recipe pins no runtime images**
+  (`vaka-registry/codex/compose.yaml`): the codex recipe should pin both
+  images by `@sha256:` as a near-term registry-repo change; the general
+  guard is the Phase 2 `unpinned-image` lint above.
 
 ## 10. Future perspective: composable recipes
 

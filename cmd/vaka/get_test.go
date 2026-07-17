@@ -314,6 +314,38 @@ func TestGetQualifiedRefSkipsOtherRegistries(t *testing.T) {
 	}
 }
 
+func TestGetUnqualifiedHardFailsOnUnreachableRegistry(t *testing.T) {
+	fixtureRegistry(t, matchingPolicyBlock())
+
+	// Add an unreachable (no-cache) registry. An UNqualified get must not
+	// resolve against only the reachable registries — uniqueness cannot be
+	// proven — so it hard-errors rather than silently picking testreg/demo.
+	oldCfg := loadRegistriesConfig
+	loadRegistriesConfig = func() (*registry.Config, error) {
+		base, _ := oldCfg()
+		return &registry.Config{
+			APIVersion: registry.APIVersion,
+			Kind:       "RegistriesConfig",
+			Registries: append([]registry.Registry{
+				{Name: "deadreg", URL: "file:///vaka/no/such/index.yaml"},
+			}, base.Registries...),
+		}, nil
+	}
+	t.Cleanup(func() { loadRegistriesConfig = oldCfg })
+
+	target := filepath.Join(t.TempDir(), "demo")
+	_, _, err := runRecipeCmd(t, "get", "demo", target)
+	if err == nil || !strings.Contains(err.Error(), "deadreg") {
+		t.Fatalf("err = %v, want hard failure naming the unreachable registry", err)
+	}
+
+	// The qualified form still succeeds: it only needs testreg.
+	stdout, _, err := runRecipeCmd(t, "get", "testreg/demo", filepath.Join(t.TempDir(), "demo"))
+	if err != nil || !strings.Contains(stdout, "installed into") {
+		t.Fatalf("qualified get: err=%v stdout=%s", err, stdout)
+	}
+}
+
 func TestPrintUnsetRequiredEnv(t *testing.T) {
 	env := []registry.EnvVar{
 		{Name: "VAKA_TEST_ABSENT_VAR", Required: true},

@@ -657,24 +657,111 @@ func TestUpdateKeepsPendingSameVersionJournal(t *testing.T) {
 func TestUpToDate(t *testing.T) {
 	target := installedV1(t)
 
-	ok, err := UpToDate(target, digestV1)
+	ok, err := UpToDate(target, "official", "demo", digestV1)
 	if err != nil || !ok {
 		t.Fatalf("pristine matching dir: ok=%v err=%v", ok, err)
 	}
-	if ok, _ := UpToDate(target, digestV2); ok {
+	if ok, _ := UpToDate(target, "official", "demo", digestV2); ok {
 		t.Fatal("digest mismatch must not be up to date")
+	}
+	// Identity guard: a different registry/name with the SAME digest must not
+	// short-circuit (it must route through Update, which rejects it).
+	if ok, _ := UpToDate(target, "acme", "demo", digestV1); ok {
+		t.Fatal("registry mismatch must not be up to date")
+	}
+	if ok, _ := UpToDate(target, "official", "other", digestV1); ok {
+		t.Fatal("name mismatch must not be up to date")
 	}
 
 	mutate(t, target, "compose.yaml", "drifted\n")
-	if ok, _ := UpToDate(target, digestV1); ok {
+	if ok, _ := UpToDate(target, "official", "demo", digestV1); ok {
 		t.Fatal("drifted tracked file must not be up to date")
 	}
 
-	if ok, err := UpToDate(t.TempDir(), digestV1); err != nil || ok {
+	if ok, err := UpToDate(t.TempDir(), "official", "demo", digestV1); err != nil || ok {
 		t.Fatalf("lock-less dir: ok=%v err=%v", ok, err)
 	}
-	if ok, err := UpToDate(filepath.Join(t.TempDir(), "nope"), digestV1); err != nil || ok {
+	if ok, err := UpToDate(filepath.Join(t.TempDir(), "nope"), "official", "demo", digestV1); err != nil || ok {
 		t.Fatalf("missing dir: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestUpdateInterruptedSameVersionRepairConverges(t *testing.T) {
+	target := installedV1(t)
+	// Delete a tracked file so a same-version get is a repair (has ops).
+	if err := os.Remove(filepath.Join(target, "compose.yaml")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Interrupt the repair after the file is restored but before commit.
+	abortAt(t, "applied compose.yaml")
+	if _, err := updateTo(target, "1.0.0", digestV1, tarballV1(t)); !errors.Is(err, errAbort) {
+		t.Fatalf("err = %v, want simulated crash", err)
+	}
+	afterStep = func(string) error { return nil }
+	if !hasResidue(t, target, JournalFileName) {
+		t.Fatal("setup: expected a dangling journal after the interrupted repair")
+	}
+
+	// Re-run the same version. Even though the tree is now content-complete
+	// (a would-be no-op), the pending journal must be committed and cleared,
+	// not left dangling by a NoChange short-circuit.
+	res, err := updateTo(target, "1.0.0", digestV1, tarballV1(t))
+	if err != nil {
+		t.Fatalf("recovery: %v", err)
+	}
+	if res.NoChange {
+		t.Fatal("recovery returned NoChange, leaving the journal dangling")
+	}
+	if hasResidue(t, target, JournalFileName) || hasResidue(t, target, StagingDirName) {
+		t.Fatal("pending journal/staging not cleared after recovery")
+	}
+	// A second run is now a genuine no-op.
+	res, err = updateTo(target, "1.0.0", digestV1, tarballV1(t))
+	if err != nil || !res.NoChange {
+		t.Fatalf("second run: res=%+v err=%v (want NoChange)", res, err)
+	}
+}
+
+func TestUpdateKeptUserCopyDeviationPersistsAndConverges(t *testing.T) {
+	target := installedV1(t)
+	// conf/app.yaml is tracked in v1. Modify it, then update to v2 (which
+	// drops conf/app.yaml) → kept-user-copy deviation.
+	mutate(t, target, "conf/app.yaml", "my edits\n")
+	res, err := updateTo(target, "2.0.0", digestV2, tarballV2(t))
+	if err != nil {
+		t.Fatalf("update to v2: %v", err)
+	}
+	if len(res.Warnings) != 1 || !strings.Contains(res.Warnings[0], "user-owned") {
+		t.Fatalf("v2 warnings = %v", res.Warnings)
+	}
+	if devs := lockOf(t, target).Deviations; len(devs) != 1 || devs[0].Kind != DeviationKeptUserCopy {
+		t.Fatalf("v2 deviations = %+v", devs)
+	}
+
+	// A same-version re-get must NOT drop the deviation: it persists in the
+	// lock and the warning repeats while the user's file remains.
+	res, err = updateTo(target, "2.0.0", digestV2, tarballV2(t))
+	if err != nil {
+		t.Fatalf("re-get: %v", err)
+	}
+	if len(res.Warnings) != 1 || !strings.Contains(res.Warnings[0], "user-owned") {
+		t.Fatalf("re-get dropped the kept-user-copy warning: %v", res.Warnings)
+	}
+	if devs := lockOf(t, target).Deviations; len(devs) != 1 || devs[0].Kind != DeviationKeptUserCopy {
+		t.Fatalf("re-get lost the deviation: %+v", devs)
+	}
+
+	// Resolution: remove the kept file → the deviation converges away.
+	if err := os.Remove(filepath.Join(target, "conf/app.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	res, err = updateTo(target, "2.0.0", digestV2, tarballV2(t))
+	if err != nil {
+		t.Fatalf("converge: %v", err)
+	}
+	if len(lockOf(t, target).Deviations) != 0 {
+		t.Fatalf("deviation did not converge: %+v", lockOf(t, target).Deviations)
 	}
 }
 
