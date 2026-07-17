@@ -1,6 +1,7 @@
 package recipe
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -60,6 +61,12 @@ func Install(spec InstallSpec) (*Lock, error) {
 	}
 	defer tarball.Close()
 	if err := ExtractRecipe(tarball, spec.Name, root); err != nil {
+		return nil, err
+	}
+
+	// Validate the staged artifact before committing it: a malformed or
+	// policy-invalid recipe must never be installed (fail closed).
+	if err := ValidateStaged(context.Background(), staging); err != nil {
 		return nil, err
 	}
 

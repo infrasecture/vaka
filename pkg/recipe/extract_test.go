@@ -61,14 +61,34 @@ func makeTarGz(t *testing.T, entries []tarEntry) *bytes.Buffer {
 func goodRecipe(t *testing.T) *bytes.Buffer {
 	return makeTarGz(t, []tarEntry{
 		{name: "demo/", typeflag: tar.TypeDir},
-		{name: "demo/compose.yaml", typeflag: tar.TypeReg, content: "services: {}\n"},
+		{name: "demo/recipe.yaml", typeflag: tar.TypeReg, content: validRecipeManifest},
+		{name: "demo/compose.yaml", typeflag: tar.TypeReg, content: "services:\n  app:\n    image: alpine:3.20\n"},
 		{name: "demo/docker-compose.yaml", typeflag: tar.TypeSymlink, linkname: "compose.yaml"},
-		{name: "demo/vaka.yaml", typeflag: tar.TypeReg, content: "apiVersion: agent.vaka/v1alpha1\n"},
+		{name: "demo/vaka.yaml", typeflag: tar.TypeReg, content: validVakaYAML},
 		{name: "demo/run.sh", typeflag: tar.TypeReg, content: "#!/bin/sh\n", mode: 0o755},
 		{name: "demo/conf/", typeflag: tar.TypeDir},
 		{name: "demo/conf/app.yaml", typeflag: tar.TypeReg, content: "x: 1\n"},
 	})
 }
+
+// validVakaYAML is a minimal ServicePolicy that passes policy.ValidateHost.
+const validVakaYAML = `apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+`
+
+// validRecipeManifest is a well-formed recipe.yaml (content is not parsed by
+// ValidateStaged, only its presence is required).
+const validRecipeManifest = `apiVersion: recipes.vaka/v1alpha1
+kind: Recipe
+name: demo
+version: 1.0.0
+description: test recipe fixture
+`
 
 func extractInto(t *testing.T, buf *bytes.Buffer) (string, error) {
 	t.Helper()

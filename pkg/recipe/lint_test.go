@@ -99,6 +99,100 @@ services:
 	}
 }
 
+func TestLintDirMergesComposeOverride(t *testing.T) {
+	dir := writeRecipeDir(t, `
+services:
+  app:
+    image: alpine:3.20
+`, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+`)
+	// The override — docker's (and vaka's) default customization mechanism —
+	// makes the service privileged. The lint must merge it, like vaka up
+	// would, or an override could smuggle dangerous config past the lint.
+	if err := os.WriteFile(filepath.Join(dir, "compose.override.yaml"),
+		[]byte("services:\n  app:\n    privileged: true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sum, err := LintDir(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("LintDir: %v", err)
+	}
+	found := false
+	for _, f := range sum.RiskFlags {
+		if f == "app:"+FlagPrivileged {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("override's privileged: true was not flagged; risk flags = %v", sum.RiskFlags)
+	}
+}
+
+func TestReadRecipePolicyRefusesEscapingSymlink(t *testing.T) {
+	dir := t.TempDir()
+	secret := filepath.Join(t.TempDir(), "outside.yaml")
+	if err := os.WriteFile(secret, []byte("apiVersion: x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// vaka.yaml is a symlink escaping the recipe dir.
+	if err := os.Symlink(secret, filepath.Join(dir, "vaka.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readRecipePolicy(dir); err == nil {
+		t.Fatal("readRecipePolicy followed a symlink escaping the recipe dir")
+	}
+}
+
+func TestValidateStagedFailsClosed(t *testing.T) {
+	good := `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+`
+	compose := "services:\n  app:\n    image: alpine:3.20\n"
+
+	t.Run("well-formed passes", func(t *testing.T) {
+		dir := writeRecipeDir(t, compose, good)
+		if err := os.WriteFile(filepath.Join(dir, "recipe.yaml"), []byte("apiVersion: recipes.vaka/v1alpha1\nkind: Recipe\nname: demo\nversion: 1.0.0\ndescription: x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := ValidateStaged(context.Background(), dir); err != nil {
+			t.Fatalf("ValidateStaged: %v", err)
+		}
+	})
+
+	t.Run("missing recipe.yaml is refused", func(t *testing.T) {
+		dir := writeRecipeDir(t, compose, good) // no recipe.yaml
+		if err := ValidateStaged(context.Background(), dir); err == nil ||
+			!strings.Contains(err.Error(), "missing recipe.yaml") {
+			t.Fatalf("err = %v, want missing recipe.yaml", err)
+		}
+	})
+
+	t.Run("invalid policy is refused", func(t *testing.T) {
+		dir := writeRecipeDir(t, compose, "apiVersion: agent.vaka/v1alpha1\n") // no kind
+		if err := os.WriteFile(filepath.Join(dir, "recipe.yaml"), []byte("apiVersion: recipes.vaka/v1alpha1\nkind: Recipe\nname: demo\nversion: 1.0.0\ndescription: x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := ValidateStaged(context.Background(), dir); err == nil ||
+			!strings.Contains(err.Error(), "policy is invalid") {
+			t.Fatalf("err = %v, want invalid policy", err)
+		}
+	})
+}
+
 func TestLintDirFlagsEverything(t *testing.T) {
 	dir := writeRecipeDir(t, `
 services:

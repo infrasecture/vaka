@@ -1,11 +1,13 @@
 package recipe
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -237,6 +239,13 @@ func Update(spec UpdateSpec) (*UpdateResult, error) {
 		return nil, err
 	}
 	if err := syncTree(newRoot); err != nil {
+		return nil, err
+	}
+
+	// Validate the staged new version before any of it can be committed: a
+	// malformed or policy-invalid published version must never replace a
+	// working recipe (fail closed).
+	if err := ValidateStaged(context.Background(), filepath.Join(spec.Target, StagingDirName, "new")); err != nil {
 		return nil, err
 	}
 
@@ -589,6 +598,16 @@ func diskStateOf(root *SafeRoot, p string) (state string, absent bool, err error
 }
 
 func acquireUpdateLock(root *SafeRoot) (func(), error) {
+	// Refuse a symlinked lock path: os.Root follows in-tree symlinks during
+	// resolution (O_NOFOLLOW is not honored), so a symlink planted at the
+	// lock path would otherwise redirect the flock to another inode and
+	// defeat the stable-lock-file exclusion. The lock must be a regular file
+	// (or absent, created below).
+	if fi, err := root.Lstat(UpdateLockFileName); err == nil && fi.Mode()&fs.ModeSymlink != 0 {
+		return nil, fmt.Errorf("%s is a symlink; refusing to lock through it", UpdateLockFileName)
+	} else if err != nil && !isNotExist(err) {
+		return nil, err
+	}
 	f, err := root.r.OpenFile(UpdateLockFileName, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		return nil, err

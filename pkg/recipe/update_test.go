@@ -23,43 +23,24 @@ const (
 	composeV1 = "services: {app: {image: a:1}}\n"
 	composeV2 = "services: {app: {image: a:2}}\n"
 	composeV3 = "services: {app: {image: a:3}}\n"
-	policyV1  = "apiVersion: agent.vaka/v1alpha1\n"
 	newFileV2 = "added in v2\n"
 )
 
 func demoTarball(t *testing.T, compose string, withConf, withNewFile bool) string {
-	t.Helper()
-	entries := []tarEntry{
-		{name: "demo/", typeflag: tar.TypeDir},
-		{name: "demo/compose.yaml", typeflag: tar.TypeReg, content: compose},
-		{name: "demo/docker-compose.yaml", typeflag: tar.TypeSymlink, linkname: "compose.yaml"},
-		{name: "demo/vaka.yaml", typeflag: tar.TypeReg, content: policyV1},
-		{name: "demo/run.sh", typeflag: tar.TypeReg, content: "#!/bin/sh\n", mode: 0o755},
-	}
-	if withConf {
-		entries = append(entries,
-			tarEntry{name: "demo/conf/", typeflag: tar.TypeDir},
-			tarEntry{name: "demo/conf/app.yaml", typeflag: tar.TypeReg, content: "conf v1\n"})
-	}
-	if withNewFile {
-		entries = append(entries, tarEntry{name: "demo/newfile.txt", typeflag: tar.TypeReg, content: newFileV2})
-	}
-	path := filepath.Join(t.TempDir(), "demo.tar.gz")
-	if err := os.WriteFile(path, makeTarGz(t, entries).Bytes(), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	return path
+	return demoTarballWith(t, compose, withConf, withNewFile, nil)
 }
 
-// demoTarballWith builds a demo tarball plus a set of extra relative paths
-// (their parent directories are created automatically by the extractor).
+// demoTarballWith builds a well-formed demo recipe tarball (recipe.yaml,
+// compose, vaka.yaml) plus a set of extra relative paths (their parent
+// directories are created automatically by the extractor).
 func demoTarballWith(t *testing.T, compose string, withConf, withNewFile bool, extra map[string]string) string {
 	t.Helper()
 	entries := []tarEntry{
 		{name: "demo/", typeflag: tar.TypeDir},
+		{name: "demo/recipe.yaml", typeflag: tar.TypeReg, content: validRecipeManifest},
 		{name: "demo/compose.yaml", typeflag: tar.TypeReg, content: compose},
 		{name: "demo/docker-compose.yaml", typeflag: tar.TypeSymlink, linkname: "compose.yaml"},
-		{name: "demo/vaka.yaml", typeflag: tar.TypeReg, content: policyV1},
+		{name: "demo/vaka.yaml", typeflag: tar.TypeReg, content: validVakaYAML},
 		{name: "demo/run.sh", typeflag: tar.TypeReg, content: "#!/bin/sh\n", mode: 0o755},
 	}
 	if withConf {
@@ -516,6 +497,71 @@ func TestUpdateConcurrentUpdaterRefused(t *testing.T) {
 	_, err = updateTo(target, "2.0.0", digestV2, tarballV2(t))
 	if !errors.Is(err, ErrUpdateInProgress) {
 		t.Fatalf("err = %v, want ErrUpdateInProgress", err)
+	}
+}
+
+func TestUpdateRejectsMalformedNewVersion(t *testing.T) {
+	target := installedV1(t)
+	before := readFile(t, target, LockFileName)
+
+	// A "new version" tarball that extracts but is not a well-formed recipe
+	// (no recipe.yaml). It must not replace the working install.
+	bad := filepath.Join(t.TempDir(), "bad.tar.gz")
+	buf := makeTarGz(t, []tarEntry{
+		{name: "demo/", typeflag: tar.TypeDir},
+		{name: "demo/compose.yaml", typeflag: tar.TypeReg, content: composeV2},
+		{name: "demo/vaka.yaml", typeflag: tar.TypeReg, content: validVakaYAML},
+	})
+	if err := os.WriteFile(bad, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := updateTo(target, "2.0.0", digestV2, bad)
+	if err == nil || !strings.Contains(err.Error(), "missing recipe.yaml") {
+		t.Fatalf("err = %v, want fail-closed on malformed artifact", err)
+	}
+	if readFile(t, target, LockFileName) != before {
+		t.Fatal("malformed update replaced the working recipe's lock")
+	}
+	if !strings.Contains(readFile(t, target, "compose.yaml"), "a:1") {
+		t.Fatal("malformed update mutated the working recipe")
+	}
+	if hasResidue(t, target, JournalFileName) {
+		t.Fatal("malformed update left a wedged journal")
+	}
+}
+
+func TestUpdateRejectsSymlinkedParent(t *testing.T) {
+	target := installedV1(t)
+	// Replace the tracked conf/ directory with an in-tree symlink.
+	if err := os.RemoveAll(filepath.Join(target, "conf")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(target, "elsewhere"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("elsewhere", filepath.Join(target, "conf")); err != nil {
+		t.Fatal(err)
+	}
+	// Update to a version that still ships conf/app.yaml.
+	tarball := demoTarballWith(t, composeV2, true, false, nil)
+	_, err := updateTo(target, "2.0.0", digestV2, tarball)
+	var obstruction *obstructionError
+	if !errors.As(err, &obstruction) {
+		t.Fatalf("err = %v, want obstructionError for symlinked parent", err)
+	}
+}
+
+func TestUpdateLockRefusesSymlinkedLockFile(t *testing.T) {
+	target := installedV1(t)
+	// Plant the update lock as a symlink; O_NOFOLLOW must refuse to open it
+	// (so the flock cannot be redirected to another inode).
+	if err := os.Symlink("compose.yaml", filepath.Join(target, UpdateLockFileName)); err != nil {
+		t.Fatal(err)
+	}
+	_, err := updateTo(target, "2.0.0", digestV2, tarballV2(t))
+	if err == nil || errors.Is(err, ErrUpdateInProgress) {
+		t.Fatalf("err = %v, want a no-follow open failure", err)
 	}
 }
 

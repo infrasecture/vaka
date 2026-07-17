@@ -1,6 +1,7 @@
 package recipe
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -12,6 +13,52 @@ import (
 	composetypes "github.com/compose-spec/compose-go/v2/types"
 	"vaka.dev/vaka/pkg/policy"
 )
+
+// requiredRecipeFiles must be present for a directory to be a well-formed
+// recipe. README is documentation and is not required for the recipe to run.
+var requiredRecipeFiles = []string{"recipe.yaml", "vaka.yaml"}
+
+// ValidateStaged checks that dir is a well-formed, runnable recipe: the
+// required files are present, the compose project (base + override) loads,
+// vaka.yaml parses, and the egress policy validates against the compose
+// services. It is run on the freshly extracted staging tree before an install
+// or update commits, so a malformed or invalid published artifact is refused
+// (fail closed) instead of replacing a working recipe and being reported as a
+// successful update.
+func ValidateStaged(ctx context.Context, dir string) error {
+	root, err := OpenSafeRoot(dir)
+	if err != nil {
+		return err
+	}
+	for _, name := range requiredRecipeFiles {
+		if _, err := root.Lstat(name); err != nil {
+			root.Close()
+			return fmt.Errorf("recipe is missing %s", name)
+		}
+	}
+	root.Close()
+
+	project, err := loadRecipeProject(ctx, dir)
+	if err != nil {
+		return err
+	}
+	pol, err := readRecipePolicy(dir)
+	if err != nil {
+		return err
+	}
+	networkModes := make(map[string]string, len(project.Services))
+	for name, svc := range project.Services {
+		networkModes[name] = svc.NetworkMode
+	}
+	if errs := policy.ValidateHost(pol, networkModes); len(errs) > 0 {
+		msgs := make([]string, len(errs))
+		for i, e := range errs {
+			msgs[i] = e.Error()
+		}
+		return fmt.Errorf("recipe policy is invalid:\n\t%s", strings.Join(msgs, "\n\t"))
+	}
+	return nil
+}
 
 // Risk flags (design §7). The set matches the registry CI lint
 // (scripts/validate_recipe.py in vaka-registry); vaka always recomputes
@@ -51,37 +98,61 @@ type LocalPolicySummary struct {
 	RiskFlags []string
 }
 
-// composeFileNames are recognized compose file names in docker's precedence
-// order (compose.* wins over docker-compose.*).
-var composeFileNames = []string{"compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml"}
+// composeBaseNames are recognized base compose file names in docker's
+// precedence order (compose.* wins over docker-compose.*).
+var composeBaseNames = []string{"compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml"}
 
-// findComposeFile returns the recipe's canonical compose file within dir.
-func findComposeFile(dir string) (string, error) {
-	for _, name := range composeFileNames {
+// maxPolicyBytes bounds the vaka.yaml read (a small document).
+const maxPolicyBytes = 4 << 20
+
+// recipeComposeFiles returns the explicit compose file list vaka would run
+// for the recipe: the canonical base file plus its override
+// (compose.override.* / docker-compose.override.*) when present. Listing the
+// files explicitly reproduces docker's default discovery — including the
+// override, the documented customization mechanism — while, unlike default
+// discovery, never honoring COMPOSE_FILE and never walking above dir.
+func recipeComposeFiles(dir string) ([]string, error) {
+	var base string
+	for _, name := range composeBaseNames {
 		p := filepath.Join(dir, name)
 		if fi, err := os.Lstat(p); err == nil && !fi.IsDir() {
-			return p, nil
+			base = name
+			break
 		}
 	}
-	return "", fmt.Errorf("no compose file in %s (looked for %s)", dir, strings.Join(composeFileNames, ", "))
+	if base == "" {
+		return nil, fmt.Errorf("no compose file in %s (looked for %s)", dir, strings.Join(composeBaseNames, ", "))
+	}
+	files := []string{filepath.Join(dir, base)}
+
+	family := "compose"
+	if strings.HasPrefix(base, "docker-compose") {
+		family = "docker-compose"
+	}
+	for _, ext := range []string{"yaml", "yml"} {
+		override := family + ".override." + ext
+		p := filepath.Join(dir, override)
+		if fi, err := os.Lstat(p); err == nil && !fi.IsDir() {
+			files = append(files, p)
+			break
+		}
+	}
+	return files, nil
 }
 
-// LintDir loads the recipe's own compose file and vaka.yaml and computes the
-// policy summary and risk flags from those files.
-//
-// The compose project is pinned to the recipe's canonical compose file with a
-// controlled (empty) interpolation environment: the lint deliberately does
-// not honor COMPOSE_FILE, the ambient OS environment, or a local .env, so it
-// analyzes the recipe as shipped (with compose defaults) and cannot be
-// steered to a different project or external files by the caller's
+// loadRecipeProject loads the recipe's compose project from its own files
+// (base + override) with a controlled, empty interpolation environment: it
+// deliberately does not honor COMPOSE_FILE, the ambient OS environment, or a
+// local .env, and does not walk above dir, so it analyzes the recipe as
+// shipped and cannot be steered to a different project by the caller's
 // environment.
-func LintDir(ctx context.Context, dir string) (*LocalPolicySummary, error) {
-	composeFile, err := findComposeFile(dir)
+func loadRecipeProject(ctx context.Context, dir string) (*composetypes.Project, error) {
+	files, err := recipeComposeFiles(dir)
 	if err != nil {
 		return nil, err
 	}
 	opts, err := composecli.NewProjectOptions(
-		[]string{composeFile},
+		files,
 		composecli.WithWorkingDirectory(dir),
 		composecli.WithName("vaka-lint"),
 		composecli.WithEnv(nil),
@@ -94,15 +165,39 @@ func LintDir(ctx context.Context, dir string) (*LocalPolicySummary, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load compose project: %w", err)
 	}
+	return project, nil
+}
 
-	f, err := os.Open(filepath.Join(dir, "vaka.yaml"))
+// readRecipePolicy reads and parses the recipe's vaka.yaml through a
+// confinement root (so an escaping symlink is refused, and the read is
+// bounded).
+func readRecipePolicy(dir string) (*policy.ServicePolicy, error) {
+	root, err := OpenSafeRoot(dir)
 	if err != nil {
 		return nil, fmt.Errorf("recipe policy: %w", err)
 	}
-	pol, err := policy.Parse(f)
-	f.Close()
+	defer root.Close()
+	data, err := root.ReadFileLimited("vaka.yaml", maxPolicyBytes)
 	if err != nil {
 		return nil, fmt.Errorf("recipe policy: %w", err)
+	}
+	pol, err := policy.Parse(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("recipe policy: %w", err)
+	}
+	return pol, nil
+}
+
+// LintDir loads the recipe's own compose project (base + override) and
+// vaka.yaml and computes the policy summary and risk flags from those files.
+func LintDir(ctx context.Context, dir string) (*LocalPolicySummary, error) {
+	project, err := loadRecipeProject(ctx, dir)
+	if err != nil {
+		return nil, err
+	}
+	pol, err := readRecipePolicy(dir)
+	if err != nil {
+		return nil, err
 	}
 
 	summary := &LocalPolicySummary{DefaultActions: map[string]string{}}

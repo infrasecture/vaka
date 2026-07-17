@@ -17,11 +17,19 @@ import (
 // handle vaka syncs.
 var syncFn = func(f *os.File) error { return f.Sync() }
 
-// SafeRoot confines all recipe-directory I/O beneath one root: paths are
-// resolved component-by-component with symlinks never followed out of the
-// root (os.Root), and types are validated on opened handles at mutation
-// time, not on pre-scan results. It is the single primitive shared by the
-// tarball extractor and the update engine.
+// SafeRoot confines all recipe-directory I/O beneath one root (os.Root): a
+// path — including any symlink it traverses — that resolves outside the root
+// is refused, so no operation can escape the recipe directory. It is the
+// single primitive shared by the tarball extractor and the update engine.
+//
+// Note the precise guarantee: os.Root refuses only symlinks that *escape*;
+// symlinks that stay *within* the root are still followed. Callers that must
+// act on a final symlink itself rather than its target therefore use
+// Lstat/Readlink (EntryState does this to record `link:<target>`), and the
+// updater rejects symlinked parent directories in its pre-check. The residual
+// exposure — a concurrent non-vaka writer swapping an in-tree component to
+// redirect a write during the apply window — is bounded to the recipe
+// directory (it cannot escape) and requires racing the flock-holding updater.
 type SafeRoot struct {
 	r *os.Root
 }

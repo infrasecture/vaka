@@ -74,6 +74,7 @@ func TestInstallHappyPath(t *testing.T) {
 
 	// Every extracted file is tracked with the right state shape.
 	wantStates := map[string]string{
+		"recipe.yaml":         "sha256:",
 		"compose.yaml":        "sha256:",
 		"docker-compose.yaml": "link:compose.yaml",
 		"vaka.yaml":           "sha256:",

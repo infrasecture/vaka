@@ -41,6 +41,7 @@ func fixtureRegistry(t *testing.T, policyBlock string) string {
 	gz := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gz)
 	files := map[string]string{
+		"demo/recipe.yaml":  "apiVersion: recipes.vaka/v1alpha1\nkind: Recipe\nname: demo\nversion: 1.0.0\ndescription: fixture\n",
 		"demo/compose.yaml": fixtureCompose,
 		"demo/vaka.yaml":    fixturePolicy,
 		"demo/README.md":    "# demo\n",
