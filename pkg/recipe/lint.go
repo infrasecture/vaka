@@ -98,44 +98,37 @@ type LocalPolicySummary struct {
 	RiskFlags []string
 }
 
-// composeBaseNames are recognized base compose file names in docker's
-// precedence order (compose.* wins over docker-compose.*).
-var composeBaseNames = []string{"compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml"}
-
 // maxPolicyBytes bounds the vaka.yaml read (a small document).
 const maxPolicyBytes = 4 << 20
 
-// recipeComposeFiles returns the explicit compose file list vaka would run
-// for the recipe: the canonical base file plus its override
-// (compose.override.* / docker-compose.override.*) when present. Listing the
-// files explicitly reproduces docker's default discovery — including the
-// override, the documented customization mechanism — while, unlike default
-// discovery, never honoring COMPOSE_FILE and never walking above dir.
-func recipeComposeFiles(dir string) ([]string, error) {
-	var base string
-	for _, name := range composeBaseNames {
-		p := filepath.Join(dir, name)
-		if fi, err := os.Lstat(p); err == nil && !fi.IsDir() {
-			base = name
-			break
+// firstExisting returns the first name in names that exists (as a non-dir)
+// under dir, or "" — matching compose-go's findFiles winner selection.
+func firstExisting(dir string, names []string) string {
+	for _, name := range names {
+		if fi, err := os.Lstat(filepath.Join(dir, name)); err == nil && !fi.IsDir() {
+			return name
 		}
 	}
+	return ""
+}
+
+// recipeComposeFiles returns the explicit compose file list vaka would run
+// for the recipe: the base file plus its override, chosen with EXACTLY
+// compose-go's precedence (composecli.DefaultFileNames /
+// DefaultOverrideFileNames — base and override selected independently, .yml
+// before .yaml for docker-compose, override family-independent). Reusing the
+// library's own ordered lists — rather than hand-rolled rules — is what
+// guarantees the lint analyzes the same files `vaka up` loads. The lint still
+// lists them explicitly so it never honors COMPOSE_FILE and never walks above
+// dir (which compose-go's own discovery would).
+func recipeComposeFiles(dir string) ([]string, error) {
+	base := firstExisting(dir, composecli.DefaultFileNames)
 	if base == "" {
-		return nil, fmt.Errorf("no compose file in %s (looked for %s)", dir, strings.Join(composeBaseNames, ", "))
+		return nil, fmt.Errorf("no compose file in %s (looked for %s)", dir, strings.Join(composecli.DefaultFileNames, ", "))
 	}
 	files := []string{filepath.Join(dir, base)}
-
-	family := "compose"
-	if strings.HasPrefix(base, "docker-compose") {
-		family = "docker-compose"
-	}
-	for _, ext := range []string{"yaml", "yml"} {
-		override := family + ".override." + ext
-		p := filepath.Join(dir, override)
-		if fi, err := os.Lstat(p); err == nil && !fi.IsDir() {
-			files = append(files, p)
-			break
-		}
+	if override := firstExisting(dir, composecli.DefaultOverrideFileNames); override != "" {
+		files = append(files, filepath.Join(dir, override))
 	}
 	return files, nil
 }

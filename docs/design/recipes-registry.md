@@ -275,14 +275,29 @@ not create them.
    All updater I/O is **contained and staged**:
 
    - Every path operation in the recipe directory — staging, rename, delete,
-     lock and journal writes — resolves beneath the recipe root with
-     symlinks disabled and types revalidated on the opened descriptor at
-     mutation time (Go's `os.Root`), so a concurrently planted symlink — by
-     another process, or by a running container that bind-mounts the
-     directory — cannot redirect a write outside the tree. This is the same
-     discipline as the §7 extractor, implemented once as a shared safe-I/O
-     primitive; the recipe's own in-tree symlinks remain data and are never
-     followed.
+     lock and journal writes — resolves beneath the recipe root (Go's
+     `os.Root`), so no operation can escape the recipe directory: a path
+     component that resolves outside the root, whether via `..` or a symlink,
+     is refused. This is the same shared safe-I/O primitive as the §7
+     extractor.
+
+     The guarantee is *no escape*, not *no follow*. `os.Root` still follows
+     symlinks that stay within the root, and does not prohibit crossing a
+     filesystem or bind-mount boundary within the root; it also ignores
+     `O_NOFOLLOW`. So a concurrent non-vaka writer that swaps an in-tree
+     directory component for an in-tree symlink (or bind-mount) during the
+     apply window can redirect a write to a *different in-tree* path —
+     bounded to the recipe directory, never outside it, and requiring a race
+     against the flock-holding updater. vaka narrows this by recording
+     symlink entries as data (`link:<target>` via `Lstat`/`Readlink`, never
+     followed for their content), refusing symlinked parent directories in
+     the update pre-check, and refusing a symlinked update-lock path. Staged
+     validation likewise re-resolves the staging path (compose-go loads by
+     path, not by descriptor), so validation and apply can disagree under the
+     same race. Fully closing these residuals requires descriptor-relative,
+     no-follow, no-mount-crossing traversal (`openat2` with
+     `RESOLVE_NO_SYMLINKS|RESOLVE_NO_XDEV`), which is Linux-only and is
+     deferred to Phase 3 filesystem hardening.
    - Every temporary file (journal, replacement content, final lock) is
      created with `O_EXCL` inside `.vaka-staging/`, a journal-owned scratch
      directory in the recipe root (same filesystem, so the renames below
@@ -583,7 +598,12 @@ existing `gopkg.in/yaml.v3`.
    retry-safe by regenerating/pushing the index *before* creating the GitHub
    Release (an index failure must not leave a release that blocks a clean
    rerun). This sits with signing because it is all supply-chain integrity of
-   the publish path.
+   the publish path. **Strong no-follow filesystem traversal**: replace the
+   `os.Root` "no escape" primitive with descriptor-relative `openat2`
+   (`RESOLVE_NO_SYMLINKS|RESOLVE_NO_XDEV`) for updater mutations and staged
+   validation, closing the bounded within-tree symlink/bind-mount redirect
+   races that `os.Root` permits (§6 filesystem note). Linux-only, so it
+   coexists with the portable `os.Root` path as a hardened fast path.
 
 ### Deferred review findings (registry repo / recipe content)
 

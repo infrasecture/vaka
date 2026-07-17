@@ -554,14 +554,17 @@ func TestUpdateRejectsSymlinkedParent(t *testing.T) {
 
 func TestUpdateLockRefusesSymlinkedLockFile(t *testing.T) {
 	target := installedV1(t)
-	// Plant the update lock as a symlink; O_NOFOLLOW must refuse to open it
-	// (so the flock cannot be redirected to another inode).
+	// Plant the update lock as a symlink. os.Root follows in-tree symlinks
+	// (and ignores O_NOFOLLOW), so acquireUpdateLock's explicit Lstat guard
+	// must refuse it — otherwise the flock could be redirected to another
+	// inode and defeat the stable-lock exclusion.
 	if err := os.Symlink("compose.yaml", filepath.Join(target, UpdateLockFileName)); err != nil {
 		t.Fatal(err)
 	}
 	_, err := updateTo(target, "2.0.0", digestV2, tarballV2(t))
-	if err == nil || errors.Is(err, ErrUpdateInProgress) {
-		t.Fatalf("err = %v, want a no-follow open failure", err)
+	if err == nil || errors.Is(err, ErrUpdateInProgress) ||
+		!strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("err = %v, want a symlinked-lock refusal", err)
 	}
 }
 

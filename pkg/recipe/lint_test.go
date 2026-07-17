@@ -99,6 +99,51 @@ services:
 	}
 }
 
+func TestRecipeComposeFilesMatchesComposeGo(t *testing.T) {
+	// Precedence/family matrix pinned to compose-go's exported ordering:
+	// base = first of [compose.yaml, compose.yml, docker-compose.yml,
+	// docker-compose.yaml]; override = first of [compose.override.yml,
+	// .yaml, docker-compose.override.yml, .yaml], chosen INDEPENDENTLY of the
+	// base family.
+	tests := []struct {
+		name    string
+		present []string
+		want    []string
+	}{
+		{"single base", []string{"compose.yaml"}, []string{"compose.yaml"}},
+		{"yaml beats yml for compose", []string{"compose.yaml", "compose.yml"}, []string{"compose.yaml"}},
+		{"yml beats yaml for docker-compose", []string{"docker-compose.yaml", "docker-compose.yml"}, []string{"docker-compose.yml"}},
+		{"compose beats docker-compose", []string{"compose.yml", "docker-compose.yml"}, []string{"compose.yml"}},
+		{"base + its override", []string{"compose.yaml", "compose.override.yaml"}, []string{"compose.yaml", "compose.override.yaml"}},
+		{"override yml beats yaml", []string{"compose.yaml", "compose.override.yml", "compose.override.yaml"}, []string{"compose.yaml", "compose.override.yml"}},
+		// Override is family-INDEPENDENT: a compose.yaml base picks up a
+		// docker-compose.override.yml when no compose.override.* exists — the
+		// case the old family-matched logic silently ignored.
+		{"cross-family override", []string{"compose.yaml", "docker-compose.override.yml"}, []string{"compose.yaml", "docker-compose.override.yml"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for _, f := range tc.present {
+				if err := os.WriteFile(filepath.Join(dir, f), []byte("services: {}\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := recipeComposeFiles(dir)
+			if err != nil {
+				t.Fatalf("recipeComposeFiles: %v", err)
+			}
+			var gotNames []string
+			for _, g := range got {
+				gotNames = append(gotNames, filepath.Base(g))
+			}
+			if strings.Join(gotNames, ",") != strings.Join(tc.want, ",") {
+				t.Fatalf("got %v, want %v", gotNames, tc.want)
+			}
+		})
+	}
+}
+
 func TestLintDirMergesComposeOverride(t *testing.T) {
 	dir := writeRecipeDir(t, `
 services:

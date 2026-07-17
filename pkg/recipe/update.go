@@ -242,13 +242,6 @@ func Update(spec UpdateSpec) (*UpdateResult, error) {
 		return nil, err
 	}
 
-	// Validate the staged new version before any of it can be committed: a
-	// malformed or policy-invalid published version must never replace a
-	// working recipe (fail closed).
-	if err := ValidateStaged(context.Background(), filepath.Join(spec.Target, StagingDirName, "new")); err != nil {
-		return nil, err
-	}
-
 	// Step 3 — pre-check: classify every path per the decision matrix.
 	rows, blocked, err := buildPlan(root, lock, journal, newStates)
 	if err != nil {
@@ -260,6 +253,23 @@ func Update(spec UpdateSpec) (*UpdateResult, error) {
 	}
 	if obstructed := obstructedParents(root, rows); len(obstructed) > 0 {
 		return nil, &obstructionError{paths: obstructed}
+	}
+
+	// Validate the staged new version immediately before it can be committed:
+	// a malformed or policy-invalid published version must never replace a
+	// working recipe (fail closed). Placed as late as possible — right before
+	// the journal write — to minimize the window between validation and apply.
+	//
+	// Residual (bounded, documented in the design's §6 filesystem note):
+	// compose-go loads by path, so validation re-resolves the staged path
+	// rather than reading through the newRoot descriptor; a concurrent
+	// non-vaka writer swapping vaka's reserved staging during this window
+	// could make validation and apply disagree. The damage is confined to the
+	// recipe directory (os.Root cannot escape) and requires racing the
+	// flock-holding updater. Closing it fully needs descriptor-relative,
+	// no-follow traversal (Phase 3).
+	if err := ValidateStaged(context.Background(), filepath.Join(spec.Target, StagingDirName, "new")); err != nil {
+		return nil, err
 	}
 	if err := afterStep("prechecked"); err != nil {
 		return nil, err
