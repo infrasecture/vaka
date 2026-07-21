@@ -19,7 +19,7 @@ import (
 
 const fixtureCompose = `services:
   app:
-    image: alpine:3.20
+    image: alpine:3.20@sha256:0000000000000000000000000000000000000000000000000000000000000000
 `
 
 const fixturePolicy = `apiVersion: agent.vaka/v1alpha1

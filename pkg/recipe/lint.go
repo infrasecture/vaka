@@ -74,6 +74,11 @@ const (
 	FlagEgressDefaultAcc  = "egress-default-accept"
 	FlagNoPolicyForSvc    = "no-policy-for-service"
 	FlagDisablesVakaInit  = "disables-vaka-init"
+	// FlagUnpinnedImage marks a service whose image is not pinned by digest
+	// (implicit latest or a mutable tag), so the recipe's verified tarball
+	// digest does not determine the container code that runs. Advisory: it is
+	// surfaced but does not fail registry CI (mutable tags are common).
+	FlagUnpinnedImage = "unpinned-image"
 )
 
 var broadMountSources = map[string]bool{
@@ -260,6 +265,12 @@ func lintService(svcName string, svc composetypes.ServiceConfig, flag func(svc, 
 	}
 	if svc.Labels[vakaInitLabel] == "present" {
 		flag(svcName, FlagDisablesVakaInit)
+	}
+	// A service that pulls an image (as opposed to building one) should pin it
+	// by digest; without @sha256: the tag is mutable and the recipe's tarball
+	// digest does not determine the code that runs.
+	if svc.Image != "" && !strings.Contains(svc.Image, "@sha256:") {
+		flag(svcName, FlagUnpinnedImage)
 	}
 }
 

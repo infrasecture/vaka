@@ -28,11 +28,11 @@ func TestLintDirClean(t *testing.T) {
 	dir := writeRecipeDir(t, `
 services:
   app:
-    image: alpine:3.20
+    image: alpine:3.20@sha256:0000000000000000000000000000000000000000000000000000000000000000
     volumes:
       - ./conf.yaml:/app/conf.yaml:ro
   gateway:
-    image: alpine:3.20
+    image: alpine:3.20@sha256:0000000000000000000000000000000000000000000000000000000000000000
 `, `
 apiVersion: agent.vaka/v1alpha1
 kind: ServicePolicy
@@ -65,7 +65,7 @@ func TestLintDirIgnoresComposeFileEnv(t *testing.T) {
 	dir := writeRecipeDir(t, `
 services:
   app:
-    image: alpine:3.20
+    image: alpine:3.20@sha256:0000000000000000000000000000000000000000000000000000000000000000
 `, `
 apiVersion: agent.vaka/v1alpha1
 kind: ServicePolicy
@@ -185,7 +185,7 @@ func TestLintDirMergesComposeOverride(t *testing.T) {
 	dir := writeRecipeDir(t, `
 services:
   app:
-    image: alpine:3.20
+    image: alpine:3.20@sha256:0000000000000000000000000000000000000000000000000000000000000000
 `, `
 apiVersion: agent.vaka/v1alpha1
 kind: ServicePolicy
@@ -316,7 +316,9 @@ services:
 		"risky:" + FlagHostNetwork,
 		"risky:" + FlagHostPID,
 		"risky:" + FlagPrivileged,
+		"risky:" + FlagUnpinnedImage,
 		"unpoliced:" + FlagNoPolicyForSvc,
+		"unpoliced:" + FlagUnpinnedImage,
 	}
 	if !reflect.DeepEqual(sum.RiskFlags, want) {
 		t.Fatalf("flags:\ngot  %v\nwant %v", sum.RiskFlags, want)
@@ -326,17 +328,67 @@ services:
 	}
 }
 
+func TestLintDirUnpinnedImage(t *testing.T) {
+	dir := writeRecipeDir(t, `
+services:
+  mutable:
+    image: nginx:latest
+  taggged:
+    image: nginx:1.27
+  pinned:
+    image: nginx:1.27@sha256:0000000000000000000000000000000000000000000000000000000000000000
+  builtlocal:
+    build: .
+`, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  mutable:
+    network: {egress: {defaultAction: reject}}
+  taggged:
+    network: {egress: {defaultAction: reject}}
+  pinned:
+    network: {egress: {defaultAction: reject}}
+  builtlocal:
+    network: {egress: {defaultAction: reject}}
+`)
+	sum, err := LintDir(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("LintDir: %v", err)
+	}
+	has := func(f string) bool {
+		for _, g := range sum.RiskFlags {
+			if g == f {
+				return true
+			}
+		}
+		return false
+	}
+	if !has("mutable:" + FlagUnpinnedImage) {
+		t.Error("implicit-latest image not flagged")
+	}
+	if !has("taggged:" + FlagUnpinnedImage) {
+		t.Error("mutable-tag image not flagged")
+	}
+	if has("pinned:" + FlagUnpinnedImage) {
+		t.Error("digest-pinned image wrongly flagged")
+	}
+	if has("builtlocal:" + FlagUnpinnedImage) {
+		t.Error("build-only service (no image) wrongly flagged")
+	}
+}
+
 func TestLintDirAgainstLiveStyleRecipe(t *testing.T) {
 	// The extractor fixture (goodRecipe) is not policy-complete; use a
 	// codex-shaped pair: two services, one talking to the other only.
 	dir := writeRecipeDir(t, `
 services:
   agent:
-    image: alpine:3.20
+    image: alpine:3.20@sha256:0000000000000000000000000000000000000000000000000000000000000000
     volumes:
       - ${WORKSPACE_DIR:-./}:/workspace
   gateway:
-    image: alpine:3.20
+    image: alpine:3.20@sha256:0000000000000000000000000000000000000000000000000000000000000000
     expose: ["4000"]
 `, `
 apiVersion: agent.vaka/v1alpha1
