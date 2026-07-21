@@ -125,3 +125,76 @@ func (c *Config) Lookup(name string) (Registry, bool) {
 	}
 	return Registry{}, false
 }
+
+// Add appends a registry, validating its name and URL and rejecting a
+// duplicate name.
+func (c *Config) Add(reg Registry) error {
+	if !nameRE.MatchString(reg.Name) {
+		return fmt.Errorf("registry name %q must match [a-z0-9-]+", reg.Name)
+	}
+	if err := validateIndexURL(reg.URL); err != nil {
+		return err
+	}
+	if _, ok := c.Lookup(reg.Name); ok {
+		return fmt.Errorf("registry %q is already configured", reg.Name)
+	}
+	c.Registries = append(c.Registries, reg)
+	return nil
+}
+
+// Remove deletes the named registry, erroring if it is not configured.
+func (c *Config) Remove(name string) error {
+	for i, r := range c.Registries {
+		if r.Name == name {
+			c.Registries = append(c.Registries[:i], c.Registries[i+1:]...)
+			return nil
+		}
+	}
+	return fmt.Errorf("registry %q is not configured", name)
+}
+
+// SaveConfig writes the configuration to the default path, creating the
+// parent directory. The config's identity fields are set if empty.
+func SaveConfig(cfg *Config) error {
+	path, err := ConfigPath()
+	if err != nil {
+		return err
+	}
+	return SaveConfigTo(path, cfg)
+}
+
+// SaveConfigTo writes the configuration to path atomically (temp file +
+// rename), after validating it.
+func SaveConfigTo(path string, cfg *Config) error {
+	if cfg.APIVersion == "" {
+		cfg.APIVersion = APIVersion
+	}
+	if cfg.Kind == "" {
+		cfg.Kind = "RegistriesConfig"
+	}
+	if err := cfg.validate(); err != nil {
+		return err
+	}
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, ".registries-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
+}

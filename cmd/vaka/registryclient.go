@@ -18,6 +18,7 @@ const browseIndexMaxAge = 15 * time.Minute
 // Test seams (same pattern as execDockerComposeFn).
 var (
 	loadRegistriesConfig = registry.LoadConfig
+	saveRegistriesConfig = registry.SaveConfig
 	registryConfigPath   = registry.ConfigPath
 	newRegistryClient    = func(maxAge time.Duration) *registry.Client {
 		return &registry.Client{MaxIndexAge: maxAge}

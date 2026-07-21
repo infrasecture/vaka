@@ -213,10 +213,14 @@ registry's advisory copy — `vaka get` always recomputes it locally.
 ### `vaka registry`
 
 ```bash
-vaka registry list
+vaka registry list                     # configured registries + cache age
+vaka registry add <name> <index-url>   # add a registry
+vaka registry remove <name>            # remove one (alias: rm)
+vaka registry refresh [name]           # re-fetch index(es), updating the cache
 ```
 
-Lists configured registries and cache freshness. Registries are configured
+`add`/`remove` edit `registries.yaml`; `refresh` force-revalidates every
+registry's cached index (or just the named one). Registries are configured
 in `registries.yaml` (path shown by `list`; defaults to the official
 registry when absent):
 

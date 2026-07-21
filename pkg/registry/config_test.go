@@ -16,6 +16,62 @@ func writeConfig(t *testing.T, content string) string {
 	return path
 }
 
+func TestConfigAddRemove(t *testing.T) {
+	cfg := DefaultConfig()
+
+	if err := cfg.Add(Registry{Name: "acme", URL: "https://recipes.acme.example/index.yaml"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if len(cfg.Registries) != 2 {
+		t.Fatalf("got %d registries, want 2", len(cfg.Registries))
+	}
+
+	if err := cfg.Add(Registry{Name: "acme", URL: "https://other.example/index.yaml"}); err == nil ||
+		!strings.Contains(err.Error(), "already configured") {
+		t.Fatalf("duplicate add err = %v", err)
+	}
+	if err := cfg.Add(Registry{Name: "Bad_Name", URL: "https://a.example/index.yaml"}); err == nil ||
+		!strings.Contains(err.Error(), "[a-z0-9-]+") {
+		t.Fatalf("bad-name add err = %v", err)
+	}
+	if err := cfg.Add(Registry{Name: "insecure", URL: "http://a.example/index.yaml"}); err == nil ||
+		!strings.Contains(err.Error(), "plain http") {
+		t.Fatalf("http add err = %v", err)
+	}
+
+	if err := cfg.Remove("acme"); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if _, ok := cfg.Lookup("acme"); ok {
+		t.Fatal("acme still present after remove")
+	}
+	if err := cfg.Remove("nonexistent"); err == nil ||
+		!strings.Contains(err.Error(), "not configured") {
+		t.Fatalf("remove-nonexistent err = %v", err)
+	}
+}
+
+func TestSaveConfigRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sub", "registries.yaml")
+	cfg := DefaultConfig()
+	_ = cfg.Add(Registry{Name: "acme", URL: "https://recipes.acme.example/index.yaml"})
+
+	if err := SaveConfigTo(path, cfg); err != nil {
+		t.Fatalf("SaveConfigTo: %v", err)
+	}
+	back, err := LoadConfigFrom(path)
+	if err != nil {
+		t.Fatalf("LoadConfigFrom: %v", err)
+	}
+	if len(back.Registries) != 2 || back.Registries[1].Name != "acme" {
+		t.Fatalf("round trip = %+v", back.Registries)
+	}
+	// The saved document is strictly valid (identity fields set).
+	if back.APIVersion != APIVersion || back.Kind != "RegistriesConfig" {
+		t.Fatalf("identity = %s/%s", back.APIVersion, back.Kind)
+	}
+}
+
 func TestLoadConfigMissingFileYieldsDefault(t *testing.T) {
 	cfg, err := LoadConfigFrom(filepath.Join(t.TempDir(), "does-not-exist.yaml"))
 	if err != nil {
