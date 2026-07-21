@@ -89,10 +89,13 @@ type planRow struct {
 // download and update entirely. It is conservative: any doubt (missing lock,
 // identity mismatch, digest mismatch, dangling journal, recorded deviation,
 // drifted or missing tracked file) returns false, and the caller falls
-// through to the authoritative Update, which is the only path that mutates
-// and which enforces identity under its lock. Being read-only and advisory,
-// it does not take the update lock; a torn read during a concurrent commit
-// simply yields false and the caller then contends for the lock.
+// through to the authoritative Update.
+//
+// Like Update, it takes the update lock before reading anything, honoring the
+// "lock before anything is read" / "concurrent get fails fast" contract: a
+// concurrent updater holding the lock makes this return ErrUpdateInProgress
+// (which the caller surfaces) rather than reporting a snapshot that the other
+// updater is about to invalidate. It never mutates.
 func UpToDate(target, registryName, name, digest string) (bool, error) {
 	root, err := OpenSafeRoot(target)
 	if err != nil {
@@ -102,6 +105,21 @@ func UpToDate(target, registryName, name, digest string) (bool, error) {
 		return false, err
 	}
 	defer root.Close()
+
+	// Cheap recipe-directory gate before locking (mirrors Update): a
+	// non-recipe directory is simply not up to date, and we do not create
+	// vaka state in it.
+	if _, err := root.Lstat(LockFileName); err != nil {
+		if isNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	unlock, err := acquireUpdateLock(root)
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
 
 	lock, exists, err := ReadLock(root)
 	if err != nil || !exists {

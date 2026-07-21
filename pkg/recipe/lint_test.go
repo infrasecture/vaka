@@ -142,6 +142,43 @@ func TestRecipeComposeFilesMatchesComposeGo(t *testing.T) {
 			}
 		})
 	}
+
+	// Unusual entry types must match compose-go's os.Stat semantics.
+	t.Run("dangling high-priority symlink is skipped (Stat follows)", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.Symlink("does-not-exist", filepath.Join(dir, "compose.yaml")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "compose.yml"), []byte("services: {}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		got, err := recipeComposeFiles(dir)
+		if err != nil {
+			t.Fatalf("recipeComposeFiles: %v", err)
+		}
+		if len(got) != 1 || filepath.Base(got[0]) != "compose.yml" {
+			t.Fatalf("got %v, want [compose.yml] (dangling compose.yaml skipped)", got)
+		}
+	})
+
+	t.Run("high-priority directory is selected (Stat accepts dirs)", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.Mkdir(filepath.Join(dir, "compose.yaml"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "compose.yml"), []byte("services: {}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		got, err := recipeComposeFiles(dir)
+		if err != nil {
+			t.Fatalf("recipeComposeFiles: %v", err)
+		}
+		// compose-go would select the directory then fail to load it; we
+		// match that selection rather than silently picking compose.yml.
+		if len(got) != 1 || filepath.Base(got[0]) != "compose.yaml" {
+			t.Fatalf("got %v, want [compose.yaml] (directory selected like compose-go)", got)
+		}
+	})
 }
 
 func TestLintDirMergesComposeOverride(t *testing.T) {

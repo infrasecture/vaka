@@ -101,11 +101,15 @@ type LocalPolicySummary struct {
 // maxPolicyBytes bounds the vaka.yaml read (a small document).
 const maxPolicyBytes = 4 << 20
 
-// firstExisting returns the first name in names that exists (as a non-dir)
-// under dir, or "" — matching compose-go's findFiles winner selection.
+// firstExisting returns the first name in names that exists under dir, or ""
+// — matching compose-go's findFiles winner selection exactly: os.Stat
+// (follows symlinks, so a dangling symlink is skipped like runtime) and any
+// successful stat wins (a directory is selected, then fails to load, just as
+// compose-go would). Using Lstat / excluding directories here would diverge
+// from what `vaka up` loads.
 func firstExisting(dir string, names []string) string {
 	for _, name := range names {
-		if fi, err := os.Lstat(filepath.Join(dir, name)); err == nil && !fi.IsDir() {
+		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
 			return name
 		}
 	}

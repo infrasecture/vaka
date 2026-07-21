@@ -281,22 +281,35 @@ not create them.
      is refused. This is the same shared safe-I/O primitive as the §7
      extractor.
 
-     The guarantee is *no escape*, not *no follow*. `os.Root` still follows
-     symlinks that stay within the root, and does not prohibit crossing a
-     filesystem or bind-mount boundary within the root; it also ignores
-     `O_NOFOLLOW`. So a concurrent non-vaka writer that swaps an in-tree
-     directory component for an in-tree symlink (or bind-mount) during the
-     apply window can redirect a write to a *different in-tree* path —
-     bounded to the recipe directory, never outside it, and requiring a race
-     against the flock-holding updater. vaka narrows this by recording
-     symlink entries as data (`link:<target>` via `Lstat`/`Readlink`, never
-     followed for their content), refusing symlinked parent directories in
-     the update pre-check, and refusing a symlinked update-lock path. Staged
-     validation likewise re-resolves the staging path (compose-go loads by
-     path, not by descriptor), so validation and apply can disagree under the
-     same race. Fully closing these residuals requires descriptor-relative,
-     no-follow, no-mount-crossing traversal (`openat2` with
-     `RESOLVE_NO_SYMLINKS|RESOLVE_NO_XDEV`), which is Linux-only and is
+     The guarantee is *no escape via `..` or symlinks*, and it is **not** a
+     general no-follow or no-mount-crossing guarantee. Two residuals follow,
+     both requiring a concurrent non-vaka writer racing the flock-holding
+     updater, and both deferred to Phase 3:
+
+     1. **In-tree symlinks are still followed** (`os.Root` also ignores
+        `O_NOFOLLOW`). Swapping an in-tree directory component for an in-tree
+        symlink can redirect a write to a *different in-tree* path — still
+        bounded to the recipe directory, never outside it. vaka narrows this
+        by recording symlink entries as data (`link:<target>` via
+        `Lstat`/`Readlink`, never followed for their content), refusing
+        symlinked parent directories in the update pre-check, and refusing a
+        symlinked update-lock path.
+
+     2. **Mount-backed descendants are explicitly excluded from the
+        containment guarantee.** `os.Root` does not prohibit crossing a
+        filesystem or bind-mount boundary, so a bind mount planted *inside*
+        the recipe directory redirects operations (e.g. the stale-staging
+        `RemoveAll`) to the mount's target, which *can* be outside the
+        original tree — this is a genuine escape, not merely a within-tree
+        redirect. Planting a mount requires `CAP_SYS_ADMIN`, so the exposure
+        is a privileged local actor, but Phase 1 does **not** claim
+        containment for mount-backed paths.
+
+     Staged validation likewise re-resolves the staging path (compose-go
+     loads by path, not by descriptor), so validation and apply can disagree
+     under the same race. Fully closing both residuals requires
+     descriptor-relative, no-follow, no-mount-crossing traversal (`openat2`
+     with `RESOLVE_NO_SYMLINKS|RESOLVE_NO_XDEV`), which is Linux-only and is
      deferred to Phase 3 filesystem hardening.
    - Every temporary file (journal, replacement content, final lock) is
      created with `O_EXCL` inside `.vaka-staging/`, a journal-owned scratch
@@ -447,8 +460,10 @@ supply chain and must be treated like one:
   forge provenance or corrupt update state on install.
 - Extract to temp dir + atomic rename; no partially-installed recipes.
 - Extraction and the §6 updater share one safe recipe-dir I/O primitive
-  (beneath-root, no-follow, type-revalidating; Go's `os.Root`) — the
-  hardening is implemented once, not twice.
+  (Go's `os.Root`, beneath-root: no escape via `..` or symlinks) — the
+  hardening is implemented once, not twice. See the §6 filesystem note for
+  the precise guarantee and its residuals (in-tree symlinks are followed;
+  mount-backed descendants are excluded; strong no-follow is Phase 3).
 
 **Risk surfacing (lint), not gatekeeping.** After every `get` (and computed by
 CI into the index for search/info), vaka derives `riskFlags` from the actual

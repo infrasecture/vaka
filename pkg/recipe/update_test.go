@@ -568,6 +568,68 @@ func TestUpdateLockRefusesSymlinkedLockFile(t *testing.T) {
 	}
 }
 
+func TestUpToDateFailsFastWhenLocked(t *testing.T) {
+	target := installedV1(t)
+	// Another updater holds the update flock (as if mid-update, before its
+	// journal is written). UpToDate must fail fast, not read a snapshot the
+	// other updater is about to invalidate.
+	f, err := os.OpenFile(filepath.Join(target, UpdateLockFileName), os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := UpToDate(target, "official", "demo", digestV1); !errors.Is(err, ErrUpdateInProgress) {
+		t.Fatalf("err = %v, want ErrUpdateInProgress", err)
+	}
+}
+
+func TestUpdateContainmentMidApplySymlinkSwap(t *testing.T) {
+	target := installedV1(t)
+
+	// A canary directory OUTSIDE the recipe tree; a redirected write would
+	// land here.
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "sentinel"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// The update introduces a file under a new subdirectory.
+	tarball := demoTarballWith(t, composeV2, false, false, map[string]string{
+		"escapehatch/planted.txt": "recipe content",
+	})
+
+	// Mid-apply (right after the journal is written, before files are moved),
+	// a concurrent actor swaps the new subdir path for a symlink escaping the
+	// recipe root — the classic containment attack.
+	old := afterStep
+	afterStep = func(step string) error {
+		if step == "journal-written" {
+			_ = os.Remove(filepath.Join(target, "escapehatch"))
+			if err := os.Symlink(outside, filepath.Join(target, "escapehatch")); err != nil {
+				t.Fatalf("plant symlink: %v", err)
+			}
+		}
+		return nil
+	}
+	t.Cleanup(func() { afterStep = old })
+
+	_, err := updateTo(target, "2.0.0", digestV2, tarball)
+	if err == nil {
+		t.Fatal("expected the escaping-symlink apply to be refused")
+	}
+	// Containment guarantee (the one os.Root DOES provide): no write escaped
+	// the recipe root into the outside canary.
+	if _, statErr := os.Stat(filepath.Join(outside, "planted.txt")); !os.IsNotExist(statErr) {
+		t.Fatalf("write escaped the recipe root into %s (err=%v)", outside, statErr)
+	}
+	if entries, _ := os.ReadDir(outside); len(entries) != 1 {
+		t.Fatalf("outside dir was mutated: %v", entries)
+	}
+}
+
 func TestUpdateRequiresLock(t *testing.T) {
 	dir := t.TempDir()
 	_, err := updateTo(dir, "2.0.0", digestV2, tarballV2(t))

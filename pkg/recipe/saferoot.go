@@ -22,19 +22,26 @@ var syncFn = func(f *os.File) error { return f.Sync() }
 // is refused, so no operation can escape the recipe directory. It is the
 // single primitive shared by the tarball extractor and the update engine.
 //
-// Note the precise guarantee, which is *no escape*, not *no follow*: os.Root
-// refuses only symlinks (and `..`) that resolve outside the root; symlinks
-// that stay within the root are still followed, and os.Root does not prohibit
-// crossing filesystem/bind-mount boundaries within the root. Callers that
-// must act on a final symlink itself rather than its target therefore use
-// Lstat/Readlink (EntryState does this to record `link:<target>`), and the
-// updater rejects symlinked parent directories in its pre-check. The residual
-// exposure — a concurrent non-vaka writer swapping an in-tree component (or
-// bind-mounting one) to redirect a write during the apply window — is bounded
-// to the recipe directory (it cannot escape) and requires racing the
-// flock-holding updater. A stronger no-follow / no-mount-crossing guarantee
-// would require descriptor-relative openat2 traversal (Linux-only) and is
-// deferred (see the design's Phase 3 filesystem hardening).
+// Note the precise guarantee, which is *no escape via `..` or symlinks*, not
+// a general no-follow or no-mount-crossing guarantee. os.Root refuses only
+// symlinks (and `..`) that resolve outside the root; symlinks that stay
+// within the root are still followed (and os.Root ignores O_NOFOLLOW), and
+// os.Root does not prohibit crossing filesystem/bind-mount boundaries within
+// the root. Two residuals, both requiring a concurrent non-vaka writer racing
+// the flock-holding updater:
+//
+//   - In-tree symlink swap → redirects a write to a *different in-tree* path,
+//     bounded to the recipe directory. Callers that must act on a final
+//     symlink itself use Lstat/Readlink (EntryState records `link:<target>`),
+//     and the updater rejects symlinked parent directories in its pre-check.
+//   - A bind mount planted *inside* the root (needs CAP_SYS_ADMIN) redirects
+//     operations to the mount target, which CAN be outside the tree — a
+//     genuine escape. Mount-backed descendants are NOT covered by the
+//     containment guarantee.
+//
+// Closing both needs descriptor-relative openat2 traversal
+// (RESOLVE_NO_SYMLINKS|RESOLVE_NO_XDEV, Linux-only), deferred to the design's
+// Phase 3 filesystem hardening.
 type SafeRoot struct {
 	r *os.Root
 }
