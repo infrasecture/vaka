@@ -26,7 +26,8 @@ The reference is [registry/]name[@version]; the version must be exact
 The target directory defaults to ./<name>. vaka get never runs the recipe
 and never adopts an existing non-recipe directory; updates never touch
 files you created or modified.`,
-		Args: cobra.RangeArgs(1, 2),
+		Args:              cobra.RangeArgs(1, 2),
+		ValidArgsFunction: firstArgComplete(completeRecipeRefs),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runGet(cmd, args)
 		},

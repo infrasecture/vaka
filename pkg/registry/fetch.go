@@ -94,6 +94,34 @@ func validateIndexURL(raw string) error {
 	}
 }
 
+// CachedIndex returns a registry's index from the local cache only, never
+// touching the network. It is for latency-sensitive, best-effort callers like
+// shell completion. ok is false when there is no usable cache.
+func (c *Client) CachedIndex(reg Registry) (idx *Index, ok bool) {
+	u, err := url.Parse(reg.URL)
+	if err == nil && u.Scheme == "file" {
+		if data, err := os.ReadFile(u.Path); err == nil {
+			if idx, err := ParseIndex(data); err == nil {
+				return idx, true
+			}
+		}
+		return nil, false
+	}
+	dir, err := c.cacheDir()
+	if err != nil {
+		return nil, false
+	}
+	data, err := os.ReadFile(filepath.Join(dir, reg.Name, "index.yaml"))
+	if err != nil {
+		return nil, false
+	}
+	idx, err = ParseIndex(data)
+	if err != nil {
+		return nil, false
+	}
+	return idx, true
+}
+
 // CacheAge reports the age of the registry's cached index, if one exists.
 func (c *Client) CacheAge(reg Registry) (time.Duration, bool) {
 	dir, err := c.cacheDir()

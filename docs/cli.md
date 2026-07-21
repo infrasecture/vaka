@@ -260,10 +260,14 @@ Save the generated script in the shell's completion directory to load it in
 future sessions. Bash scripts embed the path of the `vaka` executable that
 generated them; regenerate a saved script if the executable moves.
 
-Vaka completes its native command tree. Compose-backed commands and
-shorthands intentionally provide no vaka-generated argument candidates and
-disable filename fallback; use Docker Compose documentation for their flags
-and arguments.
+Vaka completes its native command tree. `vaka get` and `vaka recipes info`
+complete recipe names from the cached registry indexes (qualified as
+`registry/name` when more than one registry is configured); `vaka registry
+remove`/`refresh` complete configured registry names. Completion reads only
+the local cache, never the network. Compose-backed commands and shorthands
+intentionally provide no vaka-generated argument candidates and disable
+filename fallback; use Docker Compose documentation for their flags and
+arguments.
 
 ## Vaka Wrapper Flags
 

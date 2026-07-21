@@ -53,10 +53,11 @@ URL must be https:// (file:// is allowed for local/air-gapped registries).`,
 
 func newRegistryRemoveCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:     "remove <name>",
-		Aliases: []string{"rm"},
-		Short:   "Remove a registry from the configuration",
-		Args:    cobra.ExactArgs(1),
+		Use:               "remove <name>",
+		Aliases:           []string{"rm"},
+		Short:             "Remove a registry from the configuration",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: firstArgComplete(completeRegistryNames),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := loadRegistriesConfig()
 			if err != nil {
@@ -80,7 +81,8 @@ func newRegistryRefreshCmd() *cobra.Command {
 		Short: "Re-fetch registry indexes, updating the local cache",
 		Long: `Force a revalidation of every configured registry's index (or just the
 named one), updating the local cache.`,
-		Args: cobra.MaximumNArgs(1),
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: firstArgComplete(completeRegistryNames),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := loadRegistriesConfig()
 			if err != nil {

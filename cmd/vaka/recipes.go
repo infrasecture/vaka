@@ -51,7 +51,8 @@ func newRecipesInfoCmd() *cobra.Command {
 versions, documented environment variables, and the advisory policy summary
 computed by the registry's CI. vaka recomputes the policy locally on every
 get; this view is what the registry claims.`,
-		Args: cobra.ExactArgs(1),
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: firstArgComplete(completeRecipeRefs),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ref, err := registry.ParseRef(args[0])
 			if err != nil {
@@ -80,11 +81,16 @@ get; this view is what the registry claims.`,
 			fmt.Fprintf(out, "Digest:      %s\n", e.Digest)
 
 			if versions := world.indexes[res.Registry.Name].Recipes[res.Name]; len(versions) > 1 {
-				all := make([]string, len(versions))
-				for i, v := range versions {
-					all[i] = v.Version
+				fmt.Fprintf(out, "Versions (%d indexed, newest first):\n", len(versions))
+				tw := tabwriter.NewWriter(out, 2, 4, 2, ' ', 0)
+				for _, v := range versions {
+					marker := "  "
+					if v.Version == e.Version {
+						marker = "* " // the one this info is about
+					}
+					fmt.Fprintf(tw, "%s%s\t%s\t%s\n", marker, v.Version, v.Created, v.Digest)
 				}
-				fmt.Fprintf(out, "Versions:    %s\n", strings.Join(all, ", "))
+				tw.Flush()
 			}
 
 			if len(e.Env) > 0 {
