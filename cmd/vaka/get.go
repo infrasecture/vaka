@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/Masterminds/semver/v3"
 	"github.com/spf13/cobra"
 	"vaka.dev/vaka/pkg/recipe"
 	"vaka.dev/vaka/pkg/registry"
@@ -50,6 +51,12 @@ func runGet(cmd *cobra.Command, args []string) error {
 	}
 	res, err := registry.Resolve(world.cfg, world.indexes, ref)
 	if err != nil {
+		return err
+	}
+
+	// Enforce the recipe's minimum vaka version before doing any work: a
+	// recipe that needs a newer vaka must not be installed by this one.
+	if err := checkMinVakaVersion(res.Entry.MinVakaVersion, version, errOut); err != nil {
 		return err
 	}
 
@@ -111,6 +118,30 @@ func runGet(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(out, "Requires vaka >= %s\n", res.Entry.MinVakaVersion)
 	}
 	fmt.Fprintf(out, "Next: cd %s && vaka up\n", target)
+	return nil
+}
+
+// checkMinVakaVersion enforces a recipe's minVakaVersion against the running
+// vaka. A recipe needing a newer vaka is refused (hard block). Builds whose
+// self-version is not a SemVer (e.g. "dev") skip the check with a warning,
+// since there is nothing to compare.
+func checkMinVakaVersion(minVersion, vakaVersion string, warnOut io.Writer) error {
+	if minVersion == "" {
+		return nil
+	}
+	min, err := semver.NewVersion(minVersion)
+	if err != nil {
+		fmt.Fprintf(warnOut, "vaka: warning: recipe declares an unparseable minVakaVersion %q; not enforced\n", minVersion)
+		return nil
+	}
+	cur, err := semver.NewVersion(vakaVersion)
+	if err != nil {
+		fmt.Fprintf(warnOut, "vaka: warning: this build's version %q is not a release version; cannot enforce minVakaVersion %s\n", vakaVersion, minVersion)
+		return nil
+	}
+	if cur.LessThan(min) {
+		return fmt.Errorf("recipe requires vaka >= %s, but this is %s; upgrade vaka", minVersion, vakaVersion)
+	}
 	return nil
 }
 
