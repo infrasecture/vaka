@@ -286,7 +286,8 @@ func Update(spec UpdateSpec) (*UpdateResult, error) {
 	// recipe directory (os.Root cannot escape) and requires racing the
 	// flock-holding updater. Closing it fully needs descriptor-relative,
 	// no-follow traversal (Phase 3).
-	if err := ValidateStaged(context.Background(), filepath.Join(spec.Target, StagingDirName, "new")); err != nil {
+	if err := ValidateStaged(context.Background(), filepath.Join(spec.Target, StagingDirName, "new"),
+		ExpectedIdentity{Name: spec.Name, Version: spec.Version}); err != nil {
 		return nil, err
 	}
 	if err := afterStep("prechecked"); err != nil {

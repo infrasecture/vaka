@@ -81,8 +81,9 @@ services:
         defaultAction: reject
 `
 
-// validRecipeManifest is a well-formed recipe.yaml (content is not parsed by
-// ValidateStaged, only its presence is required).
+// validRecipeManifest is a well-formed recipe.yaml for the demo fixture
+// (name demo, version 1.0.0). ValidateStaged parses and schema-validates it
+// and cross-checks its name/version against the resolved index entry.
 const validRecipeManifest = `apiVersion: recipes.vaka/v1alpha1
 kind: Recipe
 name: demo

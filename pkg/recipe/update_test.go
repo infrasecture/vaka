@@ -30,6 +30,20 @@ func demoTarball(t *testing.T, compose string, withConf, withNewFile bool) strin
 	return demoTarballWith(t, compose, withConf, withNewFile, nil)
 }
 
+// manifestForCompose returns a recipe.yaml whose version matches the compose
+// generation, so the staged manifest agrees with the version updateTo/Install
+// request (identity is now cross-checked at commit).
+func manifestForCompose(compose string) string {
+	v := "1.0.0"
+	switch compose {
+	case composeV2:
+		v = "2.0.0"
+	case composeV3:
+		v = "3.0.0"
+	}
+	return "apiVersion: recipes.vaka/v1alpha1\nkind: Recipe\nname: demo\nversion: " + v + "\ndescription: test recipe fixture\n"
+}
+
 // demoTarballWith builds a well-formed demo recipe tarball (recipe.yaml,
 // compose, vaka.yaml) plus a set of extra relative paths (their parent
 // directories are created automatically by the extractor).
@@ -37,7 +51,7 @@ func demoTarballWith(t *testing.T, compose string, withConf, withNewFile bool, e
 	t.Helper()
 	entries := []tarEntry{
 		{name: "demo/", typeflag: tar.TypeDir},
-		{name: "demo/recipe.yaml", typeflag: tar.TypeReg, content: validRecipeManifest},
+		{name: "demo/recipe.yaml", typeflag: tar.TypeReg, content: manifestForCompose(compose)},
 		{name: "demo/compose.yaml", typeflag: tar.TypeReg, content: compose},
 		{name: "demo/docker-compose.yaml", typeflag: tar.TypeSymlink, linkname: "compose.yaml"},
 		{name: "demo/vaka.yaml", typeflag: tar.TypeReg, content: validVakaYAML},

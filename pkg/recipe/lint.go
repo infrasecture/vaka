@@ -20,13 +20,14 @@ import (
 var requiredRecipeFiles = []string{"recipe.yaml", "vaka.yaml"}
 
 // ValidateStaged checks that dir is a well-formed, runnable recipe: the
-// required files are present, the compose project (base + override) loads,
-// vaka.yaml parses, and the egress policy validates against the compose
-// services. It is run on the freshly extracted staging tree before an install
-// or update commits, so a malformed or invalid published artifact is refused
-// (fail closed) instead of replacing a working recipe and being reported as a
-// successful update.
-func ValidateStaged(ctx context.Context, dir string) error {
+// required files are present, recipe.yaml parses and schema-validates (and,
+// when want is set, matches the resolved index entry's name/version), the
+// compose project (base + override) loads, vaka.yaml parses, and the egress
+// policy validates against the compose services. It is run on the freshly
+// extracted staging tree before an install or update commits, so a malformed,
+// mislabeled, or invalid published artifact is refused (fail closed) instead
+// of replacing a working recipe and being reported as a successful update.
+func ValidateStaged(ctx context.Context, dir string, want ExpectedIdentity) error {
 	root, err := OpenSafeRoot(dir)
 	if err != nil {
 		return err
@@ -37,7 +38,21 @@ func ValidateStaged(ctx context.Context, dir string) error {
 			return fmt.Errorf("recipe is missing %s", name)
 		}
 	}
+	// Parse the manifest through the confinement root (an escaping symlink or a
+	// directory named recipe.yaml is refused, and the read is bounded). Merely
+	// existing is not enough — a mistyped or mislabeled manifest must fail.
+	manifestData, err := root.ReadFileLimited("recipe.yaml", maxManifestBytes)
 	root.Close()
+	if err != nil {
+		return fmt.Errorf("recipe manifest: %w", err)
+	}
+	manifest, err := ParseManifest(manifestData)
+	if err != nil {
+		return err
+	}
+	if err := manifest.CheckIdentity(want); err != nil {
+		return err
+	}
 
 	project, err := loadRecipeProject(ctx, dir)
 	if err != nil {
@@ -179,62 +194,128 @@ func loadRecipeProject(ctx context.Context, dir string) (*composetypes.Project, 
 	return project, nil
 }
 
+// composeRef is one host-file path a compose document references, plus whether
+// that path is itself a compose file (include / extends.file) that must be
+// scanned recursively.
+type composeRef struct {
+	path    string
+	compose bool
+}
+
+// maxComposeScanDepth bounds recursion into included/extended compose files.
+// Real recipes nest at most a level or two; the bound plus the visited set
+// guarantee termination on cyclic or adversarial include graphs.
+const maxComposeScanDepth = 16
+
 // checkComposeReferences rejects compose files that reference host files
-// outside the recipe directory. compose-go resolves env_file, extends.file,
-// include, and configs/secrets `file:` as ordinary reads (absolute or
-// parent-relative paths included), so an unconfined recipe could make vaka
-// read arbitrary host files during `get`, before the user runs anything.
+// outside the recipe directory. compose-go resolves env_file, label_file,
+// extends.file, include (path / env_file / project_directory), and
+// configs/secrets `file:` as ordinary reads (absolute or parent-relative paths
+// included), so an unconfined recipe could make vaka read arbitrary host files
+// during `get`, before the user runs anything.
+//
+// Every referenced path is checked against the recipe root, resolved relative
+// to the directory of the file that names it. In-tree include/extends targets
+// are scanned recursively (bounded, cycle-guarded), because compose-go loads
+// them too and they can carry their own external references. Any path that
+// still contains a `$` is refused: it is interpolated at load time
+// (WithInterpolation), so its real target cannot be confined statically, and
+// recipes have no need to compute file-reference paths from the environment.
 func checkComposeReferences(dir string, files []string) error {
-	absDir, err := filepath.Abs(dir)
+	root, err := filepath.Abs(dir)
 	if err != nil {
 		return err
 	}
 	var bad []string
+	visited := make(map[string]bool)
+	// queue holds absolute compose-file paths still to scan; depth caps
+	// recursion independently of the visited set.
+	queue := make([]string, 0, len(files))
 	for _, f := range files {
-		data, err := os.ReadFile(f)
-		if err != nil {
-			return fmt.Errorf("read %s: %w", filepath.Base(f), err)
+		if abs, err := filepath.Abs(f); err == nil {
+			queue = append(queue, abs)
 		}
-		var doc map[string]any
-		if err := yaml.Unmarshal(data, &doc); err != nil {
-			continue // let compose-go surface the real parse error
-		}
-		for _, ref := range collectComposeFileRefs(doc) {
-			if isExternalPath(absDir, ref) {
-				bad = append(bad, fmt.Sprintf("%s: %q", filepath.Base(f), ref))
+	}
+	for depth := 0; len(queue) > 0 && depth <= maxComposeScanDepth; depth++ {
+		next := queue
+		queue = nil
+		for _, absF := range next {
+			if visited[absF] {
+				continue
+			}
+			visited[absF] = true
+			data, err := os.ReadFile(absF)
+			if err != nil {
+				// A missing recursively-referenced file surfaces as a
+				// compose-go load error later; top-level files were already
+				// found by recipeComposeFiles. Don't fail confinement on it.
+				continue
+			}
+			var doc map[string]any
+			if err := yaml.Unmarshal(data, &doc); err != nil {
+				continue // let compose-go surface the real parse error
+			}
+			base := filepath.Dir(absF)
+			label := displayPath(root, absF)
+			for _, ref := range collectComposeFileRefs(doc) {
+				if reason := externalReason(root, base, ref.path); reason != "" {
+					bad = append(bad, fmt.Sprintf("%s: %q (%s)", label, ref.path, reason))
+					continue
+				}
+				if ref.compose {
+					resolved := filepath.Clean(filepath.Join(base, ref.path))
+					if fi, err := os.Stat(resolved); err == nil && !fi.IsDir() {
+						queue = append(queue, resolved)
+					}
+				}
 			}
 		}
 	}
 	if len(bad) > 0 {
 		sort.Strings(bad)
 		return fmt.Errorf(
-			"recipe compose references files outside the recipe directory (env_file/extends/include/configs/secrets); this is not allowed:\n\t%s",
+			"recipe compose references files outside the recipe directory (env_file/label_file/extends/include/configs/secrets); this is not allowed:\n\t%s",
 			strings.Join(bad, "\n\t"))
 	}
 	return nil
 }
 
-// isExternalPath reports whether p (a compose file reference, interpreted
-// relative to absDir) is absolute or escapes absDir.
-func isExternalPath(absDir, p string) bool {
-	if p == "" {
-		return false
+// externalReason returns "" if p (interpreted relative to base) is a safe
+// in-tree reference, or a short reason why it is refused.
+func externalReason(root, base, p string) string {
+	switch {
+	case p == "":
+		return ""
+	case strings.Contains(p, "$"):
+		return "interpolated path"
+	case filepath.IsAbs(p):
+		return "absolute path"
 	}
-	if filepath.IsAbs(p) {
-		return true
+	resolved := filepath.Clean(filepath.Join(base, p))
+	if resolved != root && !strings.HasPrefix(resolved, root+string(filepath.Separator)) {
+		return "escapes the recipe directory"
 	}
-	resolved := filepath.Clean(filepath.Join(absDir, p))
-	return resolved != absDir && !strings.HasPrefix(resolved, absDir+string(filepath.Separator))
+	return ""
+}
+
+// displayPath renders absF relative to root for error messages, falling back
+// to the base name.
+func displayPath(root, absF string) string {
+	if rel, err := filepath.Rel(root, absF); err == nil && !strings.HasPrefix(rel, "..") {
+		return rel
+	}
+	return filepath.Base(absF)
 }
 
 // collectComposeFileRefs extracts every host-file path a compose document
-// references via env_file, extends.file, include, and configs/secrets file.
-func collectComposeFileRefs(doc map[string]any) []string {
-	var refs []string
-	add := func(ss ...string) {
+// references via env_file, label_file, extends.file, include (path / env_file
+// / project_directory), and configs/secrets file.
+func collectComposeFileRefs(doc map[string]any) []composeRef {
+	var refs []composeRef
+	add := func(compose bool, ss ...string) {
 		for _, s := range ss {
 			if s != "" {
-				refs = append(refs, s)
+				refs = append(refs, composeRef{path: s, compose: compose})
 			}
 		}
 	}
@@ -242,10 +323,13 @@ func collectComposeFileRefs(doc map[string]any) []string {
 	for _, inc := range asList(doc["include"]) {
 		switch v := inc.(type) {
 		case string:
-			add(v)
+			add(true, v)
 		case map[string]any:
-			add(stringOrList(v["path"])...)
-			add(stringOrList(v["env_file"])...)
+			add(true, stringOrList(v["path"])...)
+			add(false, envFilePaths(v["env_file"])...)
+			if pd, ok := v["project_directory"].(string); ok {
+				add(false, pd)
+			}
 		}
 	}
 
@@ -255,10 +339,11 @@ func collectComposeFileRefs(doc map[string]any) []string {
 			if !ok {
 				continue
 			}
-			add(envFilePaths(svc["env_file"])...)
+			add(false, envFilePaths(svc["env_file"])...)
+			add(false, envFilePaths(svc["label_file"])...)
 			if ext, ok := svc["extends"].(map[string]any); ok {
 				if f, ok := ext["file"].(string); ok {
-					add(f)
+					add(true, f)
 				}
 			}
 		}
@@ -269,7 +354,7 @@ func collectComposeFileRefs(doc map[string]any) []string {
 			for _, itemAny := range m {
 				if item, ok := itemAny.(map[string]any); ok {
 					if f, ok := item["file"].(string); ok {
-						add(f)
+						add(false, f)
 					}
 				}
 			}

@@ -625,6 +625,36 @@ existing `gopkg.in/yaml.v3`.
    validation, closing the bounded within-tree symlink/bind-mount redirect
    races that `os.Root` permits (§6 filesystem note). Linux-only, so it
    coexists with the portable `os.Root` path as a hardened fast path.
+   **Atomic, trust-bound index cache** (review finding: cache provenance):
+   the on-disk index cache is currently keyed by registry name and bound to
+   the URL via a sidecar written after the index (fetch.go), so a crash
+   between the two writes, or two concurrent processes racing a mid-flight
+   URL change under one name, can in principle pair an index with the wrong
+   URL. Steady-state operation is safe (every writer under a stable name
+   writes the same URL, and any torn read degrades to a refetch; `get`
+   re-verifies the tarball digest independently), so this is low-severity —
+   but the clean fix belongs here: key the cache directory by a hash of the
+   full trust identity (URL, and eventually the pinned `publicKey`) and store
+   URL + ETag + index in one atomically renamed envelope, so cache entries
+   for different trust identities cannot alias.
+
+### Cross-cutting: one recipe-validation entry point (review finding)
+
+Recipe validation is currently implemented twice — vaka's Go
+`recipe.ValidateStaged` / `checkComposeReferences` (run before local
+compose-go loading and before every `get`/update commit) and the registry's
+Python `scripts/validate_recipe.py` (run in CI over `docker compose config`).
+They already diverge: CI parses the manifest but historically the client did
+not; the client confines external compose references but CI does not, so a
+recipe can make CI read runner files or publish something `vaka get` later
+refuses. The authoritative security boundary is client-side (the client
+refuses on `get`), so this is defense-in-depth plus drift prevention rather
+than a client-exploitable hole. The fix is to expose vaka's own validation as
+a single command (e.g. `vaka recipe validate <dir>`, covering manifest
+schema + identity, confined compose references, and policy) and have registry
+CI invoke *that* instead of a parallel reimplementation — one rule, applied
+identically before publication and before install. Sequence alongside the
+Phase 3 publish-CI hardening.
 
 ### Deferred review findings (registry repo / recipe content)
 

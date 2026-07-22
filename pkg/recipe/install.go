@@ -64,9 +64,11 @@ func Install(spec InstallSpec) (*Lock, error) {
 		return nil, err
 	}
 
-	// Validate the staged artifact before committing it: a malformed or
-	// policy-invalid recipe must never be installed (fail closed).
-	if err := ValidateStaged(context.Background(), staging); err != nil {
+	// Validate the staged artifact before committing it: a malformed,
+	// mislabeled, or policy-invalid recipe must never be installed (fail
+	// closed). The manifest must match the name/version the index resolved.
+	if err := ValidateStaged(context.Background(), staging,
+		ExpectedIdentity{Name: spec.Name, Version: spec.Version}); err != nil {
 		return nil, err
 	}
 
