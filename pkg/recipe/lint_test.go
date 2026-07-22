@@ -419,6 +419,79 @@ services:
 	}
 }
 
+func TestCheckComposeReferencesRejectsExternalFiles(t *testing.T) {
+	external := []string{
+		"services:\n  app:\n    env_file: /etc/passwd\n",
+		"services:\n  app:\n    env_file: [../../secret.env]\n",
+		"services:\n  app:\n    env_file:\n      - path: /etc/shadow\n",
+		"services:\n  app:\n    extends:\n      file: /etc/compose.yaml\n      service: base\n",
+		"services:\n  app:\n    extends:\n      file: ../../other/compose.yaml\n      service: base\n",
+		"include:\n  - ../../elsewhere/compose.yaml\n",
+		"include:\n  - path: /abs/compose.yaml\n",
+		"configs:\n  c:\n    file: /etc/shadow\n",
+		"secrets:\n  s:\n    file: ../../../key.pem\n",
+	}
+	for _, doc := range external {
+		dir := t.TempDir()
+		f := filepath.Join(dir, "compose.yaml")
+		if err := os.WriteFile(f, []byte(doc), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := checkComposeReferences(dir, []string{f}); err == nil {
+			t.Errorf("external reference not rejected:\n%s", doc)
+		} else if !strings.Contains(err.Error(), "outside the recipe directory") {
+			t.Errorf("unexpected error %v for:\n%s", err, doc)
+		}
+	}
+}
+
+func TestCheckComposeReferencesAllowsInTreeFiles(t *testing.T) {
+	inTree := []string{
+		"services:\n  app:\n    image: x\n",
+		"services:\n  app:\n    env_file: ./app.env\n",
+		"services:\n  app:\n    env_file: [conf/a.env, conf/b.env]\n",
+		"services:\n  app:\n    env_file:\n      - path: conf/c.env\n",
+		"services:\n  app:\n    extends:\n      file: base/compose.yaml\n      service: base\n",
+		"services:\n  app:\n    extends:\n      service: sibling\n", // same-file, no path
+		"include:\n  - sub/compose.yaml\n",
+		"configs:\n  c:\n    file: ./conf.txt\n",
+		"secrets:\n  s:\n    file: secrets/key.pem\n",
+	}
+	for _, doc := range inTree {
+		dir := t.TempDir()
+		f := filepath.Join(dir, "compose.yaml")
+		if err := os.WriteFile(f, []byte(doc), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := checkComposeReferences(dir, []string{f}); err != nil {
+			t.Errorf("in-tree reference rejected: %v\n%s", err, doc)
+		}
+	}
+}
+
+func TestLintDirRejectsExternalReference(t *testing.T) {
+	// End-to-end: an external env_file must make LintDir fail BEFORE compose-go
+	// reads the host file, not surface later as a risk flag.
+	dir := writeRecipeDir(t, `
+services:
+  app:
+    image: alpine:3.20@sha256:0000000000000000000000000000000000000000000000000000000000000000
+    env_file: /etc/passwd
+`, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+`)
+	_, err := LintDir(context.Background(), dir)
+	if err == nil || !strings.Contains(err.Error(), "outside the recipe directory") {
+		t.Fatalf("err = %v, want external-reference refusal", err)
+	}
+}
+
 func TestCompareWithIndex(t *testing.T) {
 	local := &LocalPolicySummary{
 		DefaultActions: map[string]string{"app": "reject"},

@@ -176,6 +176,37 @@ func TestFetchIndexNoEtagAlwaysRefetches(t *testing.T) {
 	}
 }
 
+// TestCacheNotReusedAcrossURLs verifies the disk cache is bound to the
+// registry URL: re-pointing a registry name at a different URL must not serve
+// the previous URL's cached index (which would let a name change silently
+// return a stale, unrelated catalog).
+func TestCacheNotReusedAcrossURLs(t *testing.T) {
+	srv := newIndexServer(t)
+	c := &Client{CacheDir: t.TempDir(), MaxIndexAge: time.Hour}
+
+	// Prime the cache under name "testreg" pointing at the server.
+	if _, err := c.FetchIndex(srv.registry()); err != nil {
+		t.Fatalf("cold fetch: %v", err)
+	}
+	if _, ok := c.CachedIndex(srv.registry()); !ok {
+		t.Fatal("CachedIndex miss for the URL that was just cached")
+	}
+
+	// Same name, different URL: the cache belongs to the old URL and must not
+	// be served.
+	rebound := Registry{Name: "testreg", URL: srv.URL + "/other-index.yaml"}
+	if _, ok := c.CachedIndex(rebound); ok {
+		t.Fatal("CachedIndex served a cache written for a different URL")
+	}
+	if _, ok := c.CacheAge(rebound); ok {
+		t.Fatal("CacheAge reported an age for a different URL's cache")
+	}
+	// The original URL still hits.
+	if _, ok := c.CachedIndex(srv.registry()); !ok {
+		t.Fatal("original URL cache lost after a rebound lookup")
+	}
+}
+
 func TestHTTPSOnlyRedirect(t *testing.T) {
 	mkReq := func(scheme string) *http.Request {
 		r, _ := http.NewRequest(http.MethodGet, scheme+"://example.test/x", nil)
@@ -273,6 +304,16 @@ func TestFetchTarball(t *testing.T) {
 		})
 		if err == nil || !strings.Contains(err.Error(), "byte limit") {
 			t.Fatalf("err = %v, want size cap error", err)
+		}
+	})
+
+	t.Run("file:// artifact rejected from an https registry", func(t *testing.T) {
+		httpsReg := Registry{Name: "r", URL: "https://recipes.example/index.yaml"}
+		_, err := c.FetchTarball(httpsReg, "demo", IndexEntry{
+			Version: "1.0.0", Digest: goodDigest, URLs: []string{"file://" + path},
+		})
+		if err == nil || !strings.Contains(err.Error(), "only allowed from a file://") {
+			t.Fatalf("err = %v, want file:// scheme refusal", err)
 		}
 	})
 

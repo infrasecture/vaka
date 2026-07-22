@@ -111,8 +111,8 @@ func (c *Client) CachedIndex(reg Registry) (idx *Index, ok bool) {
 	if err != nil {
 		return nil, false
 	}
-	data, err := os.ReadFile(filepath.Join(dir, reg.Name, "index.yaml"))
-	if err != nil {
+	data, _ := cachedIndexBytes(dir, reg) // URL-bound: nil if the name was re-pointed
+	if data == nil {
 		return nil, false
 	}
 	idx, err = ParseIndex(data)
@@ -128,11 +128,13 @@ func (c *Client) CacheAge(reg Registry) (time.Duration, bool) {
 	if err != nil {
 		return 0, false
 	}
-	st, err := os.Stat(filepath.Join(dir, reg.Name, "index.yaml"))
-	if err != nil {
+	// URL-bound: a cache written for a different URL (name re-pointed) is not
+	// this registry's cache.
+	data, age := cachedIndexBytes(dir, reg)
+	if data == nil {
 		return 0, false
 	}
-	return time.Since(st.ModTime()), true
+	return age, true
 }
 
 // FetchIndex returns the registry's index, revalidating the cache per
@@ -159,10 +161,9 @@ func (c *Client) FetchIndex(reg Registry) (*IndexResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	cachePath := filepath.Join(dir, reg.Name, "index.yaml")
-	etagPath := filepath.Join(dir, reg.Name, "etag")
+	cachePath, etagPath, urlPath := indexCachePaths(dir, reg.Name)
 
-	cached, cacheAge := readCache(cachePath)
+	cached, cacheAge := readCache(cachePath, urlPath, reg.URL)
 	if cached != nil && c.MaxIndexAge > 0 && cacheAge < c.MaxIndexAge {
 		idx, err := ParseIndex(cached)
 		if err == nil {
@@ -206,7 +207,7 @@ func (c *Client) FetchIndex(reg Registry) (*IndexResult, error) {
 			// do not overwrite a previously good cache with it.
 			return staleFallback(reg, cached, cacheAge, err)
 		}
-		if err := writeCache(cachePath, etagPath, data, resp.Header.Get("Etag")); err != nil {
+		if err := writeCache(cachePath, etagPath, urlPath, data, resp.Header.Get("Etag"), reg.URL); err != nil {
 			return nil, fmt.Errorf("registry %q: %w", reg.Name, err)
 		}
 		return &IndexResult{Index: idx}, nil
@@ -228,19 +229,39 @@ func staleFallback(reg Registry, cached []byte, age time.Duration, cause error) 
 	return &IndexResult{Index: idx, Stale: true, Age: age}, nil
 }
 
-func readCache(path string) ([]byte, time.Duration) {
-	st, err := os.Stat(path)
+// indexCachePaths returns the per-registry cache file paths. The cache is
+// keyed by registry name but bound to the registry URL via the url sidecar
+// (see readCache), so re-pointing a name at a different URL cannot reuse the
+// old index or ETag.
+func indexCachePaths(dir, name string) (cachePath, etagPath, urlPath string) {
+	base := filepath.Join(dir, name)
+	return filepath.Join(base, "index.yaml"), filepath.Join(base, "etag"), filepath.Join(base, "url")
+}
+
+// cachedIndexBytes returns the cached index for reg only when it was written
+// for reg's exact URL; otherwise (no cache, or a URL change) it reports a
+// miss.
+func cachedIndexBytes(dir string, reg Registry) ([]byte, time.Duration) {
+	cachePath, _, urlPath := indexCachePaths(dir, reg.Name)
+	return readCache(cachePath, urlPath, reg.URL)
+}
+
+func readCache(cachePath, urlPath, wantURL string) ([]byte, time.Duration) {
+	if recorded, err := os.ReadFile(urlPath); err != nil || strings.TrimSpace(string(recorded)) != wantURL {
+		return nil, 0 // no cache for this URL (or the name was re-pointed)
+	}
+	st, err := os.Stat(cachePath)
 	if err != nil {
 		return nil, 0
 	}
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(cachePath)
 	if err != nil {
 		return nil, 0
 	}
 	return data, time.Since(st.ModTime())
 }
 
-func writeCache(cachePath, etagPath string, data []byte, etag string) error {
+func writeCache(cachePath, etagPath, urlPath string, data []byte, etag, url string) error {
 	dir := filepath.Dir(cachePath)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
@@ -260,6 +281,9 @@ func writeCache(cachePath, etagPath string, data []byte, etag string) error {
 	if err := os.Rename(tmp.Name(), cachePath); err != nil {
 		return err
 	}
+	// Bind this cache to its URL. If lost, the next read treats it as a miss
+	// (safe) — best-effort, like the ETag below.
+	_ = os.WriteFile(urlPath, []byte(url), 0o644)
 	// The index is now durably cached; ETag persistence is best-effort. A
 	// failure here must not discard a valid fetched index — at worst a lost
 	// or stale ETag makes the next revalidation an unconditional refetch,
@@ -297,9 +321,17 @@ func (c *Client) FetchTarball(reg Registry, name string, entry IndexEntry) (stri
 		return "", fmt.Errorf("%s@%s: index entry has no download URL", name, entry.Version)
 	}
 
+	// A file:// artifact is only trusted from a file:// registry. Otherwise a
+	// remote (https) index could point vaka at local files, causing local
+	// reads or resource exhaustion.
+	regIsFile := false
+	if u, err := url.Parse(reg.URL); err == nil && u.Scheme == "file" {
+		regIsFile = true
+	}
+
 	var failures []string
 	for _, raw := range entry.URLs {
-		path, err := c.fetchTarballURL(raw, entry.Digest)
+		path, err := c.fetchTarballURL(raw, entry.Digest, regIsFile)
 		if err == nil {
 			return path, nil
 		}
@@ -313,8 +345,10 @@ func (c *Client) FetchTarball(reg Registry, name string, entry IndexEntry) (stri
 }
 
 // fetchTarballURL downloads and digest-verifies a single URL, returning the
-// temp file path on success (removed on any failure).
-func (c *Client) fetchTarballURL(raw, wantDigest string) (string, error) {
+// temp file path on success (removed on any failure). A file:// URL is
+// permitted only when registryIsFile, so an https index cannot redirect to
+// the local filesystem.
+func (c *Client) fetchTarballURL(raw, wantDigest string, registryIsFile bool) (string, error) {
 	if err := validateIndexURL(raw); err != nil {
 		return "", err
 	}
@@ -322,6 +356,9 @@ func (c *Client) fetchTarballURL(raw, wantDigest string) (string, error) {
 
 	var body io.ReadCloser
 	if u.Scheme == "file" {
+		if !registryIsFile {
+			return "", fmt.Errorf("file:// artifact URL is only allowed from a file:// registry")
+		}
 		f, err := os.Open(u.Path)
 		if err != nil {
 			return "", err

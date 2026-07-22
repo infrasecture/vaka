@@ -472,10 +472,13 @@ compose + vaka.yaml:
   `host-network`, `host-pid/ipc`, `broad-bind-mount` (`/`, `$HOME`, ...),
   `egress-default-accept`, `no-policy-for-service` (service in compose without
   a vaka.yaml entry), `disables-vaka-init`.
-- Flags are printed prominently; the official repo's CI *fails* on flags
-  unless the manifest declares them with a justification
-  (`riskAcknowledgements`). Third-party registries can be laxer — but vaka
-  prints the same flags locally regardless of what the index claims.
+- Flags are printed prominently; the official repo's CI *fails* on
+  **hardening** flags unless the manifest declares them with a justification
+  (`riskAcknowledgements`). A small set of **advisory** flags — currently
+  `unpinned-image` — only warns and never fails CI, because the condition is
+  common and legitimate (many upstreams ship only mutable tags). Third-party
+  registries can be laxer — but vaka prints the same flags locally regardless
+  of what the index claims.
 
 **No execution.** `vaka get`/`search`/`info` never invoke docker, never run
 recipe scripts, never read `.env`. The trust decision stays with the user at
@@ -497,7 +500,8 @@ get the same guarantees by copying two workflow files):
    check, name/dir match, semver bump enforced when content changes,
    `docker compose config` parses, `vaka validate --compose` passes, README
    present, no reserved `.vaka-*` paths, risk lint (fail on undeclared
-   flags), secret scan.
+   hardening flags; advisory flags such as `unpinned-image` warn only), secret
+   scan.
 2. **publish** (tag `<name>-<version>`): package `<name>-<version>.tar.gz`,
    compute digest, attach to a GitHub Release, regenerate `index.yaml`, and
    publish it (GitHub Pages branch or release asset behind a stable URL).
@@ -600,9 +604,11 @@ existing `gopkg.in/yaml.v3`.
    (skipped with a warning on `version=dev` builds, whose self-version is not
    a SemVer). **New risk-lint flag `unpinned-image`** — flag compose services
    whose `image:` uses a mutable tag (implicit `latest`, `main-stable`, …)
-   rather than an `@sha256:` digest, both locally and in registry CI, so the
-   tarball digest's promise ("this is the code you'll run") is enforced
-   rather than assumed (review finding #9).
+   rather than an `@sha256:` digest, both locally and in registry CI. This
+   surfaces where the tarball digest's promise ("this is the code you'll run")
+   stops short of the image, but the flag is **advisory** — it warns and does
+   not fail CI, since mutable tags are the norm upstream and pinning is the
+   publisher's call (review finding #9).
 3. **Phase 3 — provenance hardening**: signed indexes (key pinned at
    `registry add`), `vaka get name@sha256:...` digest pinning, `vaka recipes
    verify` (re-check a dir against its lock). **Registry publish-CI

@@ -11,6 +11,7 @@ import (
 
 	composecli "github.com/compose-spec/compose-go/v2/cli"
 	composetypes "github.com/compose-spec/compose-go/v2/types"
+	"gopkg.in/yaml.v3"
 	"vaka.dev/vaka/pkg/policy"
 )
 
@@ -153,6 +154,14 @@ func loadRecipeProject(ctx context.Context, dir string) (*composetypes.Project, 
 	if err != nil {
 		return nil, err
 	}
+	// Preflight: reject compose files that reference host files outside the
+	// recipe directory (env_file / extends.file / include / configs / secrets)
+	// BEFORE compose-go loads them — LoadProject would otherwise read those
+	// absolute or parent-relative paths, and a risk flag emitted afterwards
+	// would already be too late.
+	if err := checkComposeReferences(dir, files); err != nil {
+		return nil, err
+	}
 	opts, err := composecli.NewProjectOptions(
 		files,
 		composecli.WithWorkingDirectory(dir),
@@ -168,6 +177,152 @@ func loadRecipeProject(ctx context.Context, dir string) (*composetypes.Project, 
 		return nil, fmt.Errorf("load compose project: %w", err)
 	}
 	return project, nil
+}
+
+// checkComposeReferences rejects compose files that reference host files
+// outside the recipe directory. compose-go resolves env_file, extends.file,
+// include, and configs/secrets `file:` as ordinary reads (absolute or
+// parent-relative paths included), so an unconfined recipe could make vaka
+// read arbitrary host files during `get`, before the user runs anything.
+func checkComposeReferences(dir string, files []string) error {
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return err
+	}
+	var bad []string
+	for _, f := range files {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", filepath.Base(f), err)
+		}
+		var doc map[string]any
+		if err := yaml.Unmarshal(data, &doc); err != nil {
+			continue // let compose-go surface the real parse error
+		}
+		for _, ref := range collectComposeFileRefs(doc) {
+			if isExternalPath(absDir, ref) {
+				bad = append(bad, fmt.Sprintf("%s: %q", filepath.Base(f), ref))
+			}
+		}
+	}
+	if len(bad) > 0 {
+		sort.Strings(bad)
+		return fmt.Errorf(
+			"recipe compose references files outside the recipe directory (env_file/extends/include/configs/secrets); this is not allowed:\n\t%s",
+			strings.Join(bad, "\n\t"))
+	}
+	return nil
+}
+
+// isExternalPath reports whether p (a compose file reference, interpreted
+// relative to absDir) is absolute or escapes absDir.
+func isExternalPath(absDir, p string) bool {
+	if p == "" {
+		return false
+	}
+	if filepath.IsAbs(p) {
+		return true
+	}
+	resolved := filepath.Clean(filepath.Join(absDir, p))
+	return resolved != absDir && !strings.HasPrefix(resolved, absDir+string(filepath.Separator))
+}
+
+// collectComposeFileRefs extracts every host-file path a compose document
+// references via env_file, extends.file, include, and configs/secrets file.
+func collectComposeFileRefs(doc map[string]any) []string {
+	var refs []string
+	add := func(ss ...string) {
+		for _, s := range ss {
+			if s != "" {
+				refs = append(refs, s)
+			}
+		}
+	}
+
+	for _, inc := range asList(doc["include"]) {
+		switch v := inc.(type) {
+		case string:
+			add(v)
+		case map[string]any:
+			add(stringOrList(v["path"])...)
+			add(stringOrList(v["env_file"])...)
+		}
+	}
+
+	if services, ok := doc["services"].(map[string]any); ok {
+		for _, svcAny := range services {
+			svc, ok := svcAny.(map[string]any)
+			if !ok {
+				continue
+			}
+			add(envFilePaths(svc["env_file"])...)
+			if ext, ok := svc["extends"].(map[string]any); ok {
+				if f, ok := ext["file"].(string); ok {
+					add(f)
+				}
+			}
+		}
+	}
+
+	for _, section := range []string{"configs", "secrets"} {
+		if m, ok := doc[section].(map[string]any); ok {
+			for _, itemAny := range m {
+				if item, ok := itemAny.(map[string]any); ok {
+					if f, ok := item["file"].(string); ok {
+						add(f)
+					}
+				}
+			}
+		}
+	}
+	return refs
+}
+
+func asList(v any) []any {
+	if l, ok := v.([]any); ok {
+		return l
+	}
+	return nil
+}
+
+// stringOrList flattens a value that may be a string or a list of strings.
+func stringOrList(v any) []string {
+	switch t := v.(type) {
+	case string:
+		return []string{t}
+	case []any:
+		var out []string
+		for _, e := range t {
+			if s, ok := e.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+// envFilePaths handles env_file's shapes: string, list of strings, or list of
+// {path: <string>} objects.
+func envFilePaths(v any) []string {
+	switch t := v.(type) {
+	case string:
+		return []string{t}
+	case []any:
+		var out []string
+		for _, e := range t {
+			switch ev := e.(type) {
+			case string:
+				out = append(out, ev)
+			case map[string]any:
+				if p, ok := ev["path"].(string); ok {
+					out = append(out, p)
+				}
+			}
+		}
+		return out
+	}
+	return nil
 }
 
 // readRecipePolicy reads and parses the recipe's vaka.yaml through a
