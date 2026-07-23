@@ -119,7 +119,12 @@ recipes:
 
 vaka caches each registry's `index.yaml` (with ETag/If-Modified-Since) under
 the user cache dir; `vaka registry refresh` forces re-fetch. Search and `info`
-work entirely from cached indexes — no network round-trip per query.
+work entirely from cached indexes — no network round-trip per query. The cache
+is a single atomically-renamed envelope binding the registry URL, the ETag, and
+the index bytes together, so a torn write or a concurrent URL change under one
+name can never pair an index with a different registry's URL — a URL mismatch
+is simply a cache miss. (Signing will extend this identity with the pinned
+`publicKey`; §9 Phase 3.)
 
 The `policy` block in the index is advisory (it makes search/info useful
 before downloading). After fetching, vaka always **recomputes** the policy
@@ -480,9 +485,23 @@ compose + vaka.yaml:
   registries can be laxer — but vaka prints the same flags locally regardless
   of what the index claims.
 
-**No execution.** `vaka get`/`search`/`info` never invoke docker, never run
-recipe scripts, never read `.env`. The trust decision stays with the user at
-`vaka up`, with the policy summary already on their terminal.
+**No execution.** `vaka get`/`search`/`info` never invoke docker and never run
+recipe scripts. The trust decision stays with the user at `vaka up`, with the
+policy summary already on their terminal.
+
+Validation loads the recipe's own compose files with an empty interpolation
+environment and never imports the OS environment or the top-level `.env`
+(`WithEnvFiles`/`WithDotEnv` are never called). One narrow exception is
+intrinsic to compose-go and cannot be turned off through project options: a
+recipe that uses `include:` without an explicit `env_file` causes compose-go to
+auto-load `<project_directory>/.env` for the included model. The confinement
+preflight (§6) restricts every `include`/`extends`/`env_file`/`configs`
+reference — and `project_directory` — to the recipe tree, so this read is always
+in-tree and can never reach an arbitrary host file; but it does mean a recipe
+that uses `include` is not fully `.env`-independent, and re-validating an
+installed directory that has since gained a user `.env` in an included
+project_directory can read it. Recipes that avoid `include` (the base+override
+norm) remain fully environment-independent.
 
 **Name integrity.** Unqualified names must be globally unique across
 configured registries (§5). Recipe names and registry names are `[a-z0-9-]+`;
@@ -625,18 +644,11 @@ existing `gopkg.in/yaml.v3`.
    validation, closing the bounded within-tree symlink/bind-mount redirect
    races that `os.Root` permits (§6 filesystem note). Linux-only, so it
    coexists with the portable `os.Root` path as a hardened fast path.
-   **Atomic, trust-bound index cache** (review finding: cache provenance):
-   the on-disk index cache is currently keyed by registry name and bound to
-   the URL via a sidecar written after the index (fetch.go), so a crash
-   between the two writes, or two concurrent processes racing a mid-flight
-   URL change under one name, can in principle pair an index with the wrong
-   URL. Steady-state operation is safe (every writer under a stable name
-   writes the same URL, and any torn read degrades to a refetch; `get`
-   re-verifies the tarball digest independently), so this is low-severity —
-   but the clean fix belongs here: key the cache directory by a hash of the
-   full trust identity (URL, and eventually the pinned `publicKey`) and store
-   URL + ETag + index in one atomically renamed envelope, so cache entries
-   for different trust identities cannot alias.
+   **Trust-identity-keyed index cache** (extends the atomic-envelope fix
+   below): once indexes are signed, fold the pinned `publicKey` into the cache
+   identity — key the cache directory by a hash of the full trust identity, not
+   just the registry name — so an index can never be reused across a change of
+   signing key, closing the identity dimension the URL binding does not cover.
 
 ### Cross-cutting: one recipe-validation entry point (review finding)
 

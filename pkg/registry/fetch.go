@@ -12,6 +12,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -161,9 +163,13 @@ func (c *Client) FetchIndex(reg Registry) (*IndexResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	cachePath, etagPath, urlPath := indexCachePaths(dir, reg.Name)
+	cachePath := indexCachePath(dir, reg.Name)
 
-	cached, cacheAge := readCache(cachePath, urlPath, reg.URL)
+	env, cacheAge, ok := readIndexCache(cachePath, reg.URL)
+	var cached []byte
+	if ok {
+		cached = env.Index
+	}
 	if cached != nil && c.MaxIndexAge > 0 && cacheAge < c.MaxIndexAge {
 		idx, err := ParseIndex(cached)
 		if err == nil {
@@ -176,8 +182,8 @@ func (c *Client) FetchIndex(reg Registry) (*IndexResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("registry %q: %w", reg.Name, err)
 	}
-	if etag, err := os.ReadFile(etagPath); err == nil && cached != nil {
-		req.Header.Set("If-None-Match", string(etag))
+	if cached != nil && env.ETag != "" {
+		req.Header.Set("If-None-Match", env.ETag)
 	}
 
 	resp, err := httpDo(req)
@@ -207,7 +213,11 @@ func (c *Client) FetchIndex(reg Registry) (*IndexResult, error) {
 			// do not overwrite a previously good cache with it.
 			return staleFallback(reg, cached, cacheAge, err)
 		}
-		if err := writeCache(cachePath, etagPath, urlPath, data, resp.Header.Get("Etag"), reg.URL); err != nil {
+		if err := writeIndexCache(cachePath, indexCache{
+			URL:   reg.URL,
+			ETag:  resp.Header.Get("Etag"),
+			Index: data,
+		}); err != nil {
 			return nil, fmt.Errorf("registry %q: %w", reg.Name, err)
 		}
 		return &IndexResult{Index: idx}, nil
@@ -229,44 +239,67 @@ func staleFallback(reg Registry, cached []byte, age time.Duration, cause error) 
 	return &IndexResult{Index: idx, Stale: true, Age: age}, nil
 }
 
-// indexCachePaths returns the per-registry cache file paths. The cache is
-// keyed by registry name but bound to the registry URL via the url sidecar
-// (see readCache), so re-pointing a name at a different URL cannot reuse the
-// old index or ETag.
-func indexCachePaths(dir, name string) (cachePath, etagPath, urlPath string) {
-	base := filepath.Join(dir, name)
-	return filepath.Join(base, "index.yaml"), filepath.Join(base, "etag"), filepath.Join(base, "url")
+// indexCache is the per-registry cache envelope: the registry URL, the ETag,
+// and the raw index bytes, written as one atomically-renamed file. Binding all
+// three together is what makes the cache trust-safe: a reader can never observe
+// an index paired with a different registry's URL (a torn write or a concurrent
+// URL change under the same name yields either the complete old envelope or the
+// complete new one — never a mix), and a URL mismatch is treated as a miss.
+// (yaml encodes Index as base64, so arbitrary bytes round-trip.)
+type indexCache struct {
+	URL   string `yaml:"url"`
+	ETag  string `yaml:"etag"`
+	Index []byte `yaml:"index"`
 }
 
-// cachedIndexBytes returns the cached index for reg only when it was written
-// for reg's exact URL; otherwise (no cache, or a URL change) it reports a
-// miss.
+// indexCachePath returns the per-registry cache envelope path.
+func indexCachePath(dir, name string) string {
+	return filepath.Join(dir, name, "cache.yaml")
+}
+
+// cachedIndexBytes returns the cached index for reg only when the envelope was
+// written for reg's exact URL; otherwise (no cache, corrupt, or a URL change)
+// it reports a miss.
 func cachedIndexBytes(dir string, reg Registry) ([]byte, time.Duration) {
-	cachePath, _, urlPath := indexCachePaths(dir, reg.Name)
-	return readCache(cachePath, urlPath, reg.URL)
-}
-
-func readCache(cachePath, urlPath, wantURL string) ([]byte, time.Duration) {
-	if recorded, err := os.ReadFile(urlPath); err != nil || strings.TrimSpace(string(recorded)) != wantURL {
-		return nil, 0 // no cache for this URL (or the name was re-pointed)
-	}
-	st, err := os.Stat(cachePath)
-	if err != nil {
+	env, age, ok := readIndexCache(indexCachePath(dir, reg.Name), reg.URL)
+	if !ok {
 		return nil, 0
 	}
-	data, err := os.ReadFile(cachePath)
-	if err != nil {
-		return nil, 0
-	}
-	return data, time.Since(st.ModTime())
+	return env.Index, age
 }
 
-func writeCache(cachePath, etagPath, urlPath string, data []byte, etag, url string) error {
-	dir := filepath.Dir(cachePath)
+// readIndexCache loads and URL-checks the cache envelope. ok is false on any
+// miss: absent, unreadable, malformed, empty, or written for a different URL.
+func readIndexCache(path, wantURL string) (env indexCache, age time.Duration, ok bool) {
+	st, err := os.Stat(path)
+	if err != nil {
+		return indexCache{}, 0, false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return indexCache{}, 0, false
+	}
+	if err := yaml.Unmarshal(data, &env); err != nil {
+		return indexCache{}, 0, false
+	}
+	if env.URL != wantURL || len(env.Index) == 0 {
+		return indexCache{}, 0, false // different registry origin, or empty
+	}
+	return env, time.Since(st.ModTime()), true
+}
+
+// writeIndexCache writes the envelope with a single atomic rename, so the
+// on-disk cache is always a complete {url, etag, index} triple.
+func writeIndexCache(path string, env indexCache) error {
+	data, err := yaml.Marshal(env)
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(dir, ".index-*")
+	tmp, err := os.CreateTemp(dir, ".cache-*")
 	if err != nil {
 		return err
 	}
@@ -278,24 +311,7 @@ func writeCache(cachePath, etagPath, urlPath string, data []byte, etag, url stri
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(tmp.Name(), cachePath); err != nil {
-		return err
-	}
-	// Bind this cache to its URL. If lost, the next read treats it as a miss
-	// (safe) — best-effort, like the ETag below.
-	_ = os.WriteFile(urlPath, []byte(url), 0o644)
-	// The index is now durably cached; ETag persistence is best-effort. A
-	// failure here must not discard a valid fetched index — at worst a lost
-	// or stale ETag makes the next revalidation an unconditional refetch,
-	// which is safe. So these errors are intentionally ignored.
-	if etag != "" {
-		_ = os.WriteFile(etagPath, []byte(etag), 0o644)
-	} else {
-		// No validator from the server: drop any old ETag so the next
-		// revalidation cannot send a stale conditional and get a false 304.
-		_ = os.Remove(etagPath)
-	}
-	return nil
+	return os.Rename(tmp.Name(), path)
 }
 
 func readLimited(r io.Reader, limit int64) ([]byte, error) {

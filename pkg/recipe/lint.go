@@ -160,10 +160,17 @@ func recipeComposeFiles(dir string) ([]string, error) {
 
 // loadRecipeProject loads the recipe's compose project from its own files
 // (base + override) with a controlled, empty interpolation environment: it
-// deliberately does not honor COMPOSE_FILE, the ambient OS environment, or a
-// local .env, and does not walk above dir, so it analyzes the recipe as
-// shipped and cannot be steered to a different project by the caller's
-// environment.
+// does not honor COMPOSE_FILE, does not import the ambient OS environment, does
+// not load the top-level .env (WithEnvFiles/WithDotEnv are never called), and
+// does not walk above dir, so it analyzes the recipe as shipped and cannot be
+// steered to a different project by the caller's environment.
+//
+// One exception is intrinsic to compose-go and cannot be disabled through
+// project options: when a recipe uses `include:` and the include declares no
+// env_file, compose-go auto-loads <project_directory>/.env for that included
+// model. checkComposeReferences confines project_directory to the recipe tree,
+// so this read stays in-tree, but it does mean a recipe that uses include is
+// not fully .env-independent (design §7 records the carve-out).
 func loadRecipeProject(ctx context.Context, dir string) (*composetypes.Project, error) {
 	files, err := recipeComposeFiles(dir)
 	if err != nil {
@@ -194,18 +201,40 @@ func loadRecipeProject(ctx context.Context, dir string) (*composetypes.Project, 
 	return project, nil
 }
 
-// composeRef is one host-file path a compose document references, plus whether
-// that path is itself a compose file (include / extends.file) that must be
-// scanned recursively.
-type composeRef struct {
-	path    string
-	compose bool
+// composeReferences groups the host-file paths a single compose document
+// references, by how compose-go resolves each. leaves are ordinary file reads
+// resolved against the document's working directory; extends and includes are
+// themselves compose files that compose-go loads recursively, each establishing
+// a working directory for its own content.
+type composeReferences struct {
+	leaves   []string       // env_file, label_file, configs/secrets file, include env_file
+	extends  []string       // extends.file targets
+	includes []includeEntry // include entries (path list + project_directory)
 }
 
-// maxComposeScanDepth bounds recursion into included/extended compose files.
-// Real recipes nest at most a level or two; the bound plus the visited set
-// guarantee termination on cyclic or adversarial include graphs.
-const maxComposeScanDepth = 16
+// includeEntry is one `include:` item. compose-go resolves the included
+// content — and auto-loads <project_directory>/.env — relative to
+// projectDirectory (or, when unset, the directory of the included file), NOT
+// the directory of the including file.
+type includeEntry struct {
+	paths            []string
+	projectDirectory string // "" when unset
+}
+
+// scanUnit is a compose file to scan plus the working directory its own
+// references resolve against. The pair is the visited key: the same file
+// included under two different project_directories must be scanned twice,
+// because its references then confine to different roots.
+type scanUnit struct {
+	file    string
+	workDir string
+}
+
+// maxComposeScanUnits bounds the include/extends graph traversal. The visited
+// set already dedups (file, workDir) pairs over a finite extracted tree; this
+// cap fails CLOSED on a pathological graph rather than ever exiting with files
+// left unscanned (an earlier depth cap could exit while work remained).
+const maxComposeScanUnits = 1024
 
 // checkComposeReferences rejects compose files that reference host files
 // outside the recipe directory. compose-go resolves env_file, label_file,
@@ -214,13 +243,15 @@ const maxComposeScanDepth = 16
 // included), so an unconfined recipe could make vaka read arbitrary host files
 // during `get`, before the user runs anything.
 //
-// Every referenced path is checked against the recipe root, resolved relative
-// to the directory of the file that names it. In-tree include/extends targets
-// are scanned recursively (bounded, cycle-guarded), because compose-go loads
-// them too and they can carry their own external references. Any path that
-// still contains a `$` is refused: it is interpolated at load time
-// (WithInterpolation), so its real target cannot be confined statically, and
-// recipes have no need to compute file-reference paths from the environment.
+// Each referenced path is checked against the recipe root, resolved relative to
+// the *working directory* compose-go would use for the file that names it — the
+// recipe root for the top-level files, the extended file's own directory for an
+// extends.file target, and the include's project_directory for included
+// content. In-tree include/extends targets are scanned recursively so their own
+// references are confined too. Any path that still contains a `$` is refused:
+// it is interpolated at load time (WithInterpolation), so its real target
+// cannot be confined statically, and recipes have no need to compute
+// file-reference paths from the environment.
 func checkComposeReferences(dir string, files []string) error {
 	root, err := filepath.Abs(dir)
 	if err != nil {
@@ -228,46 +259,86 @@ func checkComposeReferences(dir string, files []string) error {
 	}
 	var bad []string
 	visited := make(map[string]bool)
-	// queue holds absolute compose-file paths still to scan; depth caps
-	// recursion independently of the visited set.
-	queue := make([]string, 0, len(files))
+	// Top-level files resolve relative to the project working directory (root).
+	queue := make([]scanUnit, 0, len(files))
 	for _, f := range files {
 		if abs, err := filepath.Abs(f); err == nil {
-			queue = append(queue, abs)
+			queue = append(queue, scanUnit{file: abs, workDir: root})
 		}
 	}
-	for depth := 0; len(queue) > 0 && depth <= maxComposeScanDepth; depth++ {
-		next := queue
-		queue = nil
-		for _, absF := range next {
-			if visited[absF] {
+	scanned := 0
+	for len(queue) > 0 {
+		u := queue[0]
+		queue = queue[1:]
+		key := u.file + "\x00" + u.workDir
+		if visited[key] {
+			continue
+		}
+		visited[key] = true
+		scanned++
+		if scanned > maxComposeScanUnits {
+			return fmt.Errorf("recipe compose include/extends graph is too large to validate (> %d files); refusing", maxComposeScanUnits)
+		}
+		data, err := os.ReadFile(u.file)
+		if err != nil {
+			// A missing recursively-referenced file surfaces as a compose-go
+			// load error later; top-level files were found by
+			// recipeComposeFiles. Don't fail confinement on it.
+			continue
+		}
+		var doc map[string]any
+		if err := yaml.Unmarshal(data, &doc); err != nil {
+			continue // let compose-go surface the real parse error
+		}
+		label := displayPath(root, u.file)
+		// external records p if it escapes the recipe; returns true when it did.
+		external := func(p string) bool {
+			if reason := externalReason(root, u.workDir, p); reason != "" {
+				bad = append(bad, fmt.Sprintf("%s: %q (%s)", label, p, reason))
+				return true
+			}
+			return false
+		}
+		enqueue := func(target, workDir string) {
+			if fi, err := os.Stat(target); err == nil && !fi.IsDir() {
+				queue = append(queue, scanUnit{file: target, workDir: workDir})
+			}
+		}
+
+		refs := collectComposeFileRefs(doc)
+		for _, p := range refs.leaves {
+			external(p)
+		}
+		for _, ex := range refs.extends {
+			if external(ex) {
 				continue
 			}
-			visited[absF] = true
-			data, err := os.ReadFile(absF)
-			if err != nil {
-				// A missing recursively-referenced file surfaces as a
-				// compose-go load error later; top-level files were already
-				// found by recipeComposeFiles. Don't fail confinement on it.
-				continue
+			// The extended file's content resolves relative to its own dir.
+			target := filepath.Clean(filepath.Join(u.workDir, ex))
+			enqueue(target, filepath.Dir(target))
+		}
+		for _, inc := range refs.includes {
+			// project_directory (when set) becomes the working dir for the
+			// included content and the dir whose .env compose auto-loads, so it
+			// must itself be in-tree.
+			pdSet := inc.projectDirectory != ""
+			var pdResolved string
+			if pdSet {
+				if external(inc.projectDirectory) {
+					continue // can't safely resolve this include's content
+				}
+				pdResolved = filepath.Clean(filepath.Join(u.workDir, inc.projectDirectory))
 			}
-			var doc map[string]any
-			if err := yaml.Unmarshal(data, &doc); err != nil {
-				continue // let compose-go surface the real parse error
-			}
-			base := filepath.Dir(absF)
-			label := displayPath(root, absF)
-			for _, ref := range collectComposeFileRefs(doc) {
-				if reason := externalReason(root, base, ref.path); reason != "" {
-					bad = append(bad, fmt.Sprintf("%s: %q (%s)", label, ref.path, reason))
+			for _, p := range inc.paths {
+				if external(p) {
 					continue
 				}
-				if ref.compose {
-					resolved := filepath.Clean(filepath.Join(base, ref.path))
-					if fi, err := os.Stat(resolved); err == nil && !fi.IsDir() {
-						queue = append(queue, resolved)
-					}
+				target := filepath.Clean(filepath.Join(u.workDir, p))
+				workDir := pdResolved
+				if !pdSet {
+					workDir = filepath.Dir(target)
 				}
+				enqueue(target, workDir)
 			}
 		}
 	}
@@ -307,15 +378,16 @@ func displayPath(root, absF string) string {
 	return filepath.Base(absF)
 }
 
-// collectComposeFileRefs extracts every host-file path a compose document
-// references via env_file, label_file, extends.file, include (path / env_file
-// / project_directory), and configs/secrets file.
-func collectComposeFileRefs(doc map[string]any) []composeRef {
-	var refs []composeRef
-	add := func(compose bool, ss ...string) {
+// collectComposeFileRefs extracts the host-file paths a compose document
+// references, grouped by how compose-go resolves them: leaf reads (env_file,
+// label_file, configs/secrets file, include env_file), extends.file targets,
+// and include entries (each carrying its path list and project_directory).
+func collectComposeFileRefs(doc map[string]any) composeReferences {
+	var refs composeReferences
+	addLeaf := func(ss ...string) {
 		for _, s := range ss {
 			if s != "" {
-				refs = append(refs, composeRef{path: s, compose: compose})
+				refs.leaves = append(refs.leaves, s)
 			}
 		}
 	}
@@ -323,13 +395,16 @@ func collectComposeFileRefs(doc map[string]any) []composeRef {
 	for _, inc := range asList(doc["include"]) {
 		switch v := inc.(type) {
 		case string:
-			add(true, v)
+			refs.includes = append(refs.includes, includeEntry{paths: []string{v}})
 		case map[string]any:
-			add(true, stringOrList(v["path"])...)
-			add(false, envFilePaths(v["env_file"])...)
+			entry := includeEntry{paths: stringOrList(v["path"])}
 			if pd, ok := v["project_directory"].(string); ok {
-				add(false, pd)
+				entry.projectDirectory = pd
 			}
+			refs.includes = append(refs.includes, entry)
+			// An include's own env_file resolves against the including file's
+			// working dir, so it is a leaf of this document.
+			addLeaf(envFilePaths(v["env_file"])...)
 		}
 	}
 
@@ -339,11 +414,11 @@ func collectComposeFileRefs(doc map[string]any) []composeRef {
 			if !ok {
 				continue
 			}
-			add(false, envFilePaths(svc["env_file"])...)
-			add(false, envFilePaths(svc["label_file"])...)
+			addLeaf(envFilePaths(svc["env_file"])...)
+			addLeaf(envFilePaths(svc["label_file"])...)
 			if ext, ok := svc["extends"].(map[string]any); ok {
-				if f, ok := ext["file"].(string); ok {
-					add(true, f)
+				if f, ok := ext["file"].(string); ok && f != "" {
+					refs.extends = append(refs.extends, f)
 				}
 			}
 		}
@@ -354,7 +429,7 @@ func collectComposeFileRefs(doc map[string]any) []composeRef {
 			for _, itemAny := range m {
 				if item, ok := itemAny.(map[string]any); ok {
 					if f, ok := item["file"].(string); ok {
-						add(false, f)
+						addLeaf(f)
 					}
 				}
 			}

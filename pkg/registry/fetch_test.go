@@ -207,6 +207,52 @@ func TestCacheNotReusedAcrossURLs(t *testing.T) {
 	}
 }
 
+// TestCacheEnvelopeAtomicity verifies the cache is a single {url, etag, index}
+// envelope: the URL binding lives inside the same atomically-written file (no
+// separate sidecar that could diverge from the index), and an unparseable
+// envelope is a clean miss rather than a mispaired index.
+func TestCacheEnvelopeAtomicity(t *testing.T) {
+	srv := newIndexServer(t)
+	dir := t.TempDir()
+	c := &Client{CacheDir: dir, MaxIndexAge: time.Hour}
+
+	if _, err := c.FetchIndex(srv.registry()); err != nil {
+		t.Fatalf("cold fetch: %v", err)
+	}
+
+	// The cache is exactly one file — no etag/url sidecars that a torn write
+	// could leave inconsistent with the index.
+	entries, err := os.ReadDir(filepath.Join(dir, "testreg"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "cache.yaml" {
+		var names []string
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("cache dir = %v, want exactly [cache.yaml]", names)
+	}
+
+	// The single file carries the URL binding internally.
+	cachePath := indexCachePath(dir, "testreg")
+	raw, err := os.ReadFile(cachePath)
+	if err != nil {
+		t.Fatalf("cache envelope missing: %v", err)
+	}
+	if !strings.Contains(string(raw), srv.URL) {
+		t.Fatal("envelope does not record its registry URL")
+	}
+
+	// A corrupt envelope reads as a miss, never as an index paired with a URL.
+	if err := os.WriteFile(cachePath, []byte("\x00 not a valid envelope"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := c.CachedIndex(srv.registry()); ok {
+		t.Fatal("a corrupt cache envelope was accepted")
+	}
+}
+
 func TestHTTPSOnlyRedirect(t *testing.T) {
 	mkReq := func(scheme string) *http.Request {
 		r, _ := http.NewRequest(http.MethodGet, scheme+"://example.test/x", nil)
