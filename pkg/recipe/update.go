@@ -202,29 +202,41 @@ func Update(spec UpdateSpec) (*UpdateResult, error) {
 
 	// Step 2 — recover any interrupted prior update, then clear staging.
 	//
-	// A surviving journal is treated as pending — its accepted-state chain is
-	// inherited by the pre-check below and this transaction re-commits and
-	// clears it — UNLESS its finalLock already matches the committed lock. That
-	// case is a prior update that committed but crashed before cleanup: it is
-	// done, not pending. Inheriting its now-stale accepted chain would let a
-	// user edit made after the commit be silently overwritten (the file's
-	// pre-commit state is still "accepted"), contradicting the documented reset
-	// of the accepted chain at the first successful commit (design §6). So we
-	// clear such a journal and proceed as if none survived. Because the journal
-	// is otherwise always kept here, even a no-op run must execute the
-	// transaction to commit and clear it rather than leave it dangling.
+	// A surviving journal is bound to a lock generation on both ends: its
+	// baseGeneration is the lock it started from, and its finalLock carries the
+	// generation it produces. Relative to the installed lock:
+	//   - finalLock generation matches  → the prior update committed but crashed
+	//     before cleanup: it is DONE. Clear it WITHOUT inheriting its now-stale
+	//     accepted chain (which would let a user edit made after the commit be
+	//     silently overwritten — the accepted chain resets at the first commit,
+	//     design §6).
+	//   - baseGeneration matches         → a genuine pending update from this
+	//     exact lock: honor it (its accepted chain is inherited below and this
+	//     transaction re-commits and clears it).
+	//   - neither matches                → the journal belongs to a different
+	//     installation lineage (stale, copied, or forged). Refuse to act on it,
+	//     rather than let its accepted hashes drive ownership classification.
 	journal, _, err := ReadJournal(root)
 	if err != nil {
 		return nil, err
 	}
-	if journal != nil && lock.sameInstall(journal.FinalLock) {
-		if err := root.Remove(JournalFileName); err != nil {
-			return nil, err
+	if journal != nil {
+		switch {
+		case journal.FinalLock.Generation == lock.Generation:
+			if err := root.Remove(JournalFileName); err != nil {
+				return nil, err
+			}
+			if err := root.SyncDir("."); err != nil {
+				return nil, err
+			}
+			journal = nil
+		case journal.BaseGeneration == lock.Generation:
+			// keep: pending update from this lock
+		default:
+			return nil, fmt.Errorf(
+				"%s: the update journal %s does not belong to this installation (generation mismatch); it is stale, copied from another install, or corrupt — remove it and re-run vaka get",
+				spec.Target, JournalFileName)
 		}
-		if err := root.SyncDir("."); err != nil {
-			return nil, err
-		}
-		journal = nil
 	}
 	pendingJournal := journal != nil
 	if err := root.RemoveAll(StagingDirName); err != nil {
@@ -340,8 +352,9 @@ func Update(spec UpdateSpec) (*UpdateResult, error) {
 
 	// Step 4 — journal first, durably, before any visible-tree mutation.
 	j := &Journal{
-		APIVersion: APIVersion,
-		Kind:       "RecipeLockPending",
+		APIVersion:     APIVersion,
+		Kind:           "RecipeLockPending",
+		BaseGeneration: lock.Generation, // the lock this update is based on
 		Target: JournalTarget{
 			Registry: spec.Registry, Name: spec.Name,
 			Version: spec.Version, Digest: spec.Digest,

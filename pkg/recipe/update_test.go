@@ -734,10 +734,10 @@ func TestUpdateInstallsNewNestedFile(t *testing.T) {
 func TestUpdateKeepsPendingSameVersionJournal(t *testing.T) {
 	target := installedV1(t)
 
-	// Craft a dangling journal whose target equals the committed version and
-	// digest, but whose finalLock differs from the on-disk lock (an extra
-	// tracked file) — i.e. a still-PENDING same-version repair, not a
-	// completed commit. The old version+digest heuristic would delete it.
+	// Craft a dangling journal that is a still-PENDING same-version repair: its
+	// baseGeneration equals the on-disk lock's generation (so it belongs to
+	// this install and is not yet committed — its finalLock carries a fresh
+	// generation). It must be kept, not deleted.
 	root, err := OpenSafeRoot(target)
 	if err != nil {
 		t.Fatal(err)
@@ -746,20 +746,23 @@ func TestUpdateKeepsPendingSameVersionJournal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	finalLock := NewLock(lock.Registry, lock.Name, lock.Version, lock.Digest)
+	finalLock := NewLock(lock.Registry, lock.Name, lock.Version, lock.Digest) // fresh generation
 	finalLock.Fetched = lock.Fetched
+	plan := map[string]PlanEntry{}
 	for p, s := range lock.Files {
 		finalLock.Files[p] = s
+		plan[p] = PlanEntry{Accepted: []string{s}, Final: s}
 	}
-	finalLock.Files["phantom.yaml"] = "sha256:" + sha256Of("phantom")
+	phantom := "sha256:" + sha256Of("phantom")
+	finalLock.Files["phantom.yaml"] = phantom
+	plan["phantom.yaml"] = PlanEntry{Accepted: []string{AbsentState}, Final: phantom}
 	j := &Journal{
-		APIVersion: APIVersion,
-		Kind:       "RecipeLockPending",
-		Target:     JournalTarget{Registry: lock.Registry, Name: lock.Name, Version: lock.Version, Digest: lock.Digest},
-		Plan: map[string]PlanEntry{
-			"phantom.yaml": {Accepted: []string{AbsentState}, Final: "sha256:" + sha256Of("phantom")},
-		},
-		FinalLock: finalLock,
+		APIVersion:     APIVersion,
+		Kind:           "RecipeLockPending",
+		BaseGeneration: lock.Generation, // belongs to this install → pending
+		Target:         JournalTarget{Registry: lock.Registry, Name: lock.Name, Version: lock.Version, Digest: lock.Digest},
+		Plan:           plan,
+		FinalLock:      finalLock,
 	}
 	data, err := j.Marshal()
 	if err != nil {
@@ -775,7 +778,55 @@ func TestUpdateKeepsPendingSameVersionJournal(t *testing.T) {
 		t.Fatalf("err = %v, want simulated crash at stale-cleaned", err)
 	}
 	if !hasResidue(t, target, JournalFileName) {
-		t.Fatal("a still-pending same-version journal was wrongly deleted as a completed commit")
+		t.Fatal("a still-pending same-version journal was wrongly deleted")
+	}
+}
+
+// TestUpdateRejectsForeignJournal covers a journal copied from a different
+// installation lineage: its accepted hashes must NOT drive ownership. The
+// generation binding rejects it, so a user edit that happens to match one of
+// the foreign journal's accepted states is preserved, not silently overwritten.
+func TestUpdateRejectsForeignJournal(t *testing.T) {
+	target := installedV1(t)
+	userEdit := "MY PRECIOUS LOCAL EDIT\n"
+	mutate(t, target, "compose.yaml", userEdit)
+
+	root, err := OpenSafeRoot(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	editState, err := EntryState(root, "compose.yaml")
+	root.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A well-formed journal from another install: neither its baseGeneration nor
+	// its finalLock generation matches this installation's lock. Its plan even
+	// "accepts" the user's current edit — which the old code would honor.
+	foreignFinal := NewLock("official", "demo", "2.0.0", digestV2)
+	j := &Journal{
+		APIVersion:     APIVersion,
+		Kind:           "RecipeLockPending",
+		BaseGeneration: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Target:         JournalTarget{Registry: "official", Name: "demo", Version: "2.0.0", Digest: digestV2},
+		Plan:           map[string]PlanEntry{"compose.yaml": {Accepted: []string{editState}, Final: editState}},
+		FinalLock:      foreignFinal,
+	}
+	data, err := j.Marshal()
+	if err != nil {
+		t.Fatalf("marshal foreign journal: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(target, JournalFileName), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = updateTo(target, "2.0.0", digestV2, tarballV2(t))
+	if err == nil || !strings.Contains(err.Error(), "does not belong to this installation") {
+		t.Fatalf("err = %v, want foreign-journal refusal", err)
+	}
+	if got := readFile(t, target, "compose.yaml"); got != userEdit {
+		t.Fatalf("user edit was overwritten: %q", got)
 	}
 }
 

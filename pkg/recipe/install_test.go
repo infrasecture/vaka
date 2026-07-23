@@ -213,6 +213,7 @@ registry: official
 name: demo
 version: 1.0.0
 digest: ` + testDigest + `
+generation: 0123456789abcdef0123456789abcdef
 fetched: "2026-07-11T00:00:00Z"
 files:
   compose.yaml: sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
@@ -227,6 +228,7 @@ deviations:
 
 	rejects := []struct{ name, doc, want string }{
 		{"unknown field", valid + "surprise: true\n", "surprise"},
+		{"bad generation", strings.Replace(valid, "0123456789abcdef0123456789abcdef", "xyz", 1), "generation"},
 		{"wrong kind", strings.Replace(valid, "RecipeLock", "Recipe", 1), "kind must be"},
 		{"bad digest", strings.Replace(valid, testDigest, "sha256:zz", 1), "sha256:<64 hex>"},
 		{"bad state", strings.Replace(valid, "link:compose.yaml", "md5:nope", 1), "malformed state"},
@@ -254,6 +256,7 @@ registry: official
 name: demo
 version: 2.0.0
 digest: ` + testDigest + `
+generation: ffffffffffffffffffffffffffffffff
 fetched: "2026-07-11T00:00:00Z"
 files:
   compose.yaml: sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
@@ -262,8 +265,9 @@ files:
 		t.Fatal(err)
 	}
 	j := &Journal{
-		APIVersion: APIVersion,
-		Kind:       "RecipeLockPending",
+		APIVersion:     APIVersion,
+		Kind:           "RecipeLockPending",
+		BaseGeneration: "00000000000000000000000000000000",
 		Target: JournalTarget{
 			Registry: "official", Name: "demo", Version: "2.0.0", Digest: testDigest,
 			URLs: []string{"https://example.com/demo-2.0.0.tar.gz"},
@@ -315,6 +319,7 @@ registry: official
 name: demo
 version: 1.0.0
 digest: ` + testDigest + `
+generation: ffffffffffffffffffffffffffffffff
 fetched: "2026-07-11T00:00:00Z"
 files:
   compose.yaml: sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
@@ -323,9 +328,10 @@ files:
 		t.Fatal(err)
 	}
 	j := &Journal{
-		APIVersion: APIVersion,
-		Kind:       "RecipeLockPending",
-		Target:     JournalTarget{Registry: "official", Name: "demo", Version: "1.0.0", Digest: testDigest},
+		APIVersion:     APIVersion,
+		Kind:           "RecipeLockPending",
+		BaseGeneration: "00000000000000000000000000000000",
+		Target:         JournalTarget{Registry: "official", Name: "demo", Version: "1.0.0", Digest: testDigest},
 		Plan: map[string]PlanEntry{
 			UpdateLockFileName: {Accepted: []string{AbsentState}, Final: AbsentState},
 		},

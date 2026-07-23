@@ -31,11 +31,16 @@ type PlanEntry struct {
 // the operation plan plus the canonical final lock installed verbatim at
 // commit. It is written before any tree mutation and removed after commit.
 type Journal struct {
-	APIVersion string               `yaml:"apiVersion"`
-	Kind       string               `yaml:"kind"`
-	Target     JournalTarget        `yaml:"target"`
-	Plan       map[string]PlanEntry `yaml:"plan"`
-	FinalLock  *Lock                `yaml:"finalLock"`
+	APIVersion string `yaml:"apiVersion"`
+	Kind       string `yaml:"kind"`
+	// BaseGeneration is the generation nonce of the committed lock this update
+	// started from. On recovery it must equal the installed lock's generation
+	// (a genuine pending update) — otherwise the journal is stale, copied from
+	// another installation, or forged, and must not steer ownership.
+	BaseGeneration string               `yaml:"baseGeneration"`
+	Target         JournalTarget        `yaml:"target"`
+	Plan           map[string]PlanEntry `yaml:"plan"`
+	FinalLock      *Lock                `yaml:"finalLock"`
 }
 
 // ParseJournal strictly decodes and validates a RecipeLockPending document.
@@ -78,6 +83,28 @@ func (j *Journal) validate() error {
 	}
 	if err := j.FinalLock.validate(); err != nil {
 		return fmt.Errorf("finalLock: %w", err)
+	}
+	if !generationRE.MatchString(j.BaseGeneration) {
+		return fmt.Errorf("baseGeneration %q is not 32 hex chars", j.BaseGeneration)
+	}
+	// A journal always transitions between two distinct generations; equal base
+	// and final would let a forged journal claim to be both pending and
+	// completed for one lock.
+	if j.BaseGeneration == j.FinalLock.Generation {
+		return fmt.Errorf("baseGeneration must differ from finalLock generation")
+	}
+	// The envelope's Target must name the same install as the embedded
+	// finalLock, so the two cannot disagree about what is being produced.
+	if j.Target.Registry != j.FinalLock.Registry || j.Target.Name != j.FinalLock.Name ||
+		j.Target.Version != j.FinalLock.Version || j.Target.Digest != j.FinalLock.Digest {
+		return fmt.Errorf("target does not match finalLock identity")
+	}
+	// Every file the finalLock records must have a matching plan final state,
+	// tying the plan to the lock it commits.
+	for p, state := range j.FinalLock.Files {
+		if pe, ok := j.Plan[p]; !ok || pe.Final != state {
+			return fmt.Errorf("plan for %q is inconsistent with finalLock", p)
+		}
 	}
 	return nil
 }

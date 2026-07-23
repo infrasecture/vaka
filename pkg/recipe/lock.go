@@ -2,8 +2,9 @@ package recipe
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
-	"reflect"
 	"regexp"
 	"time"
 
@@ -24,7 +25,23 @@ const (
 var (
 	lockDigestRE = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 	entryStateRE = regexp.MustCompile(`^(sha256:[0-9a-f]{64}(\+x)?|link:.+)$`)
+	generationRE = regexp.MustCompile(`^[0-9a-f]{32}$`)
 )
+
+// newGeneration returns a fresh 128-bit random installation-generation nonce.
+// Every committed lock carries one so that an update journal can be bound to
+// the exact lock it was created from (base) and the lock it produces (final):
+// a copied or stale journal from another installation lineage matches neither
+// and is refused, instead of contributing its accepted hashes to ownership
+// classification.
+func newGeneration() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// crypto/rand failure is not recoverable for a security nonce.
+		panic("recipe: cannot read random bytes for lock generation: " + err.Error())
+	}
+	return hex.EncodeToString(b[:])
+}
 
 // DeviationKind classifies how an installed directory diverges from the
 // published recipe (design §6 decision matrix).
@@ -48,37 +65,22 @@ type Deviation struct {
 // Lock is the provenance record written into every instantiated recipe
 // directory (kind: RecipeLock). vaka owns this document: strict decoding.
 type Lock struct {
-	APIVersion string            `yaml:"apiVersion"`
-	Kind       string            `yaml:"kind"`
-	Registry   string            `yaml:"registry"`
-	Name       string            `yaml:"name"`
-	Version    string            `yaml:"version"`
-	Digest     string            `yaml:"digest"`
+	APIVersion string `yaml:"apiVersion"`
+	Kind       string `yaml:"kind"`
+	Registry   string `yaml:"registry"`
+	Name       string `yaml:"name"`
+	Version    string `yaml:"version"`
+	Digest     string `yaml:"digest"`
+	// Generation is a per-commit random nonce identifying this exact installed
+	// state, so an update journal can be bound to the lock it belongs to.
+	Generation string            `yaml:"generation"`
 	Fetched    string            `yaml:"fetched"`
 	Files      map[string]string `yaml:"files"`
 	Deviations []Deviation       `yaml:"deviations,omitempty"`
 }
 
-// sameInstall reports whether two locks describe the same installed state:
-// equal identity, digest, tracked files, and deviations. The Fetched timestamp
-// is ignored, since it differs between the lock written at commit and any
-// re-derived lock for the same content. It is used to detect a journal whose
-// finalLock has already been committed (so the accepted-state chain must reset
-// rather than be inherited).
-func (l *Lock) sameInstall(other *Lock) bool {
-	if l == nil || other == nil {
-		return false
-	}
-	return l.Registry == other.Registry &&
-		l.Name == other.Name &&
-		l.Version == other.Version &&
-		l.Digest == other.Digest &&
-		reflect.DeepEqual(l.Files, other.Files) &&
-		reflect.DeepEqual(l.Deviations, other.Deviations)
-}
-
-// NewLock returns a lock skeleton with identity fields set and the fetch
-// time stamped.
+// NewLock returns a lock skeleton with identity fields set, a fresh generation
+// nonce, and the fetch time stamped.
 func NewLock(registryName, name, version, digest string) *Lock {
 	return &Lock{
 		APIVersion: APIVersion,
@@ -87,6 +89,7 @@ func NewLock(registryName, name, version, digest string) *Lock {
 		Name:       name,
 		Version:    version,
 		Digest:     digest,
+		Generation: newGeneration(),
 		Fetched:    time.Now().UTC().Format(time.RFC3339),
 		Files:      map[string]string{},
 	}
@@ -116,6 +119,9 @@ func (l *Lock) validate() error {
 	}
 	if !lockDigestRE.MatchString(l.Digest) {
 		return fmt.Errorf("digest %q is not sha256:<64 hex>", l.Digest)
+	}
+	if !generationRE.MatchString(l.Generation) {
+		return fmt.Errorf("generation %q is not 32 hex chars", l.Generation)
 	}
 	for p, state := range l.Files {
 		if err := validRecipePath(p); err != nil {

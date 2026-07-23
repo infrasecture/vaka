@@ -259,18 +259,30 @@ not create them.
 
 4. **Apply — durable, journaled two-phase commit.** The journal
    `.vaka-recipe.lock.new` (`kind: RecipeLockPending`) is an *envelope*, not
-   the future lock file itself: it records the target, the per-path plan with
-   its accepted states, and the canonical final `RecipeLock` document to be
-   installed at commit. Skipped collisions and kept-user-copies are absent
-   from the plan and from the final lock's `files:` map — they remain
-   user-owned on every subsequent update — but they are recorded in the
-   final lock's `deviations:` section, so the lock never silently attests to
-   a published version the directory does not actually match.
+   the future lock file itself: it records its `baseGeneration` (the lock it
+   started from), the target, the per-path plan with its accepted states, and
+   the canonical final `RecipeLock` document to be installed at commit. Skipped
+   collisions and kept-user-copies are absent from the plan and from the final
+   lock's `files:` map — they remain user-owned on every subsequent update —
+   but they are recorded in the final lock's `deviations:` section, so the lock
+   never silently attests to a published version the directory does not
+   actually match.
+
+   Every committed lock carries a random `generation` nonce identifying that
+   exact installed state. A journal is thus bound to a lock lineage on both
+   ends — `baseGeneration` and `finalLock.generation` — so a journal copied
+   from, or stale from, a *different* installation cannot contribute its
+   accepted hashes to this directory's ownership classification (see the
+   recovery rule under Write sequence below). The journal validator also
+   enforces internal consistency: `target` must match `finalLock`'s identity,
+   `baseGeneration` must differ from `finalLock.generation`, and every file the
+   `finalLock` records must have a matching plan `final` state.
 
    ```yaml
    # .vaka-recipe.lock.new — update journal, removed after commit
    apiVersion: recipes.vaka/v1alpha1
    kind: RecipeLockPending
+   baseGeneration: 3f9a...      # generation of the lock this update is based on
    target:
      registry: official
      name: codex
@@ -286,6 +298,7 @@ not create them.
    finalLock:                  # canonical RecipeLock, installed verbatim at commit
      apiVersion: recipes.vaka/v1alpha1
      kind: RecipeLock
+     generation: b7e2...       # a fresh nonce, != baseGeneration
      # ...
    ```
 
@@ -356,18 +369,27 @@ not create them.
       rename changes a file's name, not its contents.)
    4. **Cleanup**: unlink `.vaka-recipe.lock.new`, remove `.vaka-staging/`,
       `fsync` the directory. A crash between commit and cleanup leaves a
-      stale journal and/or staging remnants. On the next run, a surviving
-      journal is recognized as *completed* — and removed without inheriting
-      its accepted-state chain — when its embedded `finalLock` **semantically
-      equals** the committed lock: same identity, digest, tracked-file states,
-      and deviations (the `fetched` timestamp is ignored). Version and digest
-      alone are insufficient: for a same-version repair they can match while
-      the file set differs, and, more importantly, inheriting a completed
-      journal's now-stale accepted states would let a user edit made *after*
-      the commit be classified as vaka-owned and silently overwritten. This is
-      the concrete meaning of "the accepted chain resets at the first
-      successful commit." Staging is always removed whenever no apply is in
-      progress.
+      stale journal and/or staging remnants. On the next run a surviving
+      journal is classified by **generation**, against the installed lock:
+
+      - `finalLock.generation` == installed lock → the prior update
+        *committed* but crashed before cleanup. It is done: remove the journal
+        **without** inheriting its accepted-state chain. Inheriting it would
+        let a user edit made *after* the commit be classified vaka-owned and
+        silently overwritten — this is the concrete meaning of "the accepted
+        chain resets at the first successful commit."
+      - `baseGeneration` == installed lock → a genuine *pending* update from
+        this exact lock: honor it (its chain is inherited and the transaction
+        re-commits and clears it).
+      - neither matches → the journal belongs to a **different installation
+        lineage** (stale, copied, or forged). `vaka get` refuses to act on it
+        rather than let its accepted hashes drive ownership; the user removes
+        it and re-runs. (A generation nonce, not a version+digest or content
+        comparison, is required here: two installs of the same recipe version
+        share identity and file states but never share a generation, so only
+        the nonce distinguishes *this* installation's journal from another's.)
+
+      Staging is always removed whenever no apply is in progress.
 5. Untracked files are never written and never deleted; the collision row
    above is this rule applied to installation. The one exception to "never
    read" is that an untracked file at a path the incoming version also ships
@@ -430,6 +452,7 @@ registry: official
 name: codex
 version: 0.3.0
 digest: sha256:9f2a...
+generation: b7e2c9a1...                  # random per-commit nonce (installation lineage)
 fetched: "2026-07-09T12:03:11Z"
 files:                                   # every extracted file
   compose.yaml: sha256:...
