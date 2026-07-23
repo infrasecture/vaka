@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/Masterminds/semver/v3"
 	"gopkg.in/yaml.v3"
 )
 
@@ -63,12 +64,39 @@ var (
 	reservedManifestKeys = map[string]bool{"provides": true, "requires": true}
 )
 
-// ExpectedIdentity is the name/version the resolved index entry promised. When
-// set, the staged manifest must match it, so a tarball cannot masquerade as a
-// different recipe or version than the one the index (and digest) resolved.
+// ExpectedIdentity is what the resolved index entry promised plus the running
+// vaka version. When Name/Version are set the staged manifest must match them,
+// so a tarball cannot masquerade as a different recipe or version than the one
+// the index (and digest) resolved. VakaVersion, when a release version, is the
+// authoritative input for the manifest's minVakaVersion check — bound to the
+// fetched artifact rather than the mutable index metadata.
 type ExpectedIdentity struct {
-	Name    string
-	Version string
+	Name        string
+	Version     string
+	VakaVersion string
+}
+
+// CheckMinVakaVersion enforces the manifest's own minVakaVersion against the
+// running vaka. Because the manifest is inside the digest-verified tarball,
+// this cannot be understated by mutable index metadata. A dev/unparseable
+// running version skips the check (nothing to compare); an empty manifest
+// value imposes no floor.
+func (m *Manifest) CheckMinVakaVersion(vakaVersion string) error {
+	if m.MinVakaVersion == "" {
+		return nil
+	}
+	min, err := semver.NewVersion(m.MinVakaVersion)
+	if err != nil {
+		return nil // schema-validated already; be lenient if that ever changes
+	}
+	cur, err := semver.NewVersion(vakaVersion)
+	if err != nil {
+		return nil // dev build: nothing to compare against
+	}
+	if cur.LessThan(min) {
+		return fmt.Errorf("recipe requires vaka >= %s, but this is %s; upgrade vaka", m.MinVakaVersion, vakaVersion)
+	}
+	return nil
 }
 
 // ParseManifest parses and schema-validates a recipe.yaml document. It does

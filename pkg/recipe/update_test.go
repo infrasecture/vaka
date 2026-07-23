@@ -595,7 +595,7 @@ func TestUpToDateFailsFastWhenLocked(t *testing.T) {
 	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := UpToDate(target, "official", "demo", digestV1); !errors.Is(err, ErrUpdateInProgress) {
+	if _, err := UpToDate(target, "official", "demo", "1.0.0", digestV1); !errors.Is(err, ErrUpdateInProgress) {
 		t.Fatalf("err = %v, want ErrUpdateInProgress", err)
 	}
 }
@@ -782,31 +782,36 @@ func TestUpdateKeepsPendingSameVersionJournal(t *testing.T) {
 func TestUpToDate(t *testing.T) {
 	target := installedV1(t)
 
-	ok, err := UpToDate(target, "official", "demo", digestV1)
+	ok, err := UpToDate(target, "official", "demo", "1.0.0", digestV1)
 	if err != nil || !ok {
 		t.Fatalf("pristine matching dir: ok=%v err=%v", ok, err)
 	}
-	if ok, _ := UpToDate(target, "official", "demo", digestV2); ok {
+	if ok, _ := UpToDate(target, "official", "demo", "1.0.0", digestV2); ok {
 		t.Fatal("digest mismatch must not be up to date")
 	}
 	// Identity guard: a different registry/name with the SAME digest must not
 	// short-circuit (it must route through Update, which rejects it).
-	if ok, _ := UpToDate(target, "acme", "demo", digestV1); ok {
+	if ok, _ := UpToDate(target, "acme", "demo", "1.0.0", digestV1); ok {
 		t.Fatal("registry mismatch must not be up to date")
 	}
-	if ok, _ := UpToDate(target, "official", "other", digestV1); ok {
+	if ok, _ := UpToDate(target, "official", "other", "1.0.0", digestV1); ok {
 		t.Fatal("name mismatch must not be up to date")
+	}
+	// Version identity: a new index version that reused the installed digest
+	// must not short-circuit as current.
+	if ok, _ := UpToDate(target, "official", "demo", "2.0.0", digestV1); ok {
+		t.Fatal("version mismatch with reused digest must not be up to date")
 	}
 
 	mutate(t, target, "compose.yaml", "drifted\n")
-	if ok, _ := UpToDate(target, "official", "demo", digestV1); ok {
+	if ok, _ := UpToDate(target, "official", "demo", "1.0.0", digestV1); ok {
 		t.Fatal("drifted tracked file must not be up to date")
 	}
 
-	if ok, err := UpToDate(t.TempDir(), "official", "demo", digestV1); err != nil || ok {
+	if ok, err := UpToDate(t.TempDir(), "official", "demo", "1.0.0", digestV1); err != nil || ok {
 		t.Fatalf("lock-less dir: ok=%v err=%v", ok, err)
 	}
-	if ok, err := UpToDate(filepath.Join(t.TempDir(), "nope"), "official", "demo", digestV1); err != nil || ok {
+	if ok, err := UpToDate(filepath.Join(t.TempDir(), "nope"), "official", "demo", "1.0.0", digestV1); err != nil || ok {
 		t.Fatalf("missing dir: ok=%v err=%v", ok, err)
 	}
 }

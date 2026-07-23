@@ -160,6 +160,12 @@ Resolution rules:
   configured registries**; otherwise vaka errors and lists the qualified
   candidates. This is the anti-typosquatting rule: adding a registry can never
   silently hijack a name you already use (no ordering/priority games).
+  Uniqueness must be proven against *current* indexes: for `vaka get`, an
+  unqualified reference fails if any registry's index cannot be freshly
+  revalidated (a stale cached snapshot might not yet show a newly-registered
+  colliding name). A qualified reference names its registry and so is unaffected
+  — it still resolves offline from cache. (Browse commands stay best-effort and
+  only warn.)
 - `official` is built in; removing it is allowed but explicit.
 
 ## 6. CLI surface
@@ -186,7 +192,13 @@ vaka registry refresh [name]                  # re-fetch index(es)
    (`^1.2`, `>=0.2`) are not part of the Phase 1 grammar — they arrive later
    with `requires:` (§10).
 2. Download tarball, verify `sha256` digest from the index, extract via the
-   hardened extractor (§7) into a temp dir.
+   hardened extractor (§7) into a temp dir. The staged tree is then validated
+   before commit: its `recipe.yaml` manifest must match the resolved name and
+   version, and the manifest's own `minVakaVersion` — bound to the tarball by
+   the digest, not the mutable index metadata — is enforced against the running
+   vaka. The index's `minVakaVersion` copy is only an advisory pre-download
+   fast-fail; the manifest value is authoritative, so an index that omits or
+   understates it cannot install a recipe that needs a newer vaka.
 3. Target dir defaults to `./<name>`.
    - Dir absent → **install**: the extracted temp dir is renamed into place;
      a fresh install is all-or-nothing.
@@ -491,17 +503,30 @@ policy summary already on their terminal.
 
 Validation loads the recipe's own compose files with an empty interpolation
 environment and never imports the OS environment or the top-level `.env`
-(`WithEnvFiles`/`WithDotEnv` are never called). One narrow exception is
-intrinsic to compose-go and cannot be turned off through project options: a
-recipe that uses `include:` without an explicit `env_file` causes compose-go to
-auto-load `<project_directory>/.env` for the included model. The confinement
-preflight (§6) restricts every `include`/`extends`/`env_file`/`configs`
-reference — and `project_directory` — to the recipe tree, so this read is always
-in-tree and can never reach an arbitrary host file; but it does mean a recipe
-that uses `include` is not fully `.env`-independent, and re-validating an
-installed directory that has since gained a user `.env` in an included
-project_directory can read it. Recipes that avoid `include` (the base+override
-norm) remain fully environment-independent.
+(`WithEnvFiles`/`WithDotEnv` are never called). The confinement preflight (§6)
+restricts every `include`/`extends`/`env_file`/`label_file`/`configs`/`secrets`
+reference to the recipe tree, resolving each against the working directory
+compose-go would use, and refuses interpolated (`$`) reference paths (their real
+target is unknown before load) and paths whose real location escapes via an
+in-tree symlink (compose-go follows symlinks; a lexical check would not).
+
+Compose `include:` is accepted only in its safely-modelable form — a top-level
+file, a single path, and no `project_directory`. Nested includes and
+`project_directory` are refused because compose-go v2.10.2 resolves their
+`env_file`/`project_directory` against a relative, CWD-dependent working
+directory that a static in-tree check cannot model (a confirmed leak); richer
+composition is deferred to §10. Even an accepted top-level include leaves one
+compose-go behavior that project options cannot disable: it auto-loads the
+included file's directory `.env` when the include declares no `env_file`. That
+directory is confined in-tree, so no arbitrary host file is reached, but a
+recipe that uses `include` is not fully `.env`-independent (re-validating an
+installed directory that has since gained a user `.env` there can read it).
+Recipes that avoid `include` (the base+override norm) remain fully
+environment-independent.
+
+The symlink-escape check above is a lexical/`EvalSymlinks` guard with an
+inherent check-then-load window; the complete fix is the Phase 3 no-follow
+traversal (§9), which also covers the updater's own reads.
 
 **Name integrity.** Unqualified names must be globally unique across
 configured registries (§5). Recipe names and registry names are `[a-z0-9-]+`;
@@ -640,10 +665,12 @@ existing `gopkg.in/yaml.v3`.
    rerun). This sits with signing because it is all supply-chain integrity of
    the publish path. **Strong no-follow filesystem traversal**: replace the
    `os.Root` "no escape" primitive with descriptor-relative `openat2`
-   (`RESOLVE_NO_SYMLINKS|RESOLVE_NO_XDEV`) for updater mutations and staged
-   validation, closing the bounded within-tree symlink/bind-mount redirect
-   races that `os.Root` permits (§6 filesystem note). Linux-only, so it
-   coexists with the portable `os.Root` path as a hardened fast path.
+   (`RESOLVE_NO_SYMLINKS|RESOLVE_NO_XDEV`) for updater mutations, staged
+   validation, and the compose lint reader, closing the bounded within-tree
+   symlink/bind-mount redirect races that `os.Root` permits and the
+   check-then-load window in the lint's `EvalSymlinks` guard (§6/§7 notes).
+   Linux-only, so it coexists with the portable `os.Root` path as a hardened
+   fast path.
    **Trust-identity-keyed index cache** (extends the atomic-envelope fix
    below): once indexes are signed, fold the pinned `publicKey` into the cache
    identity — key the cache directory by a hash of the full trust identity, not

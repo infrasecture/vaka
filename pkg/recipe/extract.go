@@ -22,6 +22,33 @@ var (
 // Archives shipping such paths could forge provenance and are refused.
 const reservedPrefix = ".vaka-"
 
+// validRecipePath reports whether p is a legal recipe-relative path key for a
+// lock or journal: a canonical, slash-separated relative path that stays inside
+// the recipe tree and never names vaka's reserved .vaka-* state. Enforcing this
+// on lock.Files, deviations, and journal.Plan keys stops a corrupt-but-
+// syntactically-valid document from steering the updater to unlink or overwrite
+// its own reserved state (e.g. the held update lock) or a path outside the tree.
+func validRecipePath(p string) error {
+	if p == "" {
+		return fmt.Errorf("empty path")
+	}
+	if path.IsAbs(p) || strings.HasPrefix(p, "/") {
+		return fmt.Errorf("path %q must be relative", p)
+	}
+	if clean := path.Clean(p); clean != p {
+		return fmt.Errorf("path %q is not canonical (want %q)", p, clean)
+	}
+	if p == "." || p == ".." || strings.HasPrefix(p, "../") {
+		return fmt.Errorf("path %q escapes the recipe directory", p)
+	}
+	for _, seg := range strings.Split(p, "/") {
+		if strings.HasPrefix(seg, reservedPrefix) {
+			return fmt.Errorf("path %q is inside the reserved %s* namespace", p, reservedPrefix)
+		}
+	}
+	return nil
+}
+
 // ExtractRecipe extracts a digest-verified recipe tarball into root (a
 // confinement root over an existing, empty directory). The archive must
 // contain exactly one top-level directory named recipeName, which is

@@ -60,13 +60,16 @@ func (j *Journal) validate() error {
 	if !lockDigestRE.MatchString(j.Target.Digest) {
 		return fmt.Errorf("target digest %q is not sha256:<64 hex>", j.Target.Digest)
 	}
-	for path, entry := range j.Plan {
+	for p, entry := range j.Plan {
+		if err := validRecipePath(p); err != nil {
+			return fmt.Errorf("plan key: %w", err)
+		}
 		if entry.Final != AbsentState && !entryStateRE.MatchString(entry.Final) {
-			return fmt.Errorf("plan %q has malformed final state %q", path, entry.Final)
+			return fmt.Errorf("plan %q has malformed final state %q", p, entry.Final)
 		}
 		for _, a := range entry.Accepted {
 			if a != AbsentState && !entryStateRE.MatchString(a) {
-				return fmt.Errorf("plan %q has malformed accepted state %q", path, a)
+				return fmt.Errorf("plan %q has malformed accepted state %q", p, a)
 			}
 		}
 	}

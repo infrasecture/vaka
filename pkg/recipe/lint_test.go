@@ -323,6 +323,21 @@ services:
 			t.Fatalf("err = %v, want invalid policy", err)
 		}
 	})
+
+	t.Run("manifest minVakaVersion is enforced from the artifact", func(t *testing.T) {
+		// The index need not carry minVakaVersion at all; the digest-bound
+		// manifest's value is authoritative and must block an older vaka.
+		dir := writeRecipeDir(t, compose, good)
+		if err := os.WriteFile(filepath.Join(dir, "recipe.yaml"),
+			[]byte("apiVersion: recipes.vaka/v1alpha1\nkind: Recipe\nname: demo\nversion: 1.0.0\ndescription: x\nminVakaVersion: 9.9.9\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		want := ExpectedIdentity{Name: "demo", Version: "1.0.0", VakaVersion: "1.0.0"}
+		if err := ValidateStaged(context.Background(), dir, want); err == nil ||
+			!strings.Contains(err.Error(), "requires vaka >= 9.9.9") {
+			t.Fatalf("err = %v, want minVakaVersion refusal", err)
+		}
+	})
 }
 
 func TestLintDirFlagsEverything(t *testing.T) {
@@ -483,11 +498,7 @@ func TestCheckComposeReferencesRejectsExternalFiles(t *testing.T) {
 		// label_file is read by compose-go at load time, just like env_file.
 		"services:\n  app:\n    label_file: /etc/passwd\n",
 		"services:\n  app:\n    label_file: [../../labels.txt]\n",
-		// include.project_directory redirects relative resolution and makes
-		// compose-go load <project_directory>/.env.
-		"include:\n  - path: sub.yaml\n    project_directory: /etc\n",
-		"include:\n  - path: sub.yaml\n    project_directory: ../../elsewhere\n",
-		// include long-form env_file.
+		// include long-form env_file (a leaf of the including, top-level file).
 		"include:\n  - path: sub.yaml\n    env_file: /etc/passwd\n",
 		// Interpolated paths cannot be confined statically: with an empty env
 		// the default resolves to an external absolute path at load time.
@@ -509,10 +520,12 @@ func TestCheckComposeReferencesRejectsExternalFiles(t *testing.T) {
 	}
 }
 
-func TestCheckComposeReferencesRecursesIntoIncludes(t *testing.T) {
-	// An in-tree include/extends target is accepted at the top level, but its
-	// OWN external references must still be caught — compose-go loads it too.
-	t.Run("included file with external env_file", func(t *testing.T) {
+func TestCheckComposeReferencesIncludePolicy(t *testing.T) {
+	// A top-level, single-path include of an in-tree file is allowed, but the
+	// included file's OWN external references must still be caught (it is
+	// scanned, one level, against its own directory — the case compose-go
+	// models without CWD ambiguity).
+	t.Run("top-level include target external env_file is caught", func(t *testing.T) {
 		dir := t.TempDir()
 		top := filepath.Join(dir, "compose.yaml")
 		if err := os.WriteFile(top, []byte("include:\n  - sub/inner.yaml\n"), 0o644); err != nil {
@@ -521,18 +534,17 @@ func TestCheckComposeReferencesRecursesIntoIncludes(t *testing.T) {
 		if err := os.Mkdir(filepath.Join(dir, "sub"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		// The escaping ref is relative to sub/, so ../../ leaves the recipe.
 		if err := os.WriteFile(filepath.Join(dir, "sub", "inner.yaml"),
 			[]byte("services:\n  x:\n    env_file: ../../outside.env\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		if err := checkComposeReferences(dir, []string{top}); err == nil ||
 			!strings.Contains(err.Error(), "outside the recipe directory") {
-			t.Fatalf("err = %v, want recursive external-ref refusal", err)
+			t.Fatalf("err = %v, want external-ref refusal in the included file", err)
 		}
 	})
 
-	t.Run("extends target with absolute config file", func(t *testing.T) {
+	t.Run("extends target external config is caught", func(t *testing.T) {
 		dir := t.TempDir()
 		top := filepath.Join(dir, "compose.yaml")
 		if err := os.WriteFile(top,
@@ -545,80 +557,68 @@ func TestCheckComposeReferencesRecursesIntoIncludes(t *testing.T) {
 		}
 		if err := checkComposeReferences(dir, []string{top}); err == nil ||
 			!strings.Contains(err.Error(), "outside the recipe directory") {
-			t.Fatalf("err = %v, want recursive external-ref refusal", err)
+			t.Fatalf("err = %v, want extends target external-ref refusal", err)
 		}
 	})
 
-	t.Run("recursion terminates on an include cycle", func(t *testing.T) {
-		dir := t.TempDir()
-		a := filepath.Join(dir, "compose.yaml")
-		b := filepath.Join(dir, "b.yaml")
-		if err := os.WriteFile(a, []byte("include:\n  - b.yaml\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(b, []byte("include:\n  - compose.yaml\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if err := checkComposeReferences(dir, []string{a}); err != nil {
-			t.Fatalf("clean in-tree cycle rejected: %v", err)
-		}
-	})
+	// Unsupported include shapes are refused outright: nested includes and
+	// project_directory can be resolved by compose-go against a relative/CWD
+	// working directory that a static check cannot model (verified against
+	// compose-go v2.10.2); multi-path includes shared a working directory in a
+	// way vaka does not model. See design §10.
+	unsupported := []struct {
+		name  string
+		files map[string]string
+	}{
+		{"nested include", map[string]string{
+			"compose.yaml":    "include:\n  - sub/inner.yaml\n",
+			"sub/inner.yaml":  "include:\n  - deeper.yaml\nservices:\n  x: {image: y}\n",
+			"sub/deeper.yaml": "services:\n  z: {image: w}\n",
+		}},
+		{"include cycle is nested", map[string]string{
+			"compose.yaml": "include:\n  - b.yaml\n",
+			"b.yaml":       "include:\n  - compose.yaml\n",
+		}},
+		{"multi-path include", map[string]string{
+			"compose.yaml": "include:\n  - path:\n      - a.yaml\n      - b.yaml\n",
+			"a.yaml":       "services:\n  x: {image: y}\n",
+			"b.yaml":       "services:\n  z: {image: w}\n",
+		}},
+		{"include with project_directory", map[string]string{
+			"compose.yaml":   "include:\n  - path: sub/inner.yaml\n    project_directory: .\n",
+			"sub/inner.yaml": "services:\n  x: {image: y}\n",
+		}},
+	}
+	for _, tc := range unsupported {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for rel, body := range tc.files {
+				full := filepath.Join(dir, rel)
+				if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			err := checkComposeReferences(dir, []string{filepath.Join(dir, "compose.yaml")})
+			if err == nil || !strings.Contains(err.Error(), "unsupported include") {
+				t.Fatalf("err = %v, want unsupported-include refusal", err)
+			}
+		})
+	}
 
-	// #2: project_directory redirects where the included content resolves.
-	// inner.yaml sits in sub/, but project_directory: . rebases its refs to the
-	// recipe root, so env_file ../outside.env escapes even though it would look
-	// in-tree relative to sub/.
-	t.Run("project_directory redirect is caught", func(t *testing.T) {
-		dir := t.TempDir()
-		top := filepath.Join(dir, "compose.yaml")
-		if err := os.WriteFile(top,
-			[]byte("include:\n  - path: sub/inner.yaml\n    project_directory: .\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Mkdir(filepath.Join(dir, "sub"), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		// Relative to the recipe root (project_directory: .), ../outside.env is
-		// outside; relative to sub/ it would have looked in-tree.
-		if err := os.WriteFile(filepath.Join(dir, "sub", "inner.yaml"),
-			[]byte("services:\n  x:\n    env_file: ../outside.env\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if err := checkComposeReferences(dir, []string{top}); err == nil ||
-			!strings.Contains(err.Error(), "outside the recipe directory") {
-			t.Fatalf("err = %v, want project_directory-rebased external-ref refusal", err)
-		}
-	})
-
-	t.Run("external project_directory is caught", func(t *testing.T) {
-		dir := t.TempDir()
-		top := filepath.Join(dir, "compose.yaml")
-		if err := os.WriteFile(top,
-			[]byte("include:\n  - path: inner.yaml\n    project_directory: ../../etc\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(dir, "inner.yaml"),
-			[]byte("services:\n  x:\n    image: y\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if err := checkComposeReferences(dir, []string{top}); err == nil ||
-			!strings.Contains(err.Error(), "outside the recipe directory") {
-			t.Fatalf("err = %v, want external project_directory refusal", err)
-		}
-	})
-
-	// #1: a deep in-tree chain must not let an external reference in the final
-	// file slip past a recursion limit (the old depth cap exited fail-open).
-	t.Run("deep chain does not fail open at the end", func(t *testing.T) {
+	// A deep extends chain (recursion that IS still supported) must not fail
+	// open: an external ref in the last file is caught.
+	t.Run("deep extends chain does not fail open", func(t *testing.T) {
 		dir := t.TempDir()
 		const depth = 40
 		for i := 0; i < depth; i++ {
 			var body string
 			if i < depth-1 {
-				body = fmt.Sprintf("include:\n  - c%d.yaml\n", i+1)
+				body = fmt.Sprintf("services:\n  s:\n    extends:\n      file: c%d.yaml\n      service: s\n", i+1)
 			} else {
-				// The last file, far past any small depth cap, escapes.
-				body = "services:\n  x:\n    env_file: ../../outside.env\n"
+				body = "services:\n  s:\n    image: y\n    env_file: ../../outside.env\n"
 			}
 			name := "compose.yaml"
 			if i > 0 {
@@ -630,30 +630,7 @@ func TestCheckComposeReferencesRecursesIntoIncludes(t *testing.T) {
 		}
 		if err := checkComposeReferences(dir, []string{filepath.Join(dir, "compose.yaml")}); err == nil ||
 			!strings.Contains(err.Error(), "outside the recipe directory") {
-			t.Fatalf("err = %v, want deep-chain external-ref refusal (no fail-open)", err)
-		}
-	})
-
-	t.Run("deep clean chain is accepted", func(t *testing.T) {
-		dir := t.TempDir()
-		const depth = 40
-		for i := 0; i < depth; i++ {
-			var body string
-			if i < depth-1 {
-				body = fmt.Sprintf("include:\n  - c%d.yaml\n", i+1)
-			} else {
-				body = "services:\n  x:\n    image: y\n"
-			}
-			name := "compose.yaml"
-			if i > 0 {
-				name = fmt.Sprintf("c%d.yaml", i)
-			}
-			if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
-				t.Fatal(err)
-			}
-		}
-		if err := checkComposeReferences(dir, []string{filepath.Join(dir, "compose.yaml")}); err != nil {
-			t.Fatalf("clean deep chain rejected: %v", err)
+			t.Fatalf("err = %v, want deep-extends external-ref refusal (no fail-open)", err)
 		}
 	})
 }
@@ -667,10 +644,9 @@ func TestCheckComposeReferencesAllowsInTreeFiles(t *testing.T) {
 		"services:\n  app:\n    label_file: ./labels.txt\n",
 		"services:\n  app:\n    label_file: [conf/a.labels, conf/b.labels]\n",
 		"services:\n  app:\n    extends:\n      file: base/compose.yaml\n      service: base\n",
-		"services:\n  app:\n    extends:\n      service: sibling\n", // same-file, no path
-		"include:\n  - sub/compose.yaml\n",
-		"include:\n  - path: sub/compose.yaml\n    project_directory: sub\n",
-		"include:\n  - path: sub/compose.yaml\n    env_file: sub/.env\n",
+		"services:\n  app:\n    extends:\n      service: sibling\n",      // same-file, no path
+		"include:\n  - sub/compose.yaml\n",                               // top-level, single-path
+		"include:\n  - path: sub/compose.yaml\n    env_file: sub/.env\n", // single-path + in-tree include env_file
 		"configs:\n  c:\n    file: ./conf.txt\n",
 		"secrets:\n  s:\n    file: secrets/key.pem\n",
 	}
@@ -683,6 +659,28 @@ func TestCheckComposeReferencesAllowsInTreeFiles(t *testing.T) {
 		if err := checkComposeReferences(dir, []string{f}); err != nil {
 			t.Errorf("in-tree reference rejected: %v\n%s", err, doc)
 		}
+	}
+}
+
+// #3: a lexically in-tree reference whose real target is an escaping symlink is
+// refused — compose-go follows the link, so a purely lexical check would not.
+func TestCheckComposeReferencesRejectsEscapingSymlink(t *testing.T) {
+	dir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "secret.env")
+	if err := os.WriteFile(outside, []byte("SECRET=1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// app.env is an in-tree name, but a symlink pointing outside the recipe.
+	if err := os.Symlink(outside, filepath.Join(dir, "app.env")); err != nil {
+		t.Fatal(err)
+	}
+	f := filepath.Join(dir, "compose.yaml")
+	if err := os.WriteFile(f, []byte("services:\n  app:\n    env_file: app.env\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkComposeReferences(dir, []string{f}); err == nil ||
+		!strings.Contains(err.Error(), "symlink escapes") {
+		t.Fatalf("err = %v, want escaping-symlink refusal", err)
 	}
 }
 

@@ -98,12 +98,18 @@ func (l *Lock) validate() error {
 	if !lockDigestRE.MatchString(l.Digest) {
 		return fmt.Errorf("digest %q is not sha256:<64 hex>", l.Digest)
 	}
-	for path, state := range l.Files {
+	for p, state := range l.Files {
+		if err := validRecipePath(p); err != nil {
+			return fmt.Errorf("file key: %w", err)
+		}
 		if !entryStateRE.MatchString(state) {
-			return fmt.Errorf("file %q has malformed state %q", path, state)
+			return fmt.Errorf("file %q has malformed state %q", p, state)
 		}
 	}
 	for _, d := range l.Deviations {
+		if err := validRecipePath(d.Path); err != nil {
+			return fmt.Errorf("deviation path: %w", err)
+		}
 		if d.Kind != DeviationSkippedCollision && d.Kind != DeviationKeptUserCopy {
 			return fmt.Errorf("deviation %q has unknown kind %q", d.Path, d.Kind)
 		}

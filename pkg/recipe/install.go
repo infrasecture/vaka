@@ -19,6 +19,7 @@ type InstallSpec struct {
 	Digest      string // sha256:<hex> of the tarball, already verified
 	TarballPath string // local path of the verified tarball
 	Target      string // directory to create; must not exist
+	VakaVersion string // running vaka version, for the manifest minVakaVersion check
 }
 
 // Install materializes a recipe at spec.Target: extract into a dot-prefixed
@@ -68,7 +69,7 @@ func Install(spec InstallSpec) (*Lock, error) {
 	// mislabeled, or policy-invalid recipe must never be installed (fail
 	// closed). The manifest must match the name/version the index resolved.
 	if err := ValidateStaged(context.Background(), staging,
-		ExpectedIdentity{Name: spec.Name, Version: spec.Version}); err != nil {
+		ExpectedIdentity{Name: spec.Name, Version: spec.Version, VakaVersion: spec.VakaVersion}); err != nil {
 		return nil, err
 	}
 

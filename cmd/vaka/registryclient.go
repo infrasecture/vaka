@@ -43,8 +43,13 @@ type registryWorld struct {
 // is omitted — best-effort listing. In strict mode it is a hard error: `vaka
 // get` uses strict so that an unqualified resolution can never "prove"
 // uniqueness against only the reachable registries, which would defeat the
-// anti-typosquatting guarantee. A stale cache (reachable-before, unreachable
-// now) still warns in both modes, since it still lets uniqueness be checked.
+// anti-typosquatting guarantee.
+//
+// A *stale* cache is also fatal for an UNQUALIFIED strict resolution (only ==
+// ""): uniqueness cannot be proven against an out-of-date snapshot, since a
+// newly-registered colliding name may not appear in it (docs §5). It remains a
+// warning for browse and for qualified references (only != ""), which name
+// their registry and so do not depend on cross-registry uniqueness.
 func loadRegistryWorld(maxAge time.Duration, only string, strict bool, warnOut io.Writer) (*registryWorld, error) {
 	cfg, err := loadRegistriesConfig()
 	if err != nil {
@@ -68,6 +73,11 @@ func loadRegistryWorld(maxAge time.Duration, only string, strict bool, warnOut i
 			continue
 		}
 		if res.Stale {
+			if strict && only == "" {
+				return nil, fmt.Errorf(
+					"registry %q: index is stale (%s old) and could not be revalidated; an unqualified name cannot be resolved against a stale snapshot without weakening the uniqueness guarantee — retry when the registry is reachable, or use a qualified name (registry/recipe)",
+					reg.Name, res.Age.Round(time.Minute))
+			}
 			fmt.Fprintf(warnOut,
 				"vaka: warning: registry %q could not be reached; using a cached index that is %s old\n",
 				reg.Name, res.Age.Round(time.Minute))

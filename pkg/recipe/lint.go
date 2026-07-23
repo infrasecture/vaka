@@ -53,6 +53,11 @@ func ValidateStaged(ctx context.Context, dir string, want ExpectedIdentity) erro
 	if err := manifest.CheckIdentity(want); err != nil {
 		return err
 	}
+	// Authoritative minVakaVersion enforcement against the digest-bound
+	// manifest (the index copy is only an advisory pre-download fast-fail).
+	if err := manifest.CheckMinVakaVersion(want.VakaVersion); err != nil {
+		return err
+	}
 
 	project, err := loadRecipeProject(ctx, dir)
 	if err != nil {
@@ -222,18 +227,22 @@ type includeEntry struct {
 }
 
 // scanUnit is a compose file to scan plus the working directory its own
-// references resolve against. The pair is the visited key: the same file
-// included under two different project_directories must be scanned twice,
-// because its references then confine to different roots.
+// references resolve against and whether it is one of the recipe's top-level
+// files. topLevel gates includes: compose-go resolves a *nested* include's
+// env_file / project_directory against a relative working dir that ends up
+// interpreted against the process CWD (verified against compose-go v2.10.2),
+// which a static in-tree check cannot model — so includes are permitted only in
+// top-level files. The (file, workDir, topLevel) triple is the visited key.
 type scanUnit struct {
-	file    string
-	workDir string
+	file     string
+	workDir  string
+	topLevel bool
 }
 
 // maxComposeScanUnits bounds the include/extends graph traversal. The visited
-// set already dedups (file, workDir) pairs over a finite extracted tree; this
-// cap fails CLOSED on a pathological graph rather than ever exiting with files
-// left unscanned (an earlier depth cap could exit while work remained).
+// set already dedups scan units over a finite extracted tree; this cap fails
+// CLOSED on a pathological graph rather than ever exiting with files left
+// unscanned (an earlier depth cap could exit while work remained).
 const maxComposeScanUnits = 1024
 
 // checkComposeReferences rejects compose files that reference host files
@@ -246,31 +255,47 @@ const maxComposeScanUnits = 1024
 // Each referenced path is checked against the recipe root, resolved relative to
 // the *working directory* compose-go would use for the file that names it — the
 // recipe root for the top-level files, the extended file's own directory for an
-// extends.file target, and the include's project_directory for included
-// content. In-tree include/extends targets are scanned recursively so their own
-// references are confined too. Any path that still contains a `$` is refused:
-// it is interpolated at load time (WithInterpolation), so its real target
-// cannot be confined statically, and recipes have no need to compute
-// file-reference paths from the environment.
+// extends.file target, and the included file's own directory for a top-level
+// include. Referenced in-tree compose files are scanned recursively so their
+// own references are confined too.
+//
+// Two classes are refused outright because static confinement cannot model
+// them safely: a path containing `$` (interpolated at load time, so its real
+// target is unknown here), and includes that are nested, multi-path, or carry
+// project_directory (compose-go resolves those against a relative/CWD-relative
+// working directory — see scanUnit). Recipes use only top-level, single-path
+// includes; deeper composition is a future feature (design §10).
+//
+// The check is also symlink-aware: a lexically in-tree path whose real
+// (symlink-resolved) location escapes the recipe is refused, since compose-go
+// follows symlinks while a lexical clean/prefix test would not.
 func checkComposeReferences(dir string, files []string) error {
 	root, err := filepath.Abs(dir)
 	if err != nil {
 		return err
 	}
+	// realRoot resolves symlinks in the recipe path itself (e.g. /tmp -> /private
+	// on macOS) so the containment test below compares like with like.
+	realRoot := root
+	if rr, err := filepath.EvalSymlinks(root); err == nil {
+		realRoot = rr
+	}
+
 	var bad []string
+	var unsupported []string
 	visited := make(map[string]bool)
 	// Top-level files resolve relative to the project working directory (root).
 	queue := make([]scanUnit, 0, len(files))
 	for _, f := range files {
 		if abs, err := filepath.Abs(f); err == nil {
-			queue = append(queue, scanUnit{file: abs, workDir: root})
+			queue = append(queue, scanUnit{file: abs, workDir: root, topLevel: true})
 		}
 	}
 	scanned := 0
 	for len(queue) > 0 {
 		u := queue[0]
 		queue = queue[1:]
-		key := u.file + "\x00" + u.workDir
+		key := fmt.Sprintf("%s\x00%s\x00%t", u.file, u.workDir, u.topLevel)
 		if visited[key] {
 			continue
 		}
@@ -291,17 +316,25 @@ func checkComposeReferences(dir string, files []string) error {
 			continue // let compose-go surface the real parse error
 		}
 		label := displayPath(root, u.file)
-		// external records p if it escapes the recipe; returns true when it did.
+		// external records p if it escapes the recipe (lexically, or via a
+		// symlink whose real target escapes); returns true when it did.
 		external := func(p string) bool {
 			if reason := externalReason(root, u.workDir, p); reason != "" {
 				bad = append(bad, fmt.Sprintf("%s: %q (%s)", label, p, reason))
 				return true
 			}
+			resolved := filepath.Clean(filepath.Join(u.workDir, p))
+			if real, err := filepath.EvalSymlinks(resolved); err == nil {
+				if real != realRoot && !strings.HasPrefix(real, realRoot+string(filepath.Separator)) {
+					bad = append(bad, fmt.Sprintf("%s: %q (symlink escapes the recipe directory)", label, p))
+					return true
+				}
+			}
 			return false
 		}
-		enqueue := func(target, workDir string) {
+		enqueue := func(target, workDir string, topLevel bool) {
 			if fi, err := os.Stat(target); err == nil && !fi.IsDir() {
-				queue = append(queue, scanUnit{file: target, workDir: workDir})
+				queue = append(queue, scanUnit{file: target, workDir: workDir, topLevel: topLevel})
 			}
 		}
 
@@ -315,32 +348,39 @@ func checkComposeReferences(dir string, files []string) error {
 			}
 			// The extended file's content resolves relative to its own dir.
 			target := filepath.Clean(filepath.Join(u.workDir, ex))
-			enqueue(target, filepath.Dir(target))
+			enqueue(target, filepath.Dir(target), false)
 		}
 		for _, inc := range refs.includes {
-			// project_directory (when set) becomes the working dir for the
-			// included content and the dir whose .env compose auto-loads, so it
-			// must itself be in-tree.
-			pdSet := inc.projectDirectory != ""
-			var pdResolved string
-			if pdSet {
-				if external(inc.projectDirectory) {
-					continue // can't safely resolve this include's content
-				}
-				pdResolved = filepath.Clean(filepath.Join(u.workDir, inc.projectDirectory))
+			switch {
+			case !u.topLevel:
+				unsupported = append(unsupported, fmt.Sprintf(
+					"%s: nested include (an include may appear only in the recipe's top-level compose files)", label))
+				continue
+			case inc.projectDirectory != "":
+				unsupported = append(unsupported, fmt.Sprintf(
+					"%s: include with project_directory", label))
+				continue
+			case len(inc.paths) != 1:
+				unsupported = append(unsupported, fmt.Sprintf(
+					"%s: multi-file include (use one path per include entry)", label))
+				continue
 			}
-			for _, p := range inc.paths {
-				if external(p) {
-					continue
-				}
-				target := filepath.Clean(filepath.Join(u.workDir, p))
-				workDir := pdResolved
-				if !pdSet {
-					workDir = filepath.Dir(target)
-				}
-				enqueue(target, workDir)
+			p := inc.paths[0]
+			if external(p) {
+				continue
 			}
+			// A top-level, single-path include resolves its content against the
+			// included file's own (absolute, in-tree) directory — the case
+			// compose-go models without CWD ambiguity.
+			target := filepath.Clean(filepath.Join(u.workDir, p))
+			enqueue(target, filepath.Dir(target), false)
 		}
+	}
+	if len(unsupported) > 0 {
+		sort.Strings(unsupported)
+		return fmt.Errorf(
+			"recipe compose uses unsupported include features (recipes use only top-level, single-path includes; see design §10):\n\t%s",
+			strings.Join(unsupported, "\n\t"))
 	}
 	if len(bad) > 0 {
 		sort.Strings(bad)

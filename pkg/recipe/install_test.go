@@ -231,6 +231,11 @@ deviations:
 		{"bad digest", strings.Replace(valid, testDigest, "sha256:zz", 1), "sha256:<64 hex>"},
 		{"bad state", strings.Replace(valid, "link:compose.yaml", "md5:nope", 1), "malformed state"},
 		{"bad deviation kind", strings.Replace(valid, "skipped-collision", "merged", 1), "unknown kind"},
+		// #7: path keys must be canonical relative paths outside .vaka-*.
+		{"reserved file key", strings.Replace(valid, "compose.yaml:", ".vaka-recipe.update.lock:", 1), "reserved"},
+		{"absolute file key", strings.Replace(valid, "compose.yaml:", "/etc/passwd:", 1), "must be relative"},
+		{"escaping file key", strings.Replace(valid, "compose.yaml:", "../../etc/x:", 1), "escapes"},
+		{"reserved deviation path", strings.Replace(valid, "litellm.yaml", ".vaka-staging", 1), "reserved"},
 	}
 	for _, tc := range rejects {
 		t.Run(tc.name, func(t *testing.T) {
@@ -297,5 +302,36 @@ files:
 	j.FinalLock = nil
 	if _, err := j.Marshal(); err == nil || !strings.Contains(err.Error(), "finalLock is required") {
 		t.Fatalf("err = %v, want finalLock requirement", err)
+	}
+}
+
+// #7: a journal whose Plan names vaka's own reserved state (e.g. the held
+// update lock) must be refused — otherwise a corrupt-but-valid-looking journal
+// could classify the lock as deletable and unlink it mid-update.
+func TestJournalRejectsReservedPlanPath(t *testing.T) {
+	final, err := ParseLock([]byte(`apiVersion: recipes.vaka/v1alpha1
+kind: RecipeLock
+registry: official
+name: demo
+version: 1.0.0
+digest: ` + testDigest + `
+fetched: "2026-07-11T00:00:00Z"
+files:
+  compose.yaml: sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := &Journal{
+		APIVersion: APIVersion,
+		Kind:       "RecipeLockPending",
+		Target:     JournalTarget{Registry: "official", Name: "demo", Version: "1.0.0", Digest: testDigest},
+		Plan: map[string]PlanEntry{
+			UpdateLockFileName: {Accepted: []string{AbsentState}, Final: AbsentState},
+		},
+		FinalLock: final,
+	}
+	if _, err := j.Marshal(); err == nil || !strings.Contains(err.Error(), "reserved") {
+		t.Fatalf("err = %v, want reserved-path refusal for %q", err, UpdateLockFileName)
 	}
 }

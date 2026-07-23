@@ -73,7 +73,7 @@ func runGet(cmd *cobra.Command, args []string) error {
 	)
 	// Fast path: a directory already at exactly this recipe and digest and
 	// fully pristine needs no download or update.
-	upToDate, err := recipe.UpToDate(target, res.Registry.Name, res.Name, res.Entry.Digest)
+	upToDate, err := recipe.UpToDate(target, res.Registry.Name, res.Name, res.Entry.Version, res.Entry.Digest)
 	if err != nil {
 		return err
 	}
@@ -156,7 +156,7 @@ func installOrUpdate(res *registry.Resolved, tarball, target string) (verb strin
 		lock, err = recipe.Install(recipe.InstallSpec{
 			Registry: res.Registry.Name, Name: res.Name,
 			Version: res.Entry.Version, Digest: res.Entry.Digest,
-			TarballPath: tarball, Target: target,
+			TarballPath: tarball, Target: target, VakaVersion: version,
 		})
 		return "installed into", lock, nil, err
 	}
@@ -178,7 +178,7 @@ func installOrUpdate(res *registry.Resolved, tarball, target string) (verb strin
 	updRes, err := recipe.Update(recipe.UpdateSpec{
 		Registry: res.Registry.Name, Name: res.Name,
 		Version: res.Entry.Version, Digest: res.Entry.Digest,
-		TarballPath: tarball, Target: target,
+		TarballPath: tarball, Target: target, VakaVersion: version,
 	})
 	if err != nil {
 		return "", nil, nil, err

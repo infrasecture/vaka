@@ -63,6 +63,29 @@ func TestParseManifestRejects(t *testing.T) {
 	}
 }
 
+func TestManifestCheckMinVakaVersion(t *testing.T) {
+	m := &Manifest{MinVakaVersion: "1.2.0"}
+
+	if err := m.CheckMinVakaVersion("1.2.0"); err != nil {
+		t.Fatalf("equal version rejected: %v", err)
+	}
+	if err := m.CheckMinVakaVersion("2.0.0"); err != nil {
+		t.Fatalf("newer version rejected: %v", err)
+	}
+	if err := m.CheckMinVakaVersion("1.1.9"); err == nil ||
+		!strings.Contains(err.Error(), "requires vaka >= 1.2.0") {
+		t.Fatalf("older version not refused: %v", err)
+	}
+	// Dev/unparseable running version cannot be compared: skip, do not block.
+	if err := m.CheckMinVakaVersion("dev"); err != nil {
+		t.Fatalf("dev build must skip enforcement: %v", err)
+	}
+	// No floor declared: nothing to enforce.
+	if err := (&Manifest{}).CheckMinVakaVersion("0.0.1"); err != nil {
+		t.Fatalf("empty minVakaVersion rejected: %v", err)
+	}
+}
+
 func TestManifestCheckIdentity(t *testing.T) {
 	m := &Manifest{Name: "demo", Version: "1.0.0"}
 

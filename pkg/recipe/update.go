@@ -29,6 +29,7 @@ type UpdateSpec struct {
 	Digest      string
 	TarballPath string
 	Target      string // existing recipe directory containing a lock
+	VakaVersion string // running vaka version, for the manifest minVakaVersion check
 }
 
 // UpdateResult reports what an update did.
@@ -96,7 +97,7 @@ type planRow struct {
 // concurrent updater holding the lock makes this return ErrUpdateInProgress
 // (which the caller surfaces) rather than reporting a snapshot that the other
 // updater is about to invalidate. It never mutates.
-func UpToDate(target, registryName, name, digest string) (bool, error) {
+func UpToDate(target, registryName, name, version, digest string) (bool, error) {
 	root, err := OpenSafeRoot(target)
 	if err != nil {
 		if isNotExist(err) {
@@ -131,7 +132,10 @@ func UpToDate(target, registryName, name, digest string) (bool, error) {
 	if lock.Registry != registryName || lock.Name != name {
 		return false, nil
 	}
-	if lock.Digest != digest || len(lock.Deviations) > 0 {
+	// Version identity too: a new index version reusing a prior digest must not
+	// short-circuit as "current" — it has to route through Update so the lock
+	// records the requested version and staged manifest validation runs.
+	if lock.Version != version || lock.Digest != digest || len(lock.Deviations) > 0 {
 		return false, nil
 	}
 	if _, hasJournal, err := ReadJournal(root); err != nil || hasJournal {
@@ -287,7 +291,7 @@ func Update(spec UpdateSpec) (*UpdateResult, error) {
 	// flock-holding updater. Closing it fully needs descriptor-relative,
 	// no-follow traversal (Phase 3).
 	if err := ValidateStaged(context.Background(), filepath.Join(spec.Target, StagingDirName, "new"),
-		ExpectedIdentity{Name: spec.Name, Version: spec.Version}); err != nil {
+		ExpectedIdentity{Name: spec.Name, Version: spec.Version, VakaVersion: spec.VakaVersion}); err != nil {
 		return nil, err
 	}
 	if err := afterStep("prechecked"); err != nil {
