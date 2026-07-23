@@ -40,8 +40,8 @@ var syncFn = func(f *os.File) error { return f.Sync() }
 //     containment guarantee.
 //
 // Closing both needs descriptor-relative openat2 traversal
-// (RESOLVE_NO_SYMLINKS|RESOLVE_NO_XDEV, Linux-only), a deferred filesystem
-// hardening item (design doc §9 Roadmap, Phase 3).
+// (RESOLVE_NO_SYMLINKS|RESOLVE_NO_XDEV, Linux-only), which is not yet
+// implemented.
 type SafeRoot struct {
 	r *os.Root
 }

@@ -311,8 +311,7 @@ func Update(spec UpdateSpec) (*UpdateResult, error) {
 	// could make validation and apply disagree. The damage is confined to the
 	// recipe directory (os.Root cannot escape) and requires racing the
 	// flock-holding updater. Closing it fully needs descriptor-relative,
-	// no-follow traversal — a deferred hardening item (design doc §9 Roadmap,
-	// Phase 3).
+	// no-follow traversal (openat2), which is not yet implemented.
 	if err := ValidateStaged(context.Background(), filepath.Join(spec.Target, StagingDirName, "new"),
 		ExpectedIdentity{Name: spec.Name, Version: spec.Version, VakaVersion: spec.VakaVersion}); err != nil {
 		return nil, err

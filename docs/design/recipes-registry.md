@@ -678,8 +678,9 @@ existing `gopkg.in/yaml.v3`.
 
 ### Roadmap
 
-The phased delivery plan. Code and docs refer to these as "Phase 1/2/3"; this
-list (design doc §9 Roadmap) is their canonical definition.
+The internal delivery plan for building this feature — not project-wide
+milestones. Source files should describe deferred work directly rather than
+cite a "phase" number.
 
 1. **Phase 1 — read-only consumption**: registries config + `official`
    default, index fetch/cache, `vaka search`, `vaka recipes list|info`,
