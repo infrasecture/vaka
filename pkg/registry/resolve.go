@@ -15,8 +15,9 @@ type Ref struct {
 	Version  string // empty: highest published version
 }
 
-// ParseRef parses `[registry/]name[@version]`. Phase 1 accepts exact
-// versions only; constraint expressions are rejected explicitly.
+// ParseRef parses `[registry/]name[@version]`. It accepts exact versions
+// only; constraint expressions (e.g. `^1.2`, `>=0.2`) are rejected explicitly
+// (a deliberately deferred feature).
 func ParseRef(s string) (Ref, error) {
 	var ref Ref
 	rest := s

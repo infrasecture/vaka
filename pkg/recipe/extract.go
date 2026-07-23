@@ -11,7 +11,8 @@ import (
 )
 
 // Extraction limits (decompression-bomb defense). Vars so tests can lower
-// them; production values come from the Phase 1 plan.
+// them; production values come from the implementation plan in
+// docs/design/recipes-registry-phase1-plan.md.
 var (
 	maxUnpackedBytes int64 = 50 << 20
 	maxEntries             = 2000

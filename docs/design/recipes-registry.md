@@ -676,7 +676,10 @@ constraint evaluation stays unused until `requires:` lands). Vaka does not
 hand-roll SemVer handling. No git binary, no go-git, no YAML lib beyond the
 existing `gopkg.in/yaml.v3`.
 
-### Phasing
+### Roadmap
+
+The phased delivery plan. Code and docs refer to these as "Phase 1/2/3"; this
+list (design doc §9 Roadmap) is their canonical definition.
 
 1. **Phase 1 — read-only consumption**: registries config + `official`
    default, index fetch/cache, `vaka search`, `vaka recipes list|info`,
