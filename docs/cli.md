@@ -175,7 +175,10 @@ model). The official registry is
 ### `vaka get`
 
 ```bash
-vaka get <[registry/]name>[@version] [dir]
+vaka get <[registry/]name>[@version] [dir]   # install/update ./<name> (or dir)
+vaka get                                      # update the recipe in the current dir
+vaka get @<version>                           # update the current dir to a version
+vaka get @<version> <dir>                     # update <dir> to a version
 ```
 
 Fetches a recipe into `dir` (default `./<name>`), verified against the
@@ -183,7 +186,35 @@ registry index's sha256 digest, and prints the locally computed egress
 policy summary, risk flags, and any required-but-unset environment
 variables. Versions are exact SemVer; omitted means newest.
 
-Running `vaka get` again on the same directory **updates** it:
+`vaka get` is the single install-and-update verb (like `docker pull`). It
+decides which by the target directory: an existing directory that carries a
+`.vaka-recipe.lock` is **updated in place**; otherwise a new one is installed.
+
+**Common scenarios**
+
+```bash
+# Install a recipe (into ./codex):
+vaka get codex
+vaka get codex@0.3.1            # a specific version
+vaka get codex myproj/codex     # into a chosen directory
+
+# Update a recipe you already have:
+cd codex && vaka get            # update this recipe to the newest version
+cd codex && vaka get @0.3.1     # update this recipe to an exact version
+vaka get @0.3.1 codex           # same, without cd (update ./codex)
+```
+
+The bare `vaka get` and `vaka get @<version>` forms carry no name: they read
+the recipe's name and registry from the directory's `.vaka-recipe.lock` and
+resolve against that same registry, so you never repeat the name and the
+result is never ambiguous. If the directory is not a vaka recipe, `vaka get`
+says so and does nothing.
+
+`vaka get` only changes recipe files, never docker images or containers — run
+`vaka up` afterward to apply an updated recipe (Compose pulls a newly-pinned
+image and recreates affected services).
+
+Update safety:
 
 - Updates only ever replace pristine files. A locally modified tracked file
   that the new version still ships rejects the whole update — vaka does not

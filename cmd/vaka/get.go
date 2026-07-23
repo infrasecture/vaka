@@ -17,16 +17,27 @@ import (
 
 func newGetCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "get <[registry/]name>[@version] [dir]",
+		Use:   "get [<[registry/]name>[@version]] [dir]",
 		Short: "Fetch or update a recipe from a registry",
 		Long: `Fetch a recipe into a new directory, or update a previously fetched one.
 
+Forms:
+  vaka get <[registry/]name>[@version] [dir]   install/update ./<name> (or dir)
+  vaka get                                     update the recipe in the current
+                                               directory to the newest version
+  vaka get @<version>                          update the recipe in the current
+                                               directory to an exact version
+  vaka get @<version> <dir>                    same, for the recipe in <dir>
+
 The reference is [registry/]name[@version]; the version must be exact
 (constraints are not supported) and defaults to the newest published one.
-The target directory defaults to ./<name>. vaka get never runs the recipe
-and never adopts an existing non-recipe directory; updates never touch
-files you created or modified.`,
-		Args:              cobra.RangeArgs(1, 2),
+The target directory defaults to ./<name>. The bare and @<version> forms take
+the recipe's name and registry from its .vaka-recipe.lock, so you can update in
+place without repeating them (or changing directory).
+
+vaka get never runs the recipe and never adopts an existing non-recipe
+directory; updates never touch files you created or modified.`,
+		Args:              cobra.RangeArgs(0, 2),
 		ValidArgsFunction: firstArgComplete(completeRecipeRefs),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runGet(cmd, args)
@@ -38,7 +49,7 @@ files you created or modified.`,
 func runGet(cmd *cobra.Command, args []string) error {
 	out, errOut := cmd.OutOrStdout(), cmd.ErrOrStderr()
 
-	ref, err := registry.ParseRef(args[0])
+	ref, target, err := resolveGetArgs(args)
 	if err != nil {
 		return err
 	}
@@ -59,11 +70,6 @@ func runGet(cmd *cobra.Command, args []string) error {
 	// recipe that needs a newer vaka must not be installed by this one.
 	if err := checkMinVakaVersion(res.Entry.MinVakaVersion, version, errOut); err != nil {
 		return err
-	}
-
-	target := "./" + res.Name
-	if len(args) == 2 {
-		target = args[1]
 	}
 
 	var (
@@ -120,6 +126,79 @@ func runGet(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Fprintf(out, "Next: cd %s && vaka up\n", target)
 	return nil
+}
+
+// resolveGetArgs turns the CLI arguments into a recipe reference and a target
+// directory. It supports the update-in-place forms in addition to the explicit
+// install form:
+//
+//	vaka get <[registry/]name>[@version] [dir]   install/update ./name (or dir)
+//	vaka get                                      update the recipe in the cwd
+//	vaka get @<version>                           update the cwd to an exact version
+//	vaka get @<version> <dir>                     update <dir> to an exact version
+//
+// The bare and @<version> forms carry no name, so the target directory must be
+// an installed recipe: its registry and name come from the .vaka-recipe.lock,
+// and only the version (newest, or the given one) is applied. This resolves
+// against the recipe's own registry, so it is never ambiguous.
+func resolveGetArgs(args []string) (registry.Ref, string, error) {
+	// Separate the reference token from an optional directory. A name never
+	// starts with '@', so an '@'-prefixed first token is a bare version and any
+	// second token is the directory.
+	var refTok, dir string
+	switch len(args) {
+	case 1:
+		if strings.HasPrefix(args[0], "@") {
+			refTok, dir = args[0], "."
+		} else {
+			refTok = args[0]
+		}
+	case 2:
+		refTok, dir = args[0], args[1]
+	}
+
+	// Named form: parse the reference and default the directory to ./<name>.
+	if refTok != "" && !strings.HasPrefix(refTok, "@") {
+		ref, err := registry.ParseRef(refTok)
+		if err != nil {
+			return registry.Ref{}, "", err
+		}
+		if dir == "" {
+			dir = "./" + ref.Name
+		}
+		return ref, dir, nil
+	}
+
+	// Nameless form (bare or @version): take identity from the target's lock.
+	if dir == "" {
+		dir = "."
+	}
+	lock, ok, err := recipe.LockForDir(dir)
+	if err != nil {
+		return registry.Ref{}, "", err
+	}
+	if !ok {
+		return registry.Ref{}, "", fmt.Errorf(
+			"no vaka recipe in %s (no %s) to update; run `vaka get <name>` to install one, or name the recipe",
+			dirLabel(dir), recipe.LockFileName)
+	}
+	ref := registry.Ref{Registry: lock.Registry, Name: lock.Name}
+	if refTok != "" { // "@version"
+		v := strings.TrimPrefix(refTok, "@")
+		if _, err := semver.StrictNewVersion(v); err != nil {
+			return registry.Ref{}, "", fmt.Errorf("invalid version %q: must be exact SemVer (X.Y.Z)", v)
+		}
+		ref.Version = v
+	}
+	return ref, dir, nil
+}
+
+// dirLabel renders a directory for user-facing messages.
+func dirLabel(dir string) string {
+	if dir == "." || dir == "" {
+		return "the current directory"
+	}
+	return dir
 }
 
 // checkMinVakaVersion enforces a recipe's minVakaVersion against the running

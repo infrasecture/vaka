@@ -174,7 +174,9 @@ All new names are safe under the compose-namespace restructure (`get`,
 `search`, `recipes`, `registry` are not docker compose verbs).
 
 ```
-vaka get <[registry/]name>[@version] [dir]    # fetch or update a recipe
+vaka get <[registry/]name>[@version] [dir]    # install or update ./name (or dir)
+vaka get                                      # update the recipe in the cwd
+vaka get @<version> [dir]                     # update the cwd (or dir) to a version
 vaka search [term]                            # search all registry catalogs
 vaka recipes list                             # catalog listing (all registries)
 vaka recipes info <[registry/]name>[@version] # metadata, env, policy, versions
@@ -183,6 +185,12 @@ vaka registry add <name> <index-url>
 vaka registry remove <name>
 vaka registry refresh [name]                  # re-fetch index(es)
 ```
+
+The nameless forms (`vaka get`, `vaka get @<version>`) carry no recipe name:
+they take the name and registry from the target directory's
+`.vaka-recipe.lock` and resolve against that same registry, so an in-place
+update needs no `cd` and is never ambiguous. `vaka get` changes only recipe
+files — `vaka up` afterward is what pulls a newly-pinned image.
 
 `vaka get` semantics (the app-store verb, deliberately idempotent like
 `docker pull`):
