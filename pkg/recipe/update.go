@@ -202,19 +202,29 @@ func Update(spec UpdateSpec) (*UpdateResult, error) {
 
 	// Step 2 — recover any interrupted prior update, then clear staging.
 	//
-	// A surviving journal is always treated as pending: its accepted-state
-	// chain is inherited by the pre-check below, and this transaction
-	// re-commits and clears it. A journal from a commit that crashed before
-	// cleanup is safe to re-run because the re-commit is idempotent, so we
-	// never need to distinguish "committed but uncleaned" from "still
-	// pending" — a distinction that is not reliable anyway (for a
-	// same-version repair the two differ only by the lock's Fetched
-	// timestamp). Because the journal is always kept here, even an otherwise
-	// no-op run must execute the transaction to commit and clear it, rather
-	// than short-circuit to NoChange and leave it dangling forever.
+	// A surviving journal is treated as pending — its accepted-state chain is
+	// inherited by the pre-check below and this transaction re-commits and
+	// clears it — UNLESS its finalLock already matches the committed lock. That
+	// case is a prior update that committed but crashed before cleanup: it is
+	// done, not pending. Inheriting its now-stale accepted chain would let a
+	// user edit made after the commit be silently overwritten (the file's
+	// pre-commit state is still "accepted"), contradicting the documented reset
+	// of the accepted chain at the first successful commit (design §6). So we
+	// clear such a journal and proceed as if none survived. Because the journal
+	// is otherwise always kept here, even a no-op run must execute the
+	// transaction to commit and clear it rather than leave it dangling.
 	journal, _, err := ReadJournal(root)
 	if err != nil {
 		return nil, err
+	}
+	if journal != nil && lock.sameInstall(journal.FinalLock) {
+		if err := root.Remove(JournalFileName); err != nil {
+			return nil, err
+		}
+		if err := root.SyncDir("."); err != nil {
+			return nil, err
+		}
+		journal = nil
 	}
 	pendingJournal := journal != nil
 	if err := root.RemoveAll(StagingDirName); err != nil {

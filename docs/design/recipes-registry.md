@@ -356,10 +356,18 @@ not create them.
       rename changes a file's name, not its contents.)
    4. **Cleanup**: unlink `.vaka-recipe.lock.new`, remove `.vaka-staging/`,
       `fsync` the directory. A crash between commit and cleanup leaves a
-      stale journal and/or staging remnants: any journal whose target version
-      and digest equal the committed lock's is recognized as completed and
-      removed silently on the next run, and staging is always removed
-      whenever no apply is in progress.
+      stale journal and/or staging remnants. On the next run, a surviving
+      journal is recognized as *completed* — and removed without inheriting
+      its accepted-state chain — when its embedded `finalLock` **semantically
+      equals** the committed lock: same identity, digest, tracked-file states,
+      and deviations (the `fetched` timestamp is ignored). Version and digest
+      alone are insufficient: for a same-version repair they can match while
+      the file set differs, and, more importantly, inheriting a completed
+      journal's now-stale accepted states would let a user edit made *after*
+      the commit be classified as vaka-owned and silently overwritten. This is
+      the concrete meaning of "the accepted chain resets at the first
+      successful commit." Staging is always removed whenever no apply is in
+      progress.
 5. Untracked files are never written and never deleted; the collision row
    above is this rule applied to installation. The one exception to "never
    read" is that an untracked file at a path the incoming version also ships
@@ -467,14 +475,23 @@ supply chain and must be treated like one:
 - Reject path traversal (`..`, absolute paths) — zip-slip.
 - Symlinks: allow only relative links resolving inside the recipe dir (the
   codex recipe legitimately ships `docker-compose.yaml → compose.yaml`);
-  reject absolute or escaping targets.
+  reject absolute targets and any target containing a `..` segment. The `..`
+  ban is not merely lexical zip-slip defense: lexical cleaning is *unsound*
+  when an intermediate component is itself a symlink (an archive shipping
+  `x → .` and `link → x/../outside` cleans to an in-tree path but the kernel
+  resolves `x` to the root, then `..` to its parent — escaping). Legitimate
+  recipe links never need `..`, so refusing all of them closes the class.
 - Reject hardlinks and device/special files; preserve the exec bit (launcher
   scripts like `myCodex`) but nothing else.
 - Enforce limits: max unpacked size, max file count, max single-file size
   (decompression-bomb defense).
 - Reject entries under the reserved `.vaka-*` namespace (lock, journal,
   update lock, staging): a recipe that ships vaka's own state files could
-  forge provenance or corrupt update state on install.
+  forge provenance or corrupt update state on install. The match is
+  case-insensitive, and the lock/journal path-key validator applies the same
+  rule — on a case-insensitive filesystem (default macOS) `.VAKA-*` aliases
+  `.vaka-*`, so a case-sensitive check would let an archive or a corrupt
+  journal reach reserved state (e.g. unlink the held update lock).
 - Extract to temp dir + atomic rename; no partially-installed recipes.
 - Extraction and the §6 updater share one safe recipe-dir I/O primitive
   (Go's `os.Root`, beneath-root: no escape via `..` or symlinks) — the

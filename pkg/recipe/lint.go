@@ -304,6 +304,17 @@ func checkComposeReferences(dir string, files []string) error {
 		if scanned > maxComposeScanUnits {
 			return fmt.Errorf("recipe compose include/extends graph is too large to validate (> %d files); refusing", maxComposeScanUnits)
 		}
+		// Real-path-check the compose file itself before reading it: a compose
+		// file that is (or is reached through) a symlink escaping the recipe
+		// must not be read, even though recipeComposeFiles selected it via a
+		// symlink-following os.Stat. os.ReadFile below would otherwise follow
+		// the link out of the tree.
+		if real, err := filepath.EvalSymlinks(u.file); err == nil {
+			if real != realRoot && !strings.HasPrefix(real, realRoot+string(filepath.Separator)) {
+				bad = append(bad, fmt.Sprintf("%s (compose file resolves outside the recipe directory)", displayPath(root, u.file)))
+				continue
+			}
+		}
 		data, err := os.ReadFile(u.file)
 		if err != nil {
 			// A missing recursively-referenced file surfaces as a compose-go

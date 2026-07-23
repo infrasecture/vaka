@@ -165,7 +165,25 @@ func TestExtractRecipeAdversarialArchives(t *testing.T) {
 		{
 			name:    "escaping symlink",
 			entries: []tarEntry{{name: "demo/link", typeflag: tar.TypeSymlink, linkname: "../../outside"}},
-			want:    "escapes the recipe directory",
+			want:    `contains a ".." segment`,
+		},
+		{
+			// #1: lexical resolution is unsound when an intermediate component
+			// is a symlink. `x -> .` plus `link -> x/../outside` cleans in-tree
+			// but the kernel escapes; the ".." rejection closes it.
+			name: "symlink chain via .. escapes",
+			entries: []tarEntry{
+				{name: "demo/x", typeflag: tar.TypeSymlink, linkname: "."},
+				{name: "demo/link", typeflag: tar.TypeSymlink, linkname: "x/../outside"},
+			},
+			want: `contains a ".." segment`,
+		},
+		{
+			// #2: reserved namespace is matched case-insensitively (aliases on
+			// case-insensitive filesystems).
+			name:    "reserved namespace uppercase alias",
+			entries: []tarEntry{{name: "demo/.VAKA-recipe.lock", typeflag: tar.TypeReg, content: "forged"}},
+			want:    "reserved",
 		},
 		{
 			name:    "absolute symlink",

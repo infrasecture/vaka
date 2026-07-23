@@ -662,6 +662,25 @@ func TestCheckComposeReferencesAllowsInTreeFiles(t *testing.T) {
 	}
 }
 
+// A compose file that is itself an escaping symlink must not be read — the
+// selector follows symlinks (os.Stat), so confinement must real-path-check the
+// file before os.ReadFile follows it out of the tree.
+func TestCheckComposeReferencesRejectsEscapingComposeFile(t *testing.T) {
+	dir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside-compose.yaml")
+	if err := os.WriteFile(outside, []byte("services:\n  leaked: {image: x}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// compose.yaml is an in-tree name but a symlink pointing outside the recipe.
+	if err := os.Symlink(outside, filepath.Join(dir, "compose.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkComposeReferences(dir, []string{filepath.Join(dir, "compose.yaml")}); err == nil ||
+		!strings.Contains(err.Error(), "outside the recipe directory") {
+		t.Fatalf("err = %v, want escaping compose-file refusal", err)
+	}
+}
+
 // #3: a lexically in-tree reference whose real target is an escaping symlink is
 // refused — compose-go follows the link, so a purely lexical check would not.
 func TestCheckComposeReferencesRejectsEscapingSymlink(t *testing.T) {

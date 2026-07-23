@@ -833,23 +833,68 @@ func TestUpdateInterruptedSameVersionRepairConverges(t *testing.T) {
 		t.Fatal("setup: expected a dangling journal after the interrupted repair")
 	}
 
-	// Re-run the same version. Even though the tree is now content-complete
-	// (a would-be no-op), the pending journal must be committed and cleared,
-	// not left dangling by a NoChange short-circuit.
+	// Re-run the same version. The interrupted repair restored the tree before
+	// crashing, so its journal's finalLock already matches the committed lock:
+	// the journal is done, not pending, and recovery must CLEAR it (not inherit
+	// its stale accepted chain) — never leave it dangling.
 	res, err := updateTo(target, "1.0.0", digestV1, tarballV1(t))
 	if err != nil {
 		t.Fatalf("recovery: %v", err)
 	}
-	if res.NoChange {
-		t.Fatal("recovery returned NoChange, leaving the journal dangling")
-	}
 	if hasResidue(t, target, JournalFileName) || hasResidue(t, target, StagingDirName) {
 		t.Fatal("pending journal/staging not cleared after recovery")
 	}
-	// A second run is now a genuine no-op.
+	// A second run is a genuine no-op with nothing left behind.
 	res, err = updateTo(target, "1.0.0", digestV1, tarballV1(t))
 	if err != nil || !res.NoChange {
 		t.Fatalf("second run: res=%+v err=%v (want NoChange)", res, err)
+	}
+	if hasResidue(t, target, JournalFileName) {
+		t.Fatal("second run left a journal behind")
+	}
+}
+
+// TestUpdateCommittedJournalDoesNotOverwriteLaterEdit covers the case where an
+// update commits but crashes before clearing its journal, and the user then
+// edits a tracked file back to its pre-update content. The stale journal's
+// accepted-state chain must NOT be inherited (it would classify the user's edit
+// as vaka-owned and silently replace it); the update must block instead.
+func TestUpdateCommittedJournalDoesNotOverwriteLaterEdit(t *testing.T) {
+	target := installedV1(t) // compose.yaml at v1
+
+	// Update v1 -> v2, crashing AFTER commit (lock is v2) but BEFORE the
+	// journal is cleared. The journal's Plan[compose.yaml].accepted includes
+	// the v1 state.
+	abortAt(t, "committed")
+	if _, err := updateTo(target, "2.0.0", digestV2, tarballV2(t)); !errors.Is(err, errAbort) {
+		t.Fatalf("err = %v, want simulated crash after commit", err)
+	}
+	afterStep = func(string) error { return nil }
+	if !hasResidue(t, target, JournalFileName) {
+		t.Fatal("setup: expected a surviving journal after the post-commit crash")
+	}
+	if lockOf(t, target).Version != "2.0.0" {
+		t.Fatal("setup: commit should have installed the v2 lock")
+	}
+
+	// The user edits compose.yaml back to its v1 content — a deliberate local
+	// modification that happens to match the pre-update state.
+	mutate(t, target, "compose.yaml", composeV1)
+
+	// Re-run v2. The surviving journal is done (its finalLock == the committed
+	// lock), so it must be cleared, and the user's edit to a tracked file must
+	// BLOCK rather than be silently overwritten.
+	_, err := updateTo(target, "2.0.0", digestV2, tarballV2(t))
+	var blocked *blockedError
+	if !errors.As(err, &blocked) {
+		t.Fatalf("err = %v, want blockedError (user edit must not be overwritten)", err)
+	}
+	if !strings.Contains(err.Error(), "compose.yaml") {
+		t.Fatalf("block error should name compose.yaml: %v", err)
+	}
+	// The user's content is intact.
+	if got := readFile(t, target, "compose.yaml"); got != composeV1 {
+		t.Fatalf("user edit was overwritten: %q", got)
 	}
 }
 

@@ -22,6 +22,15 @@ var (
 // Archives shipping such paths could forge provenance and are refused.
 const reservedPrefix = ".vaka-"
 
+// isReservedSegment reports whether a path segment names vaka's reserved
+// namespace. The check is case-insensitive: on case-insensitive filesystems
+// (default macOS APFS/HFS+) ".VAKA-recipe.update.lock" aliases the real
+// ".vaka-recipe.update.lock", so a case-sensitive prefix test would let an
+// archive or journal reach reserved state.
+func isReservedSegment(seg string) bool {
+	return strings.HasPrefix(strings.ToLower(seg), reservedPrefix)
+}
+
 // validRecipePath reports whether p is a legal recipe-relative path key for a
 // lock or journal: a canonical, slash-separated relative path that stays inside
 // the recipe tree and never names vaka's reserved .vaka-* state. Enforcing this
@@ -42,7 +51,7 @@ func validRecipePath(p string) error {
 		return fmt.Errorf("path %q escapes the recipe directory", p)
 	}
 	for _, seg := range strings.Split(p, "/") {
-		if strings.HasPrefix(seg, reservedPrefix) {
+		if isReservedSegment(seg) {
 			return fmt.Errorf("path %q is inside the reserved %s* namespace", p, reservedPrefix)
 		}
 	}
@@ -99,7 +108,7 @@ func ExtractRecipe(tarball io.Reader, recipeName string, root *SafeRoot) error {
 			continue // the top-level directory itself
 		}
 		for _, seg := range strings.Split(rel, "/") {
-			if strings.HasPrefix(seg, reservedPrefix) {
+			if isReservedSegment(seg) {
 				return fmt.Errorf("recipe archive: entry %q is inside the reserved %s* namespace", hdr.Name, reservedPrefix)
 			}
 		}
@@ -203,6 +212,17 @@ func validateLinkTarget(rel, target string) error {
 	}
 	if strings.Contains(target, `\`) {
 		return fmt.Errorf("recipe archive: %s: unsafe symlink target %q", rel, target)
+	}
+	// Reject any ".." segment. Lexical cleaning (path.Join below) is UNSOUND
+	// when intermediate components are themselves symlinks: an archive shipping
+	// `x -> .` and `y -> x/../outside` cleans to the in-tree "outside" but the
+	// kernel resolves x to the recipe root, then ".." to its parent — escaping.
+	// Any upward traversal needs a "..", and legitimate recipe links never do,
+	// so refusing all of them closes the class soundly.
+	for _, seg := range strings.Split(target, "/") {
+		if seg == ".." {
+			return fmt.Errorf("recipe archive: %s: symlink target %q contains a %q segment (may escape via an intermediate symlink)", rel, target, "..")
+		}
 	}
 	resolved := path.Join(path.Dir(rel), target)
 	if resolved == ".." || strings.HasPrefix(resolved, "../") {

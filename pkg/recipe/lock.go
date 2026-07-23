@@ -3,6 +3,7 @@ package recipe
 import (
 	"bytes"
 	"fmt"
+	"reflect"
 	"regexp"
 	"time"
 
@@ -56,6 +57,24 @@ type Lock struct {
 	Fetched    string            `yaml:"fetched"`
 	Files      map[string]string `yaml:"files"`
 	Deviations []Deviation       `yaml:"deviations,omitempty"`
+}
+
+// sameInstall reports whether two locks describe the same installed state:
+// equal identity, digest, tracked files, and deviations. The Fetched timestamp
+// is ignored, since it differs between the lock written at commit and any
+// re-derived lock for the same content. It is used to detect a journal whose
+// finalLock has already been committed (so the accepted-state chain must reset
+// rather than be inherited).
+func (l *Lock) sameInstall(other *Lock) bool {
+	if l == nil || other == nil {
+		return false
+	}
+	return l.Registry == other.Registry &&
+		l.Name == other.Name &&
+		l.Version == other.Version &&
+		l.Digest == other.Digest &&
+		reflect.DeepEqual(l.Files, other.Files) &&
+		reflect.DeepEqual(l.Deviations, other.Deviations)
 }
 
 // NewLock returns a lock skeleton with identity fields set and the fetch
