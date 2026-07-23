@@ -803,7 +803,8 @@ func TestUpdateRejectsForeignJournal(t *testing.T) {
 
 	// A well-formed journal from another install: neither its baseGeneration nor
 	// its finalLock generation matches this installation's lock. Its plan even
-	// "accepts" the user's current edit — which the old code would honor.
+	// "accepts" the user's current edit, so a recovery that did not bind the
+	// journal to a generation would treat the edit as vaka-owned.
 	foreignFinal := NewLock("official", "demo", "2.0.0", digestV2)
 	j := &Journal{
 		APIVersion:     APIVersion,

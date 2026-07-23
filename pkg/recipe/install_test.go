@@ -233,7 +233,7 @@ deviations:
 		{"bad digest", strings.Replace(valid, testDigest, "sha256:zz", 1), "sha256:<64 hex>"},
 		{"bad state", strings.Replace(valid, "link:compose.yaml", "md5:nope", 1), "malformed state"},
 		{"bad deviation kind", strings.Replace(valid, "skipped-collision", "merged", 1), "unknown kind"},
-		// #7: path keys must be canonical relative paths outside .vaka-*.
+		// File/deviation path keys must be canonical relative paths outside .vaka-*.
 		{"reserved file key", strings.Replace(valid, "compose.yaml:", ".vaka-recipe.update.lock:", 1), "reserved"},
 		{"absolute file key", strings.Replace(valid, "compose.yaml:", "/etc/passwd:", 1), "must be relative"},
 		{"escaping file key", strings.Replace(valid, "compose.yaml:", "../../etc/x:", 1), "escapes"},
@@ -309,9 +309,9 @@ files:
 	}
 }
 
-// #7: a journal whose Plan names vaka's own reserved state (e.g. the held
-// update lock) must be refused — otherwise a corrupt-but-valid-looking journal
-// could classify the lock as deletable and unlink it mid-update.
+// A journal whose Plan names vaka's own reserved state (e.g. the held update
+// lock) must be refused — otherwise a corrupt-but-valid-looking journal could
+// classify the lock as deletable and unlink it mid-update.
 func TestJournalRejectsReservedPlanPath(t *testing.T) {
 	final, err := ParseLock([]byte(`apiVersion: recipes.vaka/v1alpha1
 kind: RecipeLock

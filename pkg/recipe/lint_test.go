@@ -117,9 +117,10 @@ func TestRecipeComposeFilesMatchesComposeGo(t *testing.T) {
 		{"compose beats docker-compose", []string{"compose.yml", "docker-compose.yml"}, []string{"compose.yml"}},
 		{"base + its override", []string{"compose.yaml", "compose.override.yaml"}, []string{"compose.yaml", "compose.override.yaml"}},
 		{"override yml beats yaml", []string{"compose.yaml", "compose.override.yml", "compose.override.yaml"}, []string{"compose.yaml", "compose.override.yml"}},
-		// Override is family-INDEPENDENT: a compose.yaml base picks up a
-		// docker-compose.override.yml when no compose.override.* exists — the
-		// case the old family-matched logic silently ignored.
+		// Override selection is family-INDEPENDENT: a compose.yaml base picks up
+		// a docker-compose.override.yml when no compose.override.* exists — a
+		// naive rule that matched the override family to the base family would
+		// wrongly ignore it.
 		{"cross-family override", []string{"compose.yaml", "docker-compose.override.yml"}, []string{"compose.yaml", "docker-compose.override.yml"}},
 	}
 	for _, tc := range tests {
@@ -681,7 +682,7 @@ func TestCheckComposeReferencesRejectsEscapingComposeFile(t *testing.T) {
 	}
 }
 
-// #3: a lexically in-tree reference whose real target is an escaping symlink is
+// A lexically in-tree reference whose real target is an escaping symlink is
 // refused — compose-go follows the link, so a purely lexical check would not.
 func TestCheckComposeReferencesRejectsEscapingSymlink(t *testing.T) {
 	dir := t.TempDir()

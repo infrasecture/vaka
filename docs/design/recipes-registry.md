@@ -692,11 +692,12 @@ existing `gopkg.in/yaml.v3`.
    surfaces where the tarball digest's promise ("this is the code you'll run")
    stops short of the image, but the flag is **advisory** — it warns and does
    not fail CI, since mutable tags are the norm upstream and pinning is the
-   publisher's call (review finding #9).
+   publisher's call. (See "Deferred hardening" below for pinning the official
+   recipe's own images.)
 3. **Phase 3 — provenance hardening**: signed indexes (key pinned at
    `registry add`), `vaka get name@sha256:...` digest pinning, `vaka recipes
    verify` (re-check a dir against its lock). **Registry publish-CI
-   hardening** (review finding #8): pin GitHub Actions to commit SHAs and
+   hardening**: pin GitHub Actions to commit SHAs and
    Python deps to versions, pin the `infrasecture/vaka` ref the publish job
    builds vaka from, run the gitleaks secret scan in `publish` (a tag can
    point at a commit that skipped PR validation), and make publishing
@@ -717,7 +718,7 @@ existing `gopkg.in/yaml.v3`.
    just the registry name — so an index can never be reused across a change of
    signing key, closing the identity dimension the URL binding does not cover.
 
-### Cross-cutting: one recipe-validation entry point (review finding)
+### Cross-cutting: one recipe-validation entry point
 
 Recipe validation is currently implemented twice — vaka's Go
 `recipe.ValidateStaged` / `checkComposeReferences` (run before local
@@ -735,11 +736,11 @@ CI invoke *that* instead of a parallel reimplementation — one rule, applied
 identically before publication and before install. Sequence alongside the
 Phase 3 publish-CI hardening.
 
-### Deferred review findings (registry repo / recipe content)
+### Deferred hardening (registry repo / recipe content)
 
-- **#8 — publish workflow trust boundary** (`vaka-registry/.github/workflows/publish.yml`):
+- **Publish workflow trust boundary** (`vaka-registry/.github/workflows/publish.yml`):
   scheduled into Phase 3 above.
-- **#9 — official recipe pins no runtime images**
+- **Official recipe pins no runtime images**
   (`vaka-registry/codex/compose.yaml`): the codex recipe should pin both
   images by `@sha256:` as a near-term registry-repo change; the general
   guard is the Phase 2 `unpinned-image` lint above.

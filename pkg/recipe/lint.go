@@ -240,9 +240,10 @@ type scanUnit struct {
 }
 
 // maxComposeScanUnits bounds the include/extends graph traversal. The visited
-// set already dedups scan units over a finite extracted tree; this cap fails
-// CLOSED on a pathological graph rather than ever exiting with files left
-// unscanned (an earlier depth cap could exit while work remained).
+// set already dedups scan units over a finite extracted tree; this cap is a
+// backstop that fails CLOSED (returns an error) on a pathological graph, rather
+// than a depth limit that could stop early and leave referenced files
+// unscanned.
 const maxComposeScanUnits = 1024
 
 // checkComposeReferences rejects compose files that reference host files
