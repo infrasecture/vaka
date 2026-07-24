@@ -68,6 +68,50 @@ Hostnames in policy are resolved inside the container when it starts. This is in
 
 If an endpoint changes, restart the service so `vaka-init` resolves it again.
 
+## External DNS Fails On User-Defined Networks (Docker Engine < 28)
+
+**Symptom.** A service can resolve sibling service names but not external
+hostnames. External lookups fail with `SERVFAIL` or *"Temporary failure in name
+resolution"* even though the policy allows DNS with `dns: {}`. A gateway that
+must reach the internet (for example a LiteLLM sidecar resolving a model
+provider) fails, while `curl http://other-service` still works.
+
+**Cause.** On a user-defined network — the default for Compose — the container's
+only resolver is Docker's embedded stub, `nameserver 127.0.0.11`. The stub
+answers internal names locally, but for external names it forwards to the host's
+upstream resolver. On **Docker Engine older than 28.0.0**, when that upstream is
+a **non-loopback** address (a LAN/router DNS such as one handed out by DHCP),
+Docker makes the forwarding query **from inside the container's network
+namespace**. vaka's egress policy allows only `127.0.0.11:53`, not that upstream,
+so the forwarded query is dropped. `dns: {}` expands to the nameservers listed in
+`/etc/resolv.conf`, which on this topology is just the `127.0.0.11` stub — never
+the hidden forward target.
+
+This is environment-dependent: hosts whose resolver is a **loopback** address
+(for example systemd-resolved at `127.0.0.53`) forward host-side even on older
+Docker, so they are unaffected. That is why the same recipe can work on one
+machine and fail on another.
+
+**Fix — upgrade Docker Engine to 28.0.0 or newer.** From 28.0.0, Docker makes the
+forwarding query for all host-configured upstreams from the **host** network
+namespace, so it never traverses the container's netns and vaka does not
+interfere. No policy or recipe change is needed. Egress enforcement is
+unaffected: the container still cannot reach the resolver (or anything else)
+directly — only Docker's own host-side forwarding is used.
+
+```bash
+docker version --format '{{.Server.Version}}'   # must be >= 28.0.0
+```
+
+Do **not** work around this by pinning a public resolver (`dns: [1.1.1.1]`): it
+hardcodes a resolver that breaks when the host's DNS changes and, on a
+user-defined network, it disables service-name resolution for that container.
+Upgrade the Engine instead. The Engine behavior change is
+[moby/moby#48290](https://github.com/moby/moby/pull/48290) — *"DNS nameservers read
+from the host's `/etc/resolv.conf` are now always accessed from the host's network
+namespace"* — first released in 28.0.0. See also
+[issue #81](https://github.com/infrasecture/vaka/issues/81).
+
 ## Docker Context Or Remote Daemon
 
 vaka follows the Docker CLI environment and active Docker context. Docker top-level flags such as `--context` and `--host` are not accepted as vaka arguments.

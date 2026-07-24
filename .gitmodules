@@ -1,3 +1,6 @@
 [submodule "homebrew-tap"]
 	path = homebrew-tap
 	url = https://github.com/infrasecture/homebrew-tap.git
+[submodule "vaka-registry"]
+	path = vaka-registry
+	url = https://github.com/infrasecture/vaka-registry.git

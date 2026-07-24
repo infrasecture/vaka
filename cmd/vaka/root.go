@@ -11,6 +11,7 @@ import (
 const (
 	groupVaka    = "vaka"
 	groupCompose = "compose"
+	groupRecipe  = "recipe"
 )
 
 // composeShorthands is the permanent set of top-level commands that delegate
@@ -72,6 +73,7 @@ Vaka flags precede the command and value-taking ones require '=' form:
 
 	cmd.AddGroup(
 		&cobra.Group{ID: groupVaka, Title: "Vaka Commands:"},
+		&cobra.Group{ID: groupRecipe, Title: "Recipe Commands:"},
 		&cobra.Group{ID: groupCompose, Title: "Compose Commands:"},
 	)
 
@@ -93,6 +95,16 @@ Vaka flags precede the command and value-taking ones require '=' form:
 		version,
 	} {
 		c.GroupID = groupVaka
+		cmd.AddCommand(c)
+	}
+
+	for _, c := range []*cobra.Command{
+		newGetCmd(),
+		newSearchCmd(),
+		newRecipesCmd(),
+		newRegistryCmd(),
+	} {
+		c.GroupID = groupRecipe
 		cmd.AddCommand(c)
 	}
 

@@ -3,6 +3,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 )
@@ -57,6 +58,10 @@ func runComposeCLI(root *RootInvocation, argv []string) error {
 
 	switch classifyComposeVerb(inv.Subcommand) {
 	case verbRender:
+		// One-line notice while an instantiated recipe deviates from its
+		// published version (design §6): the render verbs are the moment
+		// trust is exercised.
+		printDeviationNotice(os.Stderr, inv.ProjectDirectory)
 		return runFull(root.VakaFile, inv, root.VakaInitPresent)
 	default:
 		return runReference(inv, root.VakaInitPresent)

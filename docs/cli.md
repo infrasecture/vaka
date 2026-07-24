@@ -13,6 +13,7 @@ vaka [--vaka-file=<path>] [--vaka-init-present] compose [compose-global-flags...
 | Path | Commands | Behavior |
 |------|----------|----------|
 | Native | `validate`, `show-nft`, `doctor`, `show-compose`, `version`, `help`, `completion` | Handled by vaka itself. |
+| Recipes | `get`, `search`, `recipes`, `registry` | Registry consumption: fetch and update recipes, browse catalogs. Never runs docker. |
 | Compose full render | `vaka compose up`, `vaka compose run`, `vaka compose create` | Validate policy, generate the full Compose override, inject secrets and entrypoint changes, then call Compose. |
 | Compose reference | Other `vaka compose` commands such as `logs`, `exec`, `ps`, `pull`, `down`, `stop`, `kill`, `rm` | Call Compose with a minimal `__vaka-init` overlay so helper resources remain visible. |
 | Compose metadata | `vaka compose version`, `vaka compose ls` | Proxied to Compose without any overlay; they work outside project directories. |
@@ -163,6 +164,111 @@ vaka version
 
 Prints the version stamped at build time.
 
+## Recipe Commands
+
+Recipes are ready-to-run, security-hardened compose projects published by
+registries (see the
+[registry design](design/recipes-registry.md) for the format and security
+model). The official registry is
+`https://github.com/infrasecture/vaka-registry`.
+
+### `vaka get`
+
+```bash
+vaka get <[registry/]name>[@version] [dir]   # install/update ./<name> (or dir)
+vaka get                                      # update the recipe in the current dir
+vaka get @<version>                           # update the current dir to a version
+vaka get @<version> <dir>                     # update <dir> to a version
+```
+
+Fetches a recipe into `dir` (default `./<name>`), verified against the
+registry index's sha256 digest, and prints the locally computed egress
+policy summary, risk flags, and any required-but-unset environment
+variables. Versions are exact SemVer; omitted means newest.
+
+`vaka get` is the single install-and-update verb (like `docker pull`). It
+decides which by the target directory: an existing directory that carries a
+`.vaka-recipe.lock` is **updated in place**; otherwise a new one is installed.
+
+**Common scenarios**
+
+```bash
+# Install a recipe (into ./codex):
+vaka get codex
+vaka get codex@0.3.1            # a specific version
+vaka get codex myproj/codex     # into a chosen directory
+
+# Update a recipe you already have:
+cd codex && vaka get            # update this recipe to the newest version
+cd codex && vaka get @0.3.1     # update this recipe to an exact version
+vaka get @0.3.1 codex           # same, without cd (update ./codex)
+```
+
+The bare `vaka get` and `vaka get @<version>` forms carry no name: they read
+the recipe's name and registry from the directory's `.vaka-recipe.lock` and
+resolve against that same registry, so you never repeat the name and the
+result is never ambiguous. If the directory is not a vaka recipe, `vaka get`
+says so and does nothing.
+
+`vaka get` only changes recipe files, never docker images or containers — run
+`vaka up` afterward to apply an updated recipe (Compose pulls a newly-pinned
+image and recreates affected services).
+
+Update safety:
+
+- Updates only ever replace pristine files. A locally modified tracked file
+  that the new version still ships rejects the whole update — vaka does not
+  merge, and there is no override flag. Keep customizations in untracked
+  files: `.env`, `compose.override.yaml`, or files the recipe does not ship.
+- User-created files are never overwritten. A new recipe file colliding with
+  yours is skipped and recorded as a deviation; the render commands print a
+  notice while deviations exist.
+- Interrupted installs leave nothing behind; interrupted updates converge by
+  re-running `vaka get` (journaled two-phase commit).
+- `vaka get` never adopts an existing non-recipe directory and never runs
+  docker.
+
+### `vaka search` / `vaka recipes`
+
+```bash
+vaka search [term]                  # search names, descriptions, tags
+vaka recipes list                   # full catalogs (newest version each)
+vaka recipes info <name>[@version]  # published metadata of one recipe
+```
+
+Catalog commands read the registries' published indexes (cached with ETag
+revalidation; a cache younger than 15 minutes is served without network).
+They never scan the local filesystem. The policy block they display is the
+registry's advisory copy — `vaka get` always recomputes it locally.
+
+### `vaka registry`
+
+```bash
+vaka registry list                     # configured registries + cache age
+vaka registry add <name> <index-url>   # add a registry
+vaka registry remove <name>            # remove one (alias: rm)
+vaka registry refresh [name]           # re-fetch index(es), updating the cache
+```
+
+`add`/`remove` edit `registries.yaml`; `refresh` force-revalidates every
+registry's cached index (or just the named one). Registries are configured
+in `registries.yaml` (path shown by `list`; defaults to the official
+registry when absent):
+
+```yaml
+apiVersion: recipes.vaka/v1alpha1
+kind: RegistriesConfig
+registries:
+  - name: official
+    url: https://infrasecture.github.io/vaka-registry/index.yaml
+```
+
+Registry names match `[a-z0-9-]+` and index URLs must be `https://`
+(`file://` is allowed for local/air-gapped registries). An unqualified
+recipe name resolves only when it is unique across all configured
+registries; otherwise vaka lists the qualified candidates
+(`registry/name`).
+
 ## `vaka completion`
 
 Generate a completion script for Bash, Zsh, Fish, or PowerShell:
@@ -185,10 +291,14 @@ Save the generated script in the shell's completion directory to load it in
 future sessions. Bash scripts embed the path of the `vaka` executable that
 generated them; regenerate a saved script if the executable moves.
 
-Vaka completes its native command tree. Compose-backed commands and
-shorthands intentionally provide no vaka-generated argument candidates and
-disable filename fallback; use Docker Compose documentation for their flags
-and arguments.
+Vaka completes its native command tree. `vaka get` and `vaka recipes info`
+complete recipe names from the cached registry indexes (qualified as
+`registry/name` when more than one registry is configured); `vaka registry
+remove`/`refresh` complete configured registry names. Completion reads only
+the local cache, never the network. Compose-backed commands and shorthands
+intentionally provide no vaka-generated argument candidates and disable
+filename fallback; use Docker Compose documentation for their flags and
+arguments.
 
 ## Vaka Wrapper Flags
 
