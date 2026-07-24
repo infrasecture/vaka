@@ -143,7 +143,6 @@ func TestGetInstallUpdateRejectConvergeCycle(t *testing.T) {
 		digest,
 		"Egress policy: app: reject",
 		"Required env not set: VAKA_TEST_REQUIRED_ENV",
-		"Next: cd " + target + " && vaka up",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("stdout missing %q:\n%s", want, stdout)

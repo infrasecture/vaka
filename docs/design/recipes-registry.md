@@ -216,8 +216,9 @@ files — `vaka up` afterward is what pulls a newly-pinned image.
      A new install never adopts or writes into an existing directory; the
      target must not exist, with no force override for this safety rule.
 4. Never runs docker/compose. Prints: version installed, digest, required env
-   vars not yet set, locally computed policy summary + risk flags, and next
-   steps (`cd codex && vaka up`).
+   vars not yet set, and the locally computed policy summary + risk flags. It
+   does not assert a launch command — how to run a recipe belongs to the
+   recipe's README (some recipes are `vaka up`, others ship a launcher).
 
 **Update semantics.** vaka is not a merge tool: an update only ever replaces
 pristine files, and it never overwrites anything the user created or

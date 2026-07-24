@@ -124,7 +124,6 @@ func runGet(cmd *cobra.Command, args []string) error {
 	if res.Entry.MinVakaVersion != "" {
 		fmt.Fprintf(out, "Requires vaka >= %s\n", res.Entry.MinVakaVersion)
 	}
-	fmt.Fprintf(out, "Next: cd %s && vaka up\n", target)
 	return nil
 }
 
