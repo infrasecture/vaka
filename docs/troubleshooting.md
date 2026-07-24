@@ -106,7 +106,10 @@ docker version --format '{{.Server.Version}}'   # must be >= 28.0.0
 Do **not** work around this by pinning a public resolver (`dns: [1.1.1.1]`): it
 hardcodes a resolver that breaks when the host's DNS changes and, on a
 user-defined network, it disables service-name resolution for that container.
-Upgrade the Engine instead. See
+Upgrade the Engine instead. The Engine behavior change is
+[moby/moby#48290](https://github.com/moby/moby/pull/48290) — *"DNS nameservers read
+from the host's `/etc/resolv.conf` are now always accessed from the host's network
+namespace"* — first released in 28.0.0. See also
 [issue #81](https://github.com/infrasecture/vaka/issues/81).
 
 ## Docker Context Or Remote Daemon
