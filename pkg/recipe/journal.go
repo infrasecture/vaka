@@ -43,14 +43,16 @@ type Journal struct {
 	FinalLock      *Lock                `yaml:"finalLock"`
 }
 
-// ParseJournal strictly decodes and validates a RecipeLockPending document.
+// ParseJournal strictly decodes and validates a RecipeLockPending document. It
+// returns the bare defect; ReadJournal adds the file/directory context and the
+// recovery guidance.
 func ParseJournal(data []byte) (*Journal, error) {
 	var j Journal
 	if err := strictDecode(data, &j); err != nil {
-		return nil, fmt.Errorf("update journal: %w", err)
+		return nil, err
 	}
 	if err := j.validate(); err != nil {
-		return nil, fmt.Errorf("update journal: %w", err)
+		return nil, err
 	}
 	return &j, nil
 }
@@ -84,8 +86,11 @@ func (j *Journal) validate() error {
 	if err := j.FinalLock.validate(); err != nil {
 		return fmt.Errorf("finalLock: %w", err)
 	}
+	if j.BaseGeneration == "" {
+		return fmt.Errorf("missing the baseGeneration field")
+	}
 	if !generationRE.MatchString(j.BaseGeneration) {
-		return fmt.Errorf("baseGeneration %q is not 32 hex chars", j.BaseGeneration)
+		return fmt.Errorf("baseGeneration %q is not 32 hex characters", j.BaseGeneration)
 	}
 	// A journal always transitions between two distinct generations; equal base
 	// and final would let a forged journal claim to be both pending and
@@ -129,7 +134,12 @@ func ReadJournal(root *SafeRoot) (j *Journal, exists bool, err error) {
 	}
 	j, err = ParseJournal(data)
 	if err != nil {
-		return nil, true, err
+		return nil, true, fmt.Errorf(
+			"the update journal in %s is unusable: %w\n"+
+				"An interrupted update left a %s that this vaka cannot read (an "+
+				"incompatible vaka version, or corruption). Verify the directory's "+
+				"files, then remove it and re-run vaka get to update again.",
+			dirLabel(root.Name()), err, JournalFileName)
 	}
 	return j, true, nil
 }

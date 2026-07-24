@@ -249,6 +249,70 @@ deviations:
 	}
 }
 
+// TestReadLockActionableError checks that a lock which exists but cannot be used
+// — the common case being a lock written by an older vaka, before the
+// generation nonce — surfaces an error a user can act on: the directory, the
+// specific defect, the likely cause, and how to recover. (Regression for the
+// bare `generation "" is not 32 hex chars`.)
+func TestReadLockActionableError(t *testing.T) {
+	dir := t.TempDir()
+	// A lock exactly as an older vaka wrote it: valid except no generation.
+	legacy := "apiVersion: recipes.vaka/v1alpha1\nkind: RecipeLock\n" +
+		"registry: official\nname: codex\nversion: 0.1.0\ndigest: " + testDigest + "\n" +
+		"fetched: \"2026-07-11T00:00:00Z\"\nfiles: {}\n"
+	if err := os.WriteFile(filepath.Join(dir, LockFileName), []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, exists, err := LockForDir(dir)
+	if !exists || err == nil {
+		t.Fatalf("exists=%v err=%v (want a lock that exists but errors)", exists, err)
+	}
+	msg := err.Error()
+	for _, want := range []string{dir, "missing the generation field", "incompatible vaka", "Reinstall", LockFileName} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error lacks %q; got:\n%s", want, msg)
+		}
+	}
+
+	// A malformed (non-empty) generation is phrased as a different situation.
+	bad := strings.Replace(legacy, "files: {}", "generation: nothex\nfiles: {}", 1)
+	if err := os.WriteFile(filepath.Join(dir, LockFileName), []byte(bad), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := LockForDir(dir); err == nil || !strings.Contains(err.Error(), "not 32 hex") {
+		t.Fatalf("malformed generation err = %v", err)
+	}
+}
+
+// TestReadJournalActionableError: an unreadable dangling journal (e.g. written
+// by an older vaka, no baseGeneration) explains itself and how to recover.
+func TestReadJournalActionableError(t *testing.T) {
+	dir := t.TempDir()
+	j := "apiVersion: recipes.vaka/v1alpha1\nkind: RecipeLockPending\n" +
+		"target:\n  registry: official\n  name: codex\n  version: 0.1.0\n  digest: " + testDigest + "\n" +
+		"plan: {}\nfinalLock:\n  apiVersion: recipes.vaka/v1alpha1\n  kind: RecipeLock\n" +
+		"  registry: official\n  name: codex\n  version: 0.1.0\n  digest: " + testDigest + "\n" +
+		"  generation: ffffffffffffffffffffffffffffffff\n  fetched: \"2026-07-11T00:00:00Z\"\n  files: {}\n"
+	if err := os.WriteFile(filepath.Join(dir, JournalFileName), []byte(j), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	root, err := OpenSafeRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	_, exists, err := ReadJournal(root)
+	if !exists || err == nil {
+		t.Fatalf("exists=%v err=%v", exists, err)
+	}
+	msg := err.Error()
+	for _, want := range []string{dir, "missing the baseGeneration field", "interrupted update", JournalFileName} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("journal error lacks %q; got:\n%s", want, msg)
+		}
+	}
+}
+
 func TestJournalRoundTripAndStrictness(t *testing.T) {
 	final, err := ParseLock([]byte(`apiVersion: recipes.vaka/v1alpha1
 kind: RecipeLock

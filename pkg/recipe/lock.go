@@ -95,14 +95,17 @@ func NewLock(registryName, name, version, digest string) *Lock {
 	}
 }
 
-// ParseLock strictly decodes and validates a RecipeLock document.
+// ParseLock strictly decodes and validates a RecipeLock document. It returns
+// the bare defect (which field, and whether missing or malformed); the file/
+// directory context and the recovery guidance are added by ReadLock, which
+// knows where the document came from.
 func ParseLock(data []byte) (*Lock, error) {
 	var l Lock
 	if err := strictDecode(data, &l); err != nil {
-		return nil, fmt.Errorf("recipe lock: %w", err)
+		return nil, err
 	}
 	if err := l.validate(); err != nil {
-		return nil, fmt.Errorf("recipe lock: %w", err)
+		return nil, err
 	}
 	return &l, nil
 }
@@ -120,8 +123,14 @@ func (l *Lock) validate() error {
 	if !lockDigestRE.MatchString(l.Digest) {
 		return fmt.Errorf("digest %q is not sha256:<64 hex>", l.Digest)
 	}
+	if l.Generation == "" {
+		// Distinguish the legacy case (field absent → written by a vaka from
+		// before the generation nonce existed) from a malformed value, since the
+		// user's situation and the phrasing differ.
+		return fmt.Errorf("missing the generation field")
+	}
 	if !generationRE.MatchString(l.Generation) {
-		return fmt.Errorf("generation %q is not 32 hex chars", l.Generation)
+		return fmt.Errorf("generation %q is not 32 hex characters", l.Generation)
 	}
 	for p, state := range l.Files {
 		if err := validRecipePath(p); err != nil {
@@ -166,9 +175,26 @@ func ReadLock(root *SafeRoot) (l *Lock, exists bool, err error) {
 	}
 	l, err = ParseLock(data)
 	if err != nil {
-		return nil, true, err
+		// The lock exists but cannot be used. Give the user the whole picture:
+		// which directory, the specific defect (from ParseLock), the likely
+		// cause, and how to recover. This single boundary covers every reader —
+		// LockForDir, UpToDate, Update, and the render deviation notice.
+		return nil, true, fmt.Errorf(
+			"the recipe lock in %s is unusable: %w\n"+
+				"It is stale or was written by an incompatible vaka version (or was "+
+				"edited/corrupted), so vaka will not update this directory. Reinstall "+
+				"the recipe into a fresh directory, or restore the original %s, then re-run.",
+			dirLabel(root.Name()), err, LockFileName)
 	}
 	return l, true, nil
+}
+
+// dirLabel renders a directory for user-facing messages.
+func dirLabel(dir string) string {
+	if dir == "" || dir == "." {
+		return "the current directory"
+	}
+	return dir
 }
 
 // LockForDir reads the recipe lock of an on-disk directory through a
