@@ -227,15 +227,10 @@ func (d *dockerServices) ResolveRuntime(ctx context.Context, svcName string, svc
 			svcName, missingRuntimeFieldsHint(needImageEntrypoint, needImageUser),
 		)
 	}
-	// Apply the pull policy for this service image. PullAlways fetches up
-	// front; otherwise a local miss is retried once through a pull when the
-	// policy permits it (--vaka-pull; default missing-pinned pulls only
-	// digest-pinned refs). The vaka-init helper is never routed here.
-	if d.pullPolicy == PullAlways {
-		if perr := d.pullImage(ctx, svc.Image); perr != nil {
-			return ResolvedRuntime{}, fmt.Errorf("service %s: pull %q on %s: %w", svcName, svc.Image, d.targetDesc, perr)
-		}
-	}
+	// A locally-absent image is fetched once through a pull when the policy
+	// permits it (--vaka-pull; default missing-pinned pulls only digest-pinned
+	// refs). Present images are never re-pulled. The vaka-init helper is never
+	// routed here.
 	inspect, err := d.c.ImageInspect(ctx, svc.Image)
 	if errdefs.IsNotFound(err) && d.pullPolicy.pullsMissing(svc.Image) {
 		if perr := d.pullImage(ctx, svc.Image); perr != nil {

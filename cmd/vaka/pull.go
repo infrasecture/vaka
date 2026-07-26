@@ -23,8 +23,6 @@ const (
 	PullMissingPinned
 	// PullMissing fetches any missing image, pinned or not.
 	PullMissing
-	// PullAlways fetches the image before inspecting, even if present.
-	PullAlways
 )
 
 // ParsePullPolicy maps the --vaka-pull flag value to a PullPolicy. The empty
@@ -37,10 +35,8 @@ func ParsePullPolicy(s string) (PullPolicy, error) {
 		return PullMissing, nil
 	case "never":
 		return PullNever, nil
-	case "always":
-		return PullAlways, nil
 	default:
-		return PullNever, fmt.Errorf("invalid --vaka-pull value %q: want one of missing-pinned|missing|never|always", s)
+		return PullNever, fmt.Errorf("invalid --vaka-pull value %q: want one of missing-pinned|missing|never", s)
 	}
 }
 
@@ -50,8 +46,6 @@ func (p PullPolicy) String() string {
 		return "missing-pinned"
 	case PullMissing:
 		return "missing"
-	case PullAlways:
-		return "always"
 	default:
 		return "never"
 	}
@@ -61,7 +55,7 @@ func (p PullPolicy) String() string {
 // fetched under the policy.
 func (p PullPolicy) pullsMissing(ref string) bool {
 	switch p {
-	case PullMissing, PullAlways:
+	case PullMissing:
 		return true
 	case PullMissingPinned:
 		return isDigestPinned(ref)

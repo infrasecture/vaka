@@ -21,7 +21,6 @@ func TestParsePullPolicy(t *testing.T) {
 		"missing-pinned": PullMissingPinned,
 		"missing":        PullMissing,
 		"never":          PullNever,
-		"always":         PullAlways,
 	}
 	for in, want := range cases {
 		got, err := ParsePullPolicy(in)
@@ -32,8 +31,11 @@ func TestParsePullPolicy(t *testing.T) {
 			t.Errorf("ParsePullPolicy(%q) = %v, want %v", in, got, want)
 		}
 	}
-	if _, err := ParsePullPolicy("sometimes"); err == nil {
-		t.Error("ParsePullPolicy(\"sometimes\") expected an error")
+	// "always" was removed; it must now be rejected like any other invalid value.
+	for _, bad := range []string{"always", "sometimes"} {
+		if _, err := ParsePullPolicy(bad); err == nil {
+			t.Errorf("ParsePullPolicy(%q) expected an error", bad)
+		}
 	}
 }
 
@@ -109,7 +111,6 @@ func TestResolveRuntimePullPolicy(t *testing.T) {
 		{"missing-pinned: missing+unpinned → no pull, error", PullMissingPinned, unpinned, false, true, nil, 0, true},
 		{"missing: missing+unpinned → pull", PullMissing, unpinned, false, true, nil, 1, false},
 		{"missing-pinned: present → no pull", PullMissingPinned, pinned, true, true, nil, 0, false},
-		{"always: present → pulls anyway", PullAlways, pinned, true, true, nil, 1, false},
 		{"missing-pinned: pull fails → error", PullMissingPinned, pinned, false, false, errors.New("net down"), 1, true},
 	}
 
