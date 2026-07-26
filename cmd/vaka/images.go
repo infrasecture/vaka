@@ -9,14 +9,17 @@ import (
 	"strings"
 
 	composetypes "github.com/compose-spec/compose-go/v2/types"
+	"github.com/distribution/reference"
 	dockercli "github.com/docker/cli/cli/command"
 	dockerconfig "github.com/docker/cli/cli/config"
 	"github.com/docker/cli/cli/config/configfile"
 	dockerflags "github.com/docker/cli/cli/flags"
 	dockerimage "github.com/docker/docker/api/types/image"
+	registrytypes "github.com/docker/docker/api/types/registry"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/errdefs"
 	"github.com/docker/docker/pkg/jsonmessage"
+	"github.com/docker/docker/registry"
 	"github.com/moby/term"
 	"github.com/spf13/pflag"
 )
@@ -58,6 +61,9 @@ type dockerClient interface {
 type dockerServices struct {
 	c          dockerClient
 	targetDesc string
+	// cfg is the resolved Docker config file; used to attach registry
+	// credentials (X-Registry-Auth) to pulls so private images work.
+	cfg *configfile.ConfigFile
 	// pullPolicy governs whether ResolveRuntime fetches a missing *service*
 	// image. The zero value (PullNever) preserves the original inspect-only
 	// behavior; the production constructor sets it from --vaka-pull.
@@ -85,6 +91,7 @@ func NewDockerServices(inv *ComposeInvocation, pullPolicy PullPolicy) (DockerSer
 	return &dockerServices{
 		c:          apiClient,
 		targetDesc: targetDesc,
+		cfg:        cfg,
 		pullPolicy: pullPolicy,
 	}, nil
 }
@@ -145,8 +152,10 @@ func (d *dockerServices) EnsureImage(ctx context.Context, ref string) error {
 
 // pullImage pulls ref and streams progress to stderr. The returned error is
 // unwrapped so callers can attach context appropriate to why the pull ran.
+// Registry credentials from the Docker config are attached so private images
+// pull the same way they do under `docker pull`/Compose.
 func (d *dockerServices) pullImage(ctx context.Context, ref string) error {
-	rc, err := d.c.ImagePull(ctx, ref, dockerimage.PullOptions{})
+	rc, err := d.c.ImagePull(ctx, ref, d.pullOptions(ref))
 	if err != nil {
 		return err
 	}
@@ -156,6 +165,34 @@ func (d *dockerServices) pullImage(ctx context.Context, ref string) error {
 		return fmt.Errorf("display pull stream for %s on %s: %w", ref, d.targetDesc, err)
 	}
 	return nil
+}
+
+// pullOptions builds PullOptions for ref, attaching an X-Registry-Auth token
+// resolved from the Docker config's credential store for ref's registry. When
+// no credentials are configured (public registry), RegistryAuth is left empty
+// so the pull proceeds anonymously — identical to the prior behavior.
+func (d *dockerServices) pullOptions(ref string) dockerimage.PullOptions {
+	opts := dockerimage.PullOptions{}
+	if d.cfg == nil {
+		return opts
+	}
+	named, err := reference.ParseNormalizedNamed(ref)
+	if err != nil {
+		return opts
+	}
+	repoInfo, err := registry.ParseRepositoryInfo(named)
+	if err != nil {
+		return opts
+	}
+	authConfig := dockercli.ResolveAuthConfig(d.cfg, repoInfo.Index)
+	if authConfig.Username == "" && authConfig.Password == "" &&
+		authConfig.IdentityToken == "" && authConfig.RegistryToken == "" {
+		return opts // no credentials for this registry — pull anonymously
+	}
+	if encoded, err := registrytypes.EncodeAuthConfig(authConfig); err == nil {
+		opts.RegistryAuth = encoded
+	}
+	return opts
 }
 
 // ResolveRuntime resolves effective runtime metadata for svc, following

@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	composetypes "github.com/compose-spec/compose-go/v2/types"
+	"github.com/docker/cli/cli/config/configfile"
+	clitypes "github.com/docker/cli/cli/config/types"
 	dockerimage "github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/errdefs"
@@ -124,5 +126,23 @@ func TestResolveRuntimePullPolicy(t *testing.T) {
 				t.Errorf("pulls = %d, want %d", fake.pulls, tc.wantPulls)
 			}
 		})
+	}
+}
+
+func TestPullOptionsAuth(t *testing.T) {
+	hex := strings.Repeat("a", 64)
+	cfg := configfile.New("")
+	cfg.AuthConfigs["myreg.example.com"] = clitypes.AuthConfig{Username: "u", Password: "p"}
+	ds := &dockerServices{cfg: cfg, targetDesc: "test"}
+
+	if ds.pullOptions("myreg.example.com/app@sha256:"+hex).RegistryAuth == "" {
+		t.Error("configured registry: expected non-empty RegistryAuth")
+	}
+	if ds.pullOptions("other.example.com/app:latest").RegistryAuth != "" {
+		t.Error("unconfigured registry: expected empty RegistryAuth (anonymous)")
+	}
+	nilCfg := &dockerServices{targetDesc: "test"}
+	if nilCfg.pullOptions("x@sha256:"+hex).RegistryAuth != "" {
+		t.Error("nil cfg: expected empty RegistryAuth")
 	}
 }
