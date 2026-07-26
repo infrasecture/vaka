@@ -56,7 +56,7 @@ VAKA_<SERVICE>_CONF values are never printed.`,
 			if err != nil {
 				return err
 			}
-			return runShowCompose(root.VakaFile, inv, root.VakaInitPresent, output)
+			return runShowCompose(root.VakaFile, inv, root.VakaInitPresent, root.PullPolicy, output)
 		},
 	}
 	cmd.Flags().StringArrayVarP(&files, "file", "f", nil, "Compose configuration files")
@@ -73,9 +73,9 @@ VAKA_<SERVICE>_CONF values are never printed.`,
 // stdout, or writes it to output when non-empty. inv is the synthetic compose
 // invocation assembled from show-compose flags so the shared builder receives
 // the same input shape as `vaka compose up`.
-func runShowCompose(vakaFile string, inv *ComposeInvocation, vakaInitPresent bool, output string) error {
+func runShowCompose(vakaFile string, inv *ComposeInvocation, vakaInitPresent bool, pullPolicy PullPolicy, output string) error {
 	ctx := context.Background()
-	ds, err := newDockerServices(inv)
+	ds, err := newDockerServices(inv, pullPolicy)
 	if err != nil {
 		return err
 	}

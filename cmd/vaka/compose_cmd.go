@@ -62,7 +62,7 @@ func runComposeCLI(root *RootInvocation, argv []string) error {
 		// published version (design §6): the render verbs are the moment
 		// trust is exercised.
 		printDeviationNotice(os.Stderr, inv.ProjectDirectory)
-		return runFull(root.VakaFile, inv, root.VakaInitPresent)
+		return runFull(root.VakaFile, inv, root.VakaInitPresent, root.PullPolicy)
 	default:
 		return runReference(inv, root.VakaInitPresent)
 	}

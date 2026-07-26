@@ -58,6 +58,10 @@ type dockerClient interface {
 type dockerServices struct {
 	c          dockerClient
 	targetDesc string
+	// pullPolicy governs whether ResolveRuntime fetches a missing *service*
+	// image. The zero value (PullNever) preserves the original inspect-only
+	// behavior; the production constructor sets it from --vaka-pull.
+	pullPolicy PullPolicy
 }
 
 var loadDockerConfigFile = dockerconfig.LoadDefaultConfigFile
@@ -69,7 +73,7 @@ var loadDockerConfigFile = dockerconfig.LoadDefaultConfigFile
 //  2. DOCKER_CONTEXT
 //  3. currentContext from Docker config (DOCKER_CONFIG/config.json)
 //  4. default context
-func NewDockerServices(inv *ComposeInvocation) (DockerServices, error) {
+func NewDockerServices(inv *ComposeInvocation, pullPolicy PullPolicy) (DockerServices, error) {
 	cfg := loadDockerConfigFile(os.Stderr)
 	opts := newDockerClientOptions(inv)
 	targetDesc := dockerTargetDescription(cfg)
@@ -81,6 +85,7 @@ func NewDockerServices(inv *ComposeInvocation) (DockerServices, error) {
 	return &dockerServices{
 		c:          apiClient,
 		targetDesc: targetDesc,
+		pullPolicy: pullPolicy,
 	}, nil
 }
 
@@ -122,7 +127,8 @@ func (d *dockerServices) ImageExists(ctx context.Context, ref string) (bool, err
 	return false, fmt.Errorf("inspect %s on %s: %w", ref, d.targetDesc, err)
 }
 
-// EnsureImage inspects ref locally; pulls it if absent.
+// EnsureImage inspects ref locally; pulls it if absent. Used for vaka's own
+// helper image, which is always ensured regardless of --vaka-pull.
 func (d *dockerServices) EnsureImage(ctx context.Context, ref string) error {
 	_, err := d.c.ImageInspect(ctx, ref)
 	if err == nil {
@@ -131,9 +137,18 @@ func (d *dockerServices) EnsureImage(ctx context.Context, ref string) error {
 	if !errdefs.IsNotFound(err) {
 		return fmt.Errorf("inspect %s on %s: %w", ref, d.targetDesc, err)
 	}
-	rc, pullErr := d.c.ImagePull(ctx, ref, dockerimage.PullOptions{})
-	if pullErr != nil {
-		return fmt.Errorf("failed to pull %s on %s — check network connectivity or use --vaka-init-present if binaries are baked into the image: %w", ref, d.targetDesc, pullErr)
+	if err := d.pullImage(ctx, ref); err != nil {
+		return fmt.Errorf("failed to pull %s on %s — check network connectivity or use --vaka-init-present if binaries are baked into the image: %w", ref, d.targetDesc, err)
+	}
+	return nil
+}
+
+// pullImage pulls ref and streams progress to stderr. The returned error is
+// unwrapped so callers can attach context appropriate to why the pull ran.
+func (d *dockerServices) pullImage(ctx context.Context, ref string) error {
+	rc, err := d.c.ImagePull(ctx, ref, dockerimage.PullOptions{})
+	if err != nil {
+		return err
 	}
 	defer rc.Close()
 	stderrFD, isTerminal := term.GetFdInfo(os.Stderr)
@@ -175,11 +190,26 @@ func (d *dockerServices) ResolveRuntime(ctx context.Context, svcName string, svc
 			svcName, missingRuntimeFieldsHint(needImageEntrypoint, needImageUser),
 		)
 	}
+	// Apply the pull policy for this service image. PullAlways fetches up
+	// front; otherwise a local miss is retried once through a pull when the
+	// policy permits it (--vaka-pull; default missing-pinned pulls only
+	// digest-pinned refs). The vaka-init helper is never routed here.
+	if d.pullPolicy == PullAlways {
+		if perr := d.pullImage(ctx, svc.Image); perr != nil {
+			return ResolvedRuntime{}, fmt.Errorf("service %s: pull %q on %s: %w", svcName, svc.Image, d.targetDesc, perr)
+		}
+	}
 	inspect, err := d.c.ImageInspect(ctx, svc.Image)
+	if errdefs.IsNotFound(err) && d.pullPolicy.pullsMissing(svc.Image) {
+		if perr := d.pullImage(ctx, svc.Image); perr != nil {
+			return ResolvedRuntime{}, fmt.Errorf("service %s: pull %q on %s: %w", svcName, svc.Image, d.targetDesc, perr)
+		}
+		inspect, err = d.c.ImageInspect(ctx, svc.Image)
+	}
 	if err != nil {
 		if errdefs.IsNotFound(err) {
 			return ResolvedRuntime{}, fmt.Errorf(
-				"service %s: image %q not available locally on %s — pull/build it first, or set compose user/entrypoint so image defaults are not needed",
+				"service %s: image %q not available locally on %s — pull it first (or run with --vaka-pull=missing), or set compose user/entrypoint so image defaults are not needed",
 				svcName, svc.Image, d.targetDesc,
 			)
 		}
