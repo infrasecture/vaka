@@ -68,6 +68,41 @@ Hostnames in policy are resolved inside the container when it starts. This is in
 
 If an endpoint changes, restart the service so `vaka-init` resolves it again.
 
+## Inspected Image May Differ From The Running Image
+
+To build its egress override, vaka reads a service's default `ENTRYPOINT`/`CMD`/
+`USER` from the image — but only when the Compose file leaves them unset. That
+inspection happens **before** vaka hands off to `docker compose`, so if Compose
+then pulls or rebuilds a *different* image, vaka can inject metadata from an image
+that is not the one that actually runs.
+
+This only happens with a **mutable tag** plus an explicit refresh:
+
+```bash
+# local app:latest is image A; the registry now serves image B
+vaka --vaka-pull=missing compose up --pull=always
+```
+
+vaka inspects the local A (present, so `--vaka-pull=missing` does not refresh it),
+while Compose's `--pull=always` fetches and runs B. If A and B differ in
+`ENTRYPOINT`/`USER`, the wrapped command or restored user is wrong.
+
+**Digest-pinned images are immune.** `repo@sha256:…` is immutable, so a forced
+pull re-verifies the same digest — inspected == executed. Pinning is the
+recommended practice and is what the recipe registry does.
+
+Two ways to avoid it:
+
+- **Pin the image by digest** (`image: repo@sha256:…`). Correct regardless of any
+  `--pull` / `pull_policy` flags.
+- **Declare `user:` and `entrypoint:` explicitly** on the service. vaka then never
+  inspects the image — it wraps the *declared* entrypoint and applies it to
+  whatever image Compose runs, so there is nothing stale to read. This also
+  removes the "image not available locally" preflight for that service entirely.
+
+Without a forced pull, or with either fix above, the inspected and executed
+images match.
+
 ## External DNS Fails On User-Defined Networks (Docker Engine < 28)
 
 **Symptom.** A service can resolve sibling service names but not external
