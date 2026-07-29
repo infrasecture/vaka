@@ -101,7 +101,8 @@ Two ways to avoid it:
   removes the "image not available locally" preflight for that service entirely.
 
 Without a forced pull, or with either fix above, the inspected and executed
-images match.
+images match. This is a tracked known issue — see
+[issue #85](https://github.com/infrasecture/vaka/issues/85).
 
 ## External DNS Fails On User-Defined Networks (Docker Engine < 28)
 
