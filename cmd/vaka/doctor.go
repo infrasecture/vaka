@@ -255,7 +255,7 @@ func defaultDoctorChecks() []doctorCheck {
 	)
 	getDockerServices := func() (DockerServices, error) {
 		dsOnce.Do(func() {
-			ds, dsErr = newDoctorDockerServices(nil)
+			ds, dsErr = newDoctorDockerServices(nil, PullNever)
 		})
 		if dsErr != nil {
 			return nil, dsErr

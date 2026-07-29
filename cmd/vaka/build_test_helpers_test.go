@@ -63,7 +63,7 @@ func chdirForTest(t *testing.T, dir string) {
 func setDockerServicesFactoryForTest(t *testing.T, ds DockerServices, captures ...*[][]string) {
 	t.Helper()
 	old := newDockerServices
-	newDockerServices = func(inv *ComposeInvocation) (DockerServices, error) {
+	newDockerServices = func(inv *ComposeInvocation, _ PullPolicy) (DockerServices, error) {
 		if len(captures) > 0 && captures[0] != nil {
 			*captures[0] = append(*captures[0], append([]string{}, inv.Args...))
 		}

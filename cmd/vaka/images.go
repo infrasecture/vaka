@@ -9,14 +9,17 @@ import (
 	"strings"
 
 	composetypes "github.com/compose-spec/compose-go/v2/types"
+	"github.com/distribution/reference"
 	dockercli "github.com/docker/cli/cli/command"
 	dockerconfig "github.com/docker/cli/cli/config"
 	"github.com/docker/cli/cli/config/configfile"
 	dockerflags "github.com/docker/cli/cli/flags"
 	dockerimage "github.com/docker/docker/api/types/image"
+	registrytypes "github.com/docker/docker/api/types/registry"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/errdefs"
 	"github.com/docker/docker/pkg/jsonmessage"
+	"github.com/docker/docker/registry"
 	"github.com/moby/term"
 	"github.com/spf13/pflag"
 )
@@ -58,6 +61,13 @@ type dockerClient interface {
 type dockerServices struct {
 	c          dockerClient
 	targetDesc string
+	// cfg is the resolved Docker config file; used to attach registry
+	// credentials (X-Registry-Auth) to pulls so private images work.
+	cfg *configfile.ConfigFile
+	// pullPolicy governs whether ResolveRuntime fetches a missing *service*
+	// image. The zero value (PullNever) preserves the original inspect-only
+	// behavior; the production constructor sets it from --vaka-pull.
+	pullPolicy PullPolicy
 }
 
 var loadDockerConfigFile = dockerconfig.LoadDefaultConfigFile
@@ -69,7 +79,7 @@ var loadDockerConfigFile = dockerconfig.LoadDefaultConfigFile
 //  2. DOCKER_CONTEXT
 //  3. currentContext from Docker config (DOCKER_CONFIG/config.json)
 //  4. default context
-func NewDockerServices(inv *ComposeInvocation) (DockerServices, error) {
+func NewDockerServices(inv *ComposeInvocation, pullPolicy PullPolicy) (DockerServices, error) {
 	cfg := loadDockerConfigFile(os.Stderr)
 	opts := newDockerClientOptions(inv)
 	targetDesc := dockerTargetDescription(cfg)
@@ -81,6 +91,8 @@ func NewDockerServices(inv *ComposeInvocation) (DockerServices, error) {
 	return &dockerServices{
 		c:          apiClient,
 		targetDesc: targetDesc,
+		cfg:        cfg,
+		pullPolicy: pullPolicy,
 	}, nil
 }
 
@@ -122,7 +134,8 @@ func (d *dockerServices) ImageExists(ctx context.Context, ref string) (bool, err
 	return false, fmt.Errorf("inspect %s on %s: %w", ref, d.targetDesc, err)
 }
 
-// EnsureImage inspects ref locally; pulls it if absent.
+// EnsureImage inspects ref locally; pulls it if absent. Used for vaka's own
+// helper image, which is always ensured regardless of --vaka-pull.
 func (d *dockerServices) EnsureImage(ctx context.Context, ref string) error {
 	_, err := d.c.ImageInspect(ctx, ref)
 	if err == nil {
@@ -131,9 +144,20 @@ func (d *dockerServices) EnsureImage(ctx context.Context, ref string) error {
 	if !errdefs.IsNotFound(err) {
 		return fmt.Errorf("inspect %s on %s: %w", ref, d.targetDesc, err)
 	}
-	rc, pullErr := d.c.ImagePull(ctx, ref, dockerimage.PullOptions{})
-	if pullErr != nil {
-		return fmt.Errorf("failed to pull %s on %s — check network connectivity or use --vaka-init-present if binaries are baked into the image: %w", ref, d.targetDesc, pullErr)
+	if err := d.pullImage(ctx, ref); err != nil {
+		return fmt.Errorf("failed to pull %s on %s — check network connectivity or use --vaka-init-present if binaries are baked into the image: %w", ref, d.targetDesc, err)
+	}
+	return nil
+}
+
+// pullImage pulls ref and streams progress to stderr. The returned error is
+// unwrapped so callers can attach context appropriate to why the pull ran.
+// Registry credentials from the Docker config are attached so private images
+// pull the same way they do under `docker pull`/Compose.
+func (d *dockerServices) pullImage(ctx context.Context, ref string) error {
+	rc, err := d.c.ImagePull(ctx, ref, d.pullOptions(ref))
+	if err != nil {
+		return err
 	}
 	defer rc.Close()
 	stderrFD, isTerminal := term.GetFdInfo(os.Stderr)
@@ -141,6 +165,34 @@ func (d *dockerServices) EnsureImage(ctx context.Context, ref string) error {
 		return fmt.Errorf("display pull stream for %s on %s: %w", ref, d.targetDesc, err)
 	}
 	return nil
+}
+
+// pullOptions builds PullOptions for ref, attaching an X-Registry-Auth token
+// resolved from the Docker config's credential store for ref's registry. When
+// no credentials are configured (public registry), RegistryAuth is left empty
+// so the pull proceeds anonymously — identical to the prior behavior.
+func (d *dockerServices) pullOptions(ref string) dockerimage.PullOptions {
+	opts := dockerimage.PullOptions{}
+	if d.cfg == nil {
+		return opts
+	}
+	named, err := reference.ParseNormalizedNamed(ref)
+	if err != nil {
+		return opts
+	}
+	repoInfo, err := registry.ParseRepositoryInfo(named)
+	if err != nil {
+		return opts
+	}
+	authConfig := dockercli.ResolveAuthConfig(d.cfg, repoInfo.Index)
+	if authConfig.Username == "" && authConfig.Password == "" &&
+		authConfig.IdentityToken == "" && authConfig.RegistryToken == "" {
+		return opts // no credentials for this registry — pull anonymously
+	}
+	if encoded, err := registrytypes.EncodeAuthConfig(authConfig); err == nil {
+		opts.RegistryAuth = encoded
+	}
+	return opts
 }
 
 // ResolveRuntime resolves effective runtime metadata for svc, following
@@ -175,11 +227,21 @@ func (d *dockerServices) ResolveRuntime(ctx context.Context, svcName string, svc
 			svcName, missingRuntimeFieldsHint(needImageEntrypoint, needImageUser),
 		)
 	}
+	// A locally-absent image is fetched once through a pull when the policy
+	// permits it (--vaka-pull; default missing-pinned pulls only digest-pinned
+	// refs). Present images are never re-pulled. The vaka-init helper is never
+	// routed here.
 	inspect, err := d.c.ImageInspect(ctx, svc.Image)
+	if errdefs.IsNotFound(err) && d.pullPolicy.pullsMissing(svc.Image) {
+		if perr := d.pullImage(ctx, svc.Image); perr != nil {
+			return ResolvedRuntime{}, fmt.Errorf("service %s: pull %q on %s: %w", svcName, svc.Image, d.targetDesc, perr)
+		}
+		inspect, err = d.c.ImageInspect(ctx, svc.Image)
+	}
 	if err != nil {
 		if errdefs.IsNotFound(err) {
 			return ResolvedRuntime{}, fmt.Errorf(
-				"service %s: image %q not available locally on %s — pull/build it first, or set compose user/entrypoint so image defaults are not needed",
+				"service %s: image %q not available locally on %s — pull it first (or run with --vaka-pull=missing), or set compose user/entrypoint so image defaults are not needed",
 				svcName, svc.Image, d.targetDesc,
 			)
 		}

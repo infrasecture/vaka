@@ -11,6 +11,7 @@ import (
 type RootInvocation struct {
 	VakaFile        string
 	VakaInitPresent bool
+	PullPolicy      PullPolicy
 	Rest            []string
 }
 
@@ -72,6 +73,7 @@ var dockerGlobalBoolFlags = map[string]bool{
 // vakaFlagsTakingValue lists --vaka-* flags that consume the next token as their value.
 var vakaFlagsTakingValue = map[string]bool{
 	"--vaka-file": true,
+	"--vaka-pull": true,
 }
 
 // vakaFlagsBool lists --vaka-* boolean flags (no value token consumed).
@@ -86,9 +88,14 @@ func parseRootArgs(argv []string) (*RootInvocation, error) {
 	if err != nil {
 		return nil, err
 	}
+	pullPolicy, err := ParsePullPolicy(flags["--vaka-pull"])
+	if err != nil {
+		return nil, err
+	}
 	root := &RootInvocation{
 		VakaFile:        flags["--vaka-file"],
 		VakaInitPresent: flags["--vaka-init-present"] == "true",
+		PullPolicy:      pullPolicy,
 		Rest:            rest,
 	}
 	if root.VakaFile == "" {

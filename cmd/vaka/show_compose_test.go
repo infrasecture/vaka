@@ -136,7 +136,7 @@ services:
 		if parseErr != nil {
 			return parseErr
 		}
-		return runShowCompose("vaka.yaml", inv, true, "")
+		return runShowCompose("vaka.yaml", inv, true, PullNever, "")
 	})
 	if err != nil {
 		t.Fatalf("runShowCompose: %v", err)
@@ -208,7 +208,7 @@ services:
 	if err != nil {
 		t.Fatalf("ParseComposeInvocation: %v", err)
 	}
-	if err := runShowCompose("vaka.yaml", inv, true, outPath); err != nil {
+	if err := runShowCompose("vaka.yaml", inv, true, PullNever, outPath); err != nil {
 		t.Fatalf("runShowCompose: %v", err)
 	}
 

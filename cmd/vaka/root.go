@@ -48,7 +48,10 @@ lives under 'vaka compose'; run 'vaka compose --help' for the compose surface.
 
 Vaka flags precede the command and value-taking ones require '=' form:
 --vaka-file=<path> selects the policy file (default vaka.yaml);
---vaka-init-present skips helper injection for images that bundle vaka-init.`,
+--vaka-init-present skips helper injection for images that bundle vaka-init;
+--vaka-pull=<missing-pinned|missing|never> controls whether a missing service
+image is fetched when vaka must inspect it (default missing-pinned: only
+digest-pinned images are pulled).`,
 		SilenceUsage:          true,
 		DisableFlagsInUseLine: true,
 		Args:                  cobra.ArbitraryArgs,
