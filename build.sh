@@ -50,7 +50,7 @@
 #   ARCHS          space-separated Go arch names     (default: native host arch; --release: amd64 arm64)
 #   CLI_TARGETS    space-separated GOOS/GOARCH pairs for vaka CLI
 #                  (default: native host target; --release: linux/amd64 linux/arm64 darwin/amd64 darwin/arm64)
-#   GOLANG_IMAGE   builder image                     (default: golang:1.25-alpine)
+#   GOLANG_IMAGE   builder image                     (default: golang:1.25.12-alpine)
 #   INIT_IMAGE     vaka-init image name              (default: emsi/vaka-init)
 #   NFT_IMAGE      nft-static image name             (default: emsi/nft-static)
 #   NFPM_IMAGE     nfpm packager image               (default: ghcr.io/goreleaser/nfpm:latest)
@@ -145,7 +145,7 @@ fi
 
 ARCHS="${ARCHS:-${default_archs}}"
 CLI_TARGETS="${CLI_TARGETS:-${default_cli_targets}}"
-GOLANG_IMAGE="${GOLANG_IMAGE:-golang:1.25-alpine}"
+GOLANG_IMAGE="${GOLANG_IMAGE:-golang:1.25.12-alpine}"
 NFT_IMAGE="${NFT_IMAGE:-emsi/nft-static}"
 INIT_IMAGE="${INIT_IMAGE:-emsi/vaka-init}"
 NFPM_IMAGE="${NFPM_IMAGE:-ghcr.io/goreleaser/nfpm:latest}"

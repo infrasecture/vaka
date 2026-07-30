@@ -1,0 +1,13 @@
+# govulncheck reachable-vulnerability allowlist (consumed by release.sh).
+#
+# release.sh blocks a release on any REACHABLE vulnerability that is NOT listed
+# here. Add an OSV id (GO-YYYY-NNNN) only when it is reachable but currently has
+# no available fix, with a note. Remove it once a fixed dependency version is
+# released and bumped. Inline "# ..." comments are ignored.
+
+# github.com/docker/docker (moby): no fixed version available as of 2026-07.
+# These are daemon-side issues, exercised only through the vendored docker API
+# client. Re-check when newer docker/docker releases land.
+GO-2026-5668   # docker cp symlink race — arbitrary empty-file creation on host
+GO-2026-4887   # AuthZ plugin bypass on oversized request bodies
+GO-2026-4883   # off-by-one in plugin privilege validation
