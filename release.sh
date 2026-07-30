@@ -164,7 +164,7 @@ make_brew_bundle() {
 govulncheck_gate() {
     local image="${GOLANG_IMAGE:-golang:1.25.12-alpine}"
     local allowlist_file="${SCRIPT_DIR}/.govulncheck-allowlist"
-    local out rc reachable allow blocking count id
+    local out rc reachable allow blocking count id attempt
 
     if [[ -n "${VAKA_SKIP_VULNCHECK:-}" ]]; then
         echo "==> govulncheck gate SKIPPED (VAKA_SKIP_VULNCHECK set)." >&2
@@ -173,11 +173,24 @@ govulncheck_gate() {
     fi
 
     echo "==> govulncheck: scanning for reachable vulnerabilities (${image})..."
-    set +e
-    out="$(docker run --rm -v "${SCRIPT_DIR}:/src:ro" -w /src "${image}" \
-        sh -c 'go install golang.org/x/vuln/cmd/govulncheck@latest && govulncheck ./...' 2>&1)"
-    rc=$?
-    set -e
+    # Reuse build.sh's module/build caches so this does not re-download every
+    # dependency (slow, and flaky against the module proxy). Retry a few times to
+    # ride out transient proxy/network errors while caches are cold.
+    for attempt in 1 2 3; do
+        set +e
+        out="$(docker run --rm \
+            -v "${SCRIPT_DIR}:/src:ro" \
+            -v "vaka-gomodcache:/go/pkg/mod" \
+            -v "vaka-gobuildcache:/root/.cache/go/build" \
+            -w /src "${image}" \
+            sh -c 'go install golang.org/x/vuln/cmd/govulncheck@latest && govulncheck ./...' 2>&1)"
+        rc=$?
+        set -e
+        # 0 = clean, 3 = findings; both are definitive. Anything else is a
+        # tool/setup/network error worth retrying.
+        [[ ${rc} -eq 0 || ${rc} -eq 3 ]] && break
+        echo "    govulncheck run failed (exit ${rc}); retrying (${attempt}/3)..." >&2
+    done
 
     if [[ ${rc} -eq 0 ]]; then
         echo "    No reachable vulnerabilities. OK."
