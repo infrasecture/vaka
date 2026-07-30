@@ -153,6 +153,77 @@ make_brew_bundle() {
     rm -rf -- "${tmp}"
 }
 
+# govulncheck_gate scans the module for *reachable* vulnerabilities using the
+# release build image (so its standard-library analysis matches the shipped
+# binaries) and aborts the release if any reachable vulnerability is not listed
+# in .govulncheck-allowlist. Vulnerabilities present but not called are ignored;
+# so are allowlisted ones (reachable but with no fix available yet). Override for
+# a local/dev build with VAKA_SKIP_VULNCHECK=1 when a currently-unfixable
+# dependency would otherwise block functionality testing.
+#   Keep the default image in sync with build.sh's GOLANG_IMAGE.
+govulncheck_gate() {
+    local image="${GOLANG_IMAGE:-golang:1.25.12-alpine}"
+    local allowlist_file="${SCRIPT_DIR}/.govulncheck-allowlist"
+    local out rc reachable allow blocking count id
+
+    if [[ -n "${VAKA_SKIP_VULNCHECK:-}" ]]; then
+        echo "==> govulncheck gate SKIPPED (VAKA_SKIP_VULNCHECK set)." >&2
+        echo "    Do not skip this for a public release." >&2
+        return 0
+    fi
+
+    echo "==> govulncheck: scanning for reachable vulnerabilities (${image})..."
+    set +e
+    out="$(docker run --rm -v "${SCRIPT_DIR}:/src:ro" -w /src "${image}" \
+        sh -c 'go install golang.org/x/vuln/cmd/govulncheck@latest && govulncheck ./...' 2>&1)"
+    rc=$?
+    set -e
+
+    if [[ ${rc} -eq 0 ]]; then
+        echo "    No reachable vulnerabilities. OK."
+        return 0
+    fi
+    if [[ ${rc} -ne 3 ]]; then
+        echo "ERROR: govulncheck did not run cleanly (exit ${rc}):" >&2
+        printf '%s\n' "${out}" | tail -20 >&2
+        echo "       Fix the tool/setup, or override with VAKA_SKIP_VULNCHECK=1 for a local build." >&2
+        exit 1
+    fi
+
+    # In default output, only *called* (reachable) vulns get "Vulnerability #" blocks.
+    reachable="$(printf '%s\n' "${out}" | grep '^Vulnerability #' | grep -oE 'GO-[0-9]{4}-[0-9]+' | sort -u)"
+    if [[ -z "${reachable}" ]]; then
+        echo "ERROR: govulncheck reported findings (exit 3) but no vulnerability IDs were parsed;" >&2
+        echo "       its output format may have changed. Raw tail:" >&2
+        printf '%s\n' "${out}" | tail -20 >&2
+        exit 1
+    fi
+
+    allow=""
+    if [[ -f "${allowlist_file}" ]]; then
+        allow="$(sed -E 's/#.*//; s/[[:space:]]+//g' "${allowlist_file}" | grep -E '^GO-[0-9]+-[0-9]+$' | sort -u || true)"
+    fi
+    blocking="$(comm -23 <(printf '%s\n' "${reachable}") <(printf '%s\n' "${allow}") || true)"
+
+    if [[ -z "${blocking}" ]]; then
+        count="$(printf '%s\n' "${reachable}" | grep -cE '^GO-')"
+        echo "    ${count} reachable, all accepted in .govulncheck-allowlist. OK."
+        return 0
+    fi
+
+    echo "" >&2
+    echo "ERROR: release blocked — reachable vulnerabilities not in .govulncheck-allowlist:" >&2
+    while IFS= read -r id; do
+        [[ -n "${id}" ]] && echo "         ${id}  https://pkg.go.dev/vuln/${id}" >&2
+    done <<<"${blocking}"
+    echo "" >&2
+    echo "  vaka's code calls these. Choose one:" >&2
+    echo "    * bump the offending dependency or Go toolchain, then re-run; or" >&2
+    echo "    * if no fix exists yet, add the id(s) to .govulncheck-allowlist with a note; or" >&2
+    echo "    * for a LOCAL build only: VAKA_SKIP_VULNCHECK=1 ./release.sh" >&2
+    exit 1
+}
+
 require_cmd git
 require_cmd docker
 require_cmd gh
@@ -248,6 +319,8 @@ if [[ -z "${release_title}" ]]; then
         release_title="${release_tag}"
     fi
 fi
+
+govulncheck_gate
 
 echo "==> Building release artifacts and publishing container images with VERSION=${release_tag}"
 publish_latest=true
