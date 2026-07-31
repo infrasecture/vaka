@@ -387,6 +387,7 @@ done
 # docker create on a non-native arch image works because no code is executed;
 # docker cp just reads the layer filesystem.
 echo "==> Extracting nft binaries..."
+declare -A nft_binary_sha256=()
 for ARCH in $ARCHS; do
     arch_nft_tag="${NFT_INTERNAL_TAG_PREFIX}-${ARCH}"
     printf '    dist/nft-linux-%-10s' "${ARCH}"
@@ -396,6 +397,7 @@ for ARCH in $ARCHS; do
     docker cp "${nft_cid}:/opt/nftables/bin/nft" "dist/nft-linux-${ARCH}"
     docker rm -f -- "${nft_cid}" >/dev/null 2>&1 || true
     trap - EXIT
+    nft_binary_sha256["${ARCH}"]="$(vaka_sha256_file "dist/nft-linux-${ARCH}")"
     echo "OK"
 done
 echo ""
@@ -552,19 +554,25 @@ echo ""
 #
 runtime_image_cache_hit() {
     local ref="$1"
+    local arch="$2"
+    local init_sha nft_sha
+    init_sha="$(vaka_sha256_file "dist/vaka-init-linux-${arch}")"
+    nft_sha="${nft_binary_sha256[${arch}]}"
     [[ "${REBUILD_RUNTIME}" == false ]] || return 1
     docker image inspect "${ref}" >/dev/null 2>&1 || return 1
     [[ "$(docker image inspect "${ref}" --format '{{index .Config.Labels "agent.vaka.runtime.version"}}')" == "${RUNTIME_VERSION}" ]] || return 1
     [[ "$(docker image inspect "${ref}" --format '{{index .Config.Labels "agent.vaka.runtime.inputs-sha256"}}')" == "${RUNTIME_INPUTS_SHA256}" ]] || return 1
+    [[ "$(docker image inspect "${ref}" --format '{{index .Config.Labels "agent.vaka.runtime.vaka-init-sha256"}}')" == "${init_sha}" ]] || return 1
     [[ "$(docker image inspect "${ref}" --format '{{index .Config.Labels "agent.vaka.nftables.version"}}')" == "${NFTABLES_VERSION}" ]] || return 1
-    [[ "$(docker image inspect "${ref}" --format '{{index .Config.Labels "agent.vaka.nftables.inputs-sha256"}}')" == "${NFT_INPUTS_SHA256}" ]]
+    [[ "$(docker image inspect "${ref}" --format '{{index .Config.Labels "agent.vaka.nftables.inputs-sha256"}}')" == "${NFT_INPUTS_SHA256}" ]] || return 1
+    [[ "$(docker image inspect "${ref}" --format '{{index .Config.Labels "agent.vaka.nftables.binary-sha256"}}')" == "${nft_sha}" ]]
 }
 
 # The native-arch unsuffixed alias lets the freshly built CLI run locally
 # without a registry round trip. Only release-runtime.sh creates registry tags.
 for ARCH in $ARCHS; do
     arch_init_tag="${INIT_IMAGE}:${RUNTIME_TAG}-${ARCH}"
-    if runtime_image_cache_hit "${arch_init_tag}"; then
+    if runtime_image_cache_hit "${arch_init_tag}" "${ARCH}"; then
         echo "==> Skipping runtime image build for ${ARCH} (${arch_init_tag} matches inputs)"
     else
         echo "==> Building ${arch_init_tag} (platform linux/${ARCH})..."
@@ -586,6 +594,8 @@ for ARCH in $ARCHS; do
             --build-arg "NFTABLES_VERSION=${NFTABLES_VERSION}" \
             --build-arg "RUNTIME_INPUTS_SHA256=${RUNTIME_INPUTS_SHA256}" \
             --build-arg "NFT_INPUTS_SHA256=${NFT_INPUTS_SHA256}" \
+            --build-arg "VAKA_INIT_SHA256=$(vaka_sha256_file "dist/vaka-init-linux-${ARCH}")" \
+            --build-arg "NFT_BINARY_SHA256=${nft_binary_sha256[${ARCH}]}" \
             --build-arg "SOURCE_DATE_EPOCH=${RUNTIME_SOURCE_DATE_EPOCH}" \
             --tag "${arch_init_tag}" \
             "${ctx}"
@@ -648,6 +658,17 @@ for verify_arch in ${ARCHS}; do
     image_nft_inputs="$(docker image inspect "${verify_tag}" --format '{{index .Config.Labels "agent.vaka.nftables.inputs-sha256"}}')"
     [[ "${image_nft_inputs}" == "${NFT_INPUTS_SHA256}" ]] || { echo "MISMATCH (${image_nft_inputs})"; exit 1; }
     echo "OK (${NFT_INPUTS_SHA256})"
+
+    printf '    %-40s' "vaka-init binary label"
+    image_init_sha="$(docker image inspect "${verify_tag}" --format '{{index .Config.Labels "agent.vaka.runtime.vaka-init-sha256"}}')"
+    expected_init_sha="$(vaka_sha256_file "dist/vaka-init-linux-${verify_arch}")"
+    [[ "${image_init_sha}" == "${expected_init_sha}" ]] || { echo "MISMATCH (${image_init_sha})"; exit 1; }
+    echo "OK (${image_init_sha})"
+
+    printf '    %-40s' "nft binary label"
+    image_nft_sha="$(docker image inspect "${verify_tag}" --format '{{index .Config.Labels "agent.vaka.nftables.binary-sha256"}}')"
+    [[ "${image_nft_sha}" == "${nft_binary_sha256[${verify_arch}]}" ]] || { echo "MISMATCH (${image_nft_sha})"; exit 1; }
+    echo "OK (${image_nft_sha})"
 
     printf '    %-40s' "legacy image volume"
     image_volumes="$(docker image inspect "${verify_tag}" --format '{{json .Config.Volumes}}')"
@@ -827,6 +848,9 @@ state_tmp="${state_file}.tmp.$$"
         state_key="${state_key//-/_}"
         printf '%s=%s\n' "${state_key}" \
             "$(docker image inspect "${INIT_IMAGE}:${RUNTIME_TAG}-${ARCH}" --format '{{.Id}}')"
+        printf 'VAKA_INIT_BINARY_%s_SHA256=%s\n' "${ARCH^^}" \
+            "$(vaka_sha256_file "dist/vaka-init-linux-${ARCH}")"
+        printf 'NFT_BINARY_%s_SHA256=%s\n' "${ARCH^^}" "${nft_binary_sha256[${ARCH}]}"
     done
     printf 'COMPONENT_MANIFEST_SHA256=%s\n' "$(vaka_sha256_file "${component_manifest}")"
 } >"${state_tmp}"

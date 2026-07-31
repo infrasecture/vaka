@@ -108,21 +108,31 @@ for arch in "${archs[@]}"; do
     state_key="RUNTIME_IMAGE_${arch^^}"
     state_key="${state_key//-/_}"
     local_id="$(state "${state_key}")"
+    init_sha="$(state "VAKA_INIT_BINARY_${arch^^}_SHA256")"
+    nft_sha="$(state "NFT_BINARY_${arch^^}_SHA256")"
     [[ "${local_id}" =~ ^sha256:[0-9a-f]{64}$ ]] || die "invalid ${state_key} in prepared state"
+    [[ "${init_sha}" =~ ^[0-9a-f]{64}$ ]] || die "invalid vaka-init binary hash for ${arch}"
+    [[ "${nft_sha}" =~ ^[0-9a-f]{64}$ ]] || die "invalid nft binary hash for ${arch}"
     ref="${init_image}:${runtime_tag}-${arch}"
     inspected_id="$(docker image inspect "${ref}" --format '{{.Id}}' 2>/dev/null)" || \
         die "prepared local image is missing: ${ref}"
     [[ "${inspected_id}" == "${local_id}" ]] || \
         die "prepared local image ${ref} changed (${inspected_id}, expected ${local_id})"
+    local_platform="$(docker image inspect "${ref}" --format '{{.Os}}/{{.Architecture}}')"
+    [[ "${local_platform}" == "linux/${arch}" ]] || die "prepared local image ${ref} has platform ${local_platform}"
 
     label_version="$(docker image inspect "${ref}" --format '{{index .Config.Labels "agent.vaka.runtime.version"}}')"
     label_runtime_inputs="$(docker image inspect "${ref}" --format '{{index .Config.Labels "agent.vaka.runtime.inputs-sha256"}}')"
     label_nft_version="$(docker image inspect "${ref}" --format '{{index .Config.Labels "agent.vaka.nftables.version"}}')"
     label_nft_inputs="$(docker image inspect "${ref}" --format '{{index .Config.Labels "agent.vaka.nftables.inputs-sha256"}}')"
+    label_init_sha="$(docker image inspect "${ref}" --format '{{index .Config.Labels "agent.vaka.runtime.vaka-init-sha256"}}')"
+    label_nft_sha="$(docker image inspect "${ref}" --format '{{index .Config.Labels "agent.vaka.nftables.binary-sha256"}}')"
     [[ "${label_version}" == "${runtime_version}" ]] || die "${ref} has runtime version label ${label_version}"
     [[ "${label_runtime_inputs}" == "${runtime_inputs}" ]] || die "${ref} has the wrong runtime input fingerprint"
     [[ "${label_nft_version}" == "${nft_version}" ]] || die "${ref} has nftables version label ${label_nft_version}"
     [[ "${label_nft_inputs}" == "${nft_inputs}" ]] || die "${ref} has the wrong nft input fingerprint"
+    [[ "${label_init_sha}" == "${init_sha}" ]] || die "${ref} has the wrong vaka-init binary hash"
+    [[ "${label_nft_sha}" == "${nft_sha}" ]] || die "${ref} has the wrong nft binary hash"
     local_ids["${arch}"]="${local_id}"
 done
 
@@ -152,7 +162,14 @@ verify_remote_arch_image() {
     local arch="$1"
     local ref="${init_image}:${runtime_tag}-${arch}"
     local local_id="${local_ids[${arch}]}"
-    local remote_id
+    local remote_id remote_platform media_type
+
+    media_type="$(docker buildx imagetools inspect --format '{{.Manifest.MediaType}}' "${ref}")" || \
+        die "cannot read manifest type for ${ref}"
+    case "${media_type}" in
+        application/vnd.oci.image.manifest.v1+json|application/vnd.docker.distribution.manifest.v2+json) ;;
+        *) die "immutable architecture tag ${ref} is not a single-image manifest (${media_type})" ;;
+    esac
 
     if ! docker pull --platform "linux/${arch}" "${ref}" >/dev/null; then
         docker tag "${local_id}" "${ref}" >/dev/null 2>&1 || true
@@ -162,7 +179,10 @@ verify_remote_arch_image() {
         docker tag "${local_id}" "${ref}" >/dev/null 2>&1 || true
         die "cannot inspect pulled immutable runtime tag ${ref}"
     fi
+    remote_platform="$(docker image inspect "${ref}" --format '{{.Os}}/{{.Architecture}}')"
     docker tag "${local_id}" "${ref}" >/dev/null
+    [[ "${remote_platform}" == "linux/${arch}" ]] || \
+        die "immutable architecture tag ${ref} has platform ${remote_platform}"
     [[ "${remote_id}" == "${local_id}" ]] || {
         printf 'ERROR: refusing to replace immutable runtime tag %s\n' "${ref}" >&2
         printf '       registry: %s\n       prepared: %s\n' "${remote_id}" "${local_id}" >&2
@@ -174,7 +194,7 @@ verify_remote_arch_image() {
 manifest_children() {
     local ref="$1"
     docker buildx imagetools inspect --format \
-        '{{range .Manifest.Manifests}}{{if eq .Platform.OS "linux"}}{{.Platform.OS}}/{{.Platform.Architecture}} {{.Digest}}{{println}}{{end}}{{end}}' \
+        '{{range .Manifest.Manifests}}{{.Platform.OS}}/{{.Platform.Architecture}} {{.Digest}}{{println}}{{end}}' \
         "${ref}"
 }
 

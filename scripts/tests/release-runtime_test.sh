@@ -29,6 +29,8 @@ amd_digest="sha256:$(printf 'd%.0s' {1..64})"
 arm_digest="sha256:$(printf 'e%.0s' {1..64})"
 runtime_inputs="$(printf '1%.0s' {1..64})"
 nft_inputs="$(printf '2%.0s' {1..64})"
+init_sha="$(printf '3%.0s' {1..64})"
+nft_sha="$(printf '4%.0s' {1..64})"
 
 cat >"${tmp}/bin/git" <<'FAKEGIT'
 #!/usr/bin/env bash
@@ -70,10 +72,13 @@ if [[ "$1 $2" == "image inspect" ]]; then
     fi
     case "${format}" in
         '{{.Id}}') [[ "${arch}" == amd64 ]] && printf '%s\n' "${amd_id}" || printf '%s\n' "${arm_id}" ;;
+        '{{.Os}}/{{.Architecture}}') printf 'linux/%s\n' "${arch}" ;;
         *runtime.version*) printf '%s\n' "${FAKE_RUNTIME_VERSION}" ;;
         *runtime.inputs-sha256*) printf '%s\n' "${FAKE_RUNTIME_INPUTS}" ;;
+        *runtime.vaka-init-sha256*) printf '%s\n' "${FAKE_INIT_SHA}" ;;
         *nftables.version*) printf '%s\n' "${FAKE_NFT_VERSION}" ;;
         *nftables.inputs-sha256*) printf '%s\n' "${FAKE_NFT_INPUTS}" ;;
+        *nftables.binary-sha256*) printf '%s\n' "${FAKE_NFT_SHA}" ;;
         *) printf 'unexpected image inspect format: %s\n' "${format}" >&2; exit 91 ;;
     esac
     exit 0
@@ -115,6 +120,7 @@ if [[ "$1 $2 $3" == "buildx imagetools inspect" ]]; then
         case "${format}" in
             '') printf 'Name: %s\n' "${ref}" ;;
             '{{.Manifest.Digest}}') [[ "${arch}" == amd64 ]] && printf '%s\n' "${amd_digest}" || printf '%s\n' "${arm_digest}" ;;
+            '{{.Manifest.MediaType}}') printf 'application/vnd.oci.image.manifest.v1+json\n' ;;
             *) printf 'unexpected arch manifest format: %s\n' "${format}" >&2; exit 92 ;;
         esac
         exit 0
@@ -170,6 +176,10 @@ INIT_IMAGE=example/vaka-init
 ARCHS=amd64,arm64
 RUNTIME_IMAGE_AMD64=${amd_id}
 RUNTIME_IMAGE_ARM64=${arm_id}
+VAKA_INIT_BINARY_AMD64_SHA256=${init_sha}
+VAKA_INIT_BINARY_ARM64_SHA256=${init_sha}
+NFT_BINARY_AMD64_SHA256=${nft_sha}
+NFT_BINARY_ARM64_SHA256=${nft_sha}
 COMPONENT_MANIFEST_SHA256=${component_sha}
 STATE
 
@@ -185,6 +195,8 @@ export FAKE_RUNTIME_VERSION=v0.1.0
 export FAKE_RUNTIME_INPUTS="${runtime_inputs}"
 export FAKE_NFT_VERSION=1.1.6
 export FAKE_NFT_INPUTS="${nft_inputs}"
+export FAKE_INIT_SHA="${init_sha}"
+export FAKE_NFT_SHA="${nft_sha}"
 
 preflight_out="${tmp}/preflight.out"
 "${REPO_ROOT}/scripts/release-runtime.sh" preflight "${state}" >"${preflight_out}"
