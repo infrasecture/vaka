@@ -36,7 +36,7 @@ The override:
 
 Normal mode locates `emsi/vaka-init:runtime-vX.Y.Z`, verifies its runtime-version
 label, and resolves it to an immutable local `sha256:` image ID. The generated
-Compose override mounts the image ID, not the tag, using an image mount:
+Compose override mounts that local ID, never the mutable tag:
 
 ```yaml
 volumes:
@@ -47,6 +47,14 @@ volumes:
     image:
       subpath: opt/vaka
 ```
+
+Docker Engine 29.0 and 29.1 need a special case: Vaka uses a 40-hex-character
+prefix of the same ID to stay below those versions' filesystem-name limit.
+Docker resolves the prefix only against its local image store and rejects an
+ambiguous prefix. Vaka still retains the complete image ID in override metadata
+and service labels. Engine 29.2 and newer fix the underlying issue. Compose 5.1
+and newer expand image-volume sources back to full IDs, so Vaka rejects that
+Compose version when it is paired with an affected Engine.
 
 Both `/opt/vaka/sbin/vaka-init` and `/opt/vaka/sbin/nft` are mode `0555` in the
 runtime image. A read-only image mount preserves their execute bits; it does not

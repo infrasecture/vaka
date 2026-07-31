@@ -51,6 +51,9 @@ without allowing a newly introduced container-creating verb to bypass policy.
 Known non-creating commands use the lighter reference path. All
 container-creating policy paths require Docker Engine 28.0.0+ with an effective
 API of 1.48+ and Docker Compose 2.35.0+ for read-only image mounts.
+Engine 29.0.x/29.1.x must be paired with Compose earlier than 5.1.0 because of
+an upstream image-mount path-length bug; `vaka doctor` reports this combination
+with an upgrade recommendation.
 
 ## Compose Help
 

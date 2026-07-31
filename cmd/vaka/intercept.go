@@ -315,8 +315,8 @@ func buildInjectionOverride(
 	}
 
 	// Resolve the runtime image only when at least one service needs it. The
-	// mutable tag is used for lookup and repair; Compose receives only the exact
-	// local image ID.
+	// mutable tag is used for lookup and repair; Compose receives the exact local
+	// image ID or its compatibility prefix, never that tag.
 	needsInjection := false
 	for _, e := range entries {
 		if !e.OptOut {
@@ -331,6 +331,7 @@ func buildInjectionOverride(
 			return "", nil, err
 		}
 		runtimeMount.ImageID = resolvedImage.ID
+		runtimeMount.Source = resolvedImage.MountSource
 	}
 
 	overrideYAML, err = compose.BuildOverride(entries, runtimeMount)

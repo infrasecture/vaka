@@ -1,6 +1,7 @@
 package compose_test
 
 import (
+	"encoding/hex"
 	"strings"
 	"testing"
 
@@ -113,6 +114,20 @@ func TestBuildOverrideUsesReadOnlyExactIDImageMount(t *testing.T) {
 	}
 }
 
+func TestBuildOverrideMountSourceFitsEngine29LegacyLayerName(t *testing.T) {
+	compactRuntime := testRuntime
+	compactRuntime.Source = strings.Repeat("a", 40)
+	out, err := compose.BuildOverride(singleEntry("codex"), compactRuntime)
+	if err != nil {
+		t.Fatalf("BuildOverride: %v", err)
+	}
+	mount := parseOverride(t, out).Services["codex"].Volumes[0]
+	legacyLayerIdentity := strings.Repeat("c", 64) + ",src=" + mount.Source + ",dst=" + mount.Target
+	if got := hex.EncodedLen(len(legacyLayerIdentity)); got > 255 {
+		t.Fatalf("Engine 29.0/29.1 layer name length = %d, exceeds NAME_MAX", got)
+	}
+}
+
 func TestBuildOverrideLabelsPolicyAndRuntimeIdentity(t *testing.T) {
 	out, _ := compose.BuildOverride(singleEntry("codex"), testRuntime)
 	doc := parseOverride(t, out)
@@ -172,6 +187,16 @@ func TestBuildOverrideRejectsMissingIdentity(t *testing.T) {
 	}
 	if _, err := compose.BuildOverride(singleEntry("codex"), compose.RuntimeMount{}); err == nil || !strings.Contains(err.Error(), "runtime version") {
 		t.Fatalf("missing runtime version error = %v", err)
+	}
+	invalidRuntime := testRuntime
+	invalidRuntime.ImageID = "sha256:short"
+	if _, err := compose.BuildOverride(singleEntry("codex"), invalidRuntime); err == nil || !strings.Contains(err.Error(), "sha256:<64 hex>") {
+		t.Fatalf("invalid runtime image ID error = %v", err)
+	}
+	invalidRuntime = testRuntime
+	invalidRuntime.Source = strings.Repeat("b", 40)
+	if _, err := compose.BuildOverride(singleEntry("codex"), invalidRuntime); err == nil || !strings.Contains(err.Error(), "does not identify image") {
+		t.Fatalf("unrelated runtime mount source error = %v", err)
 	}
 }
 

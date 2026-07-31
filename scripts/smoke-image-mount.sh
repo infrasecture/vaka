@@ -124,9 +124,13 @@ if [[ "${container_state}" != "running" ]]; then
 fi
 
 requested_mount="$(docker container inspect "${container_id}" --format '{{range .HostConfig.Mounts}}{{if eq .Target "/opt/vaka"}}{{printf "%s|%s|%t|%s" .Type .Source .ReadOnly .ImageOptions.Subpath}}{{end}}{{end}}')"
-expected_request="image|${runtime_id}|true|opt/vaka"
-[[ "${requested_mount}" == "${expected_request}" ]] || \
-    die "/opt/vaka mount request is ${requested_mount:-absent}; expected ${expected_request}"
+IFS='|' read -r requested_type requested_source requested_read_only requested_subpath <<<"${requested_mount}"
+[[ "${requested_type}" == image && "${requested_read_only}" == true && "${requested_subpath}" == opt/vaka ]] || \
+    die "/opt/vaka mount request is ${requested_mount:-absent}; expected image|<runtime-image-id-or-prefix>|true|opt/vaka"
+requested_source_id="$(docker image inspect "${requested_source}" --format '{{.Id}}' 2>/dev/null)" || \
+    die "/opt/vaka mount source ${requested_source:-absent} does not resolve on the selected Docker target"
+[[ "${requested_source_id}" == "${runtime_id}" ]] || \
+    die "/opt/vaka mount source ${requested_source} resolves to ${requested_source_id}; expected ${runtime_id}"
 
 realized_mount="$(docker container inspect "${container_id}" --format '{{range .Mounts}}{{if eq .Destination "/opt/vaka"}}{{printf "%s|%s|%t" .Type .Destination .RW}}{{end}}{{end}}')"
 expected_realized="image|/opt/vaka|false"

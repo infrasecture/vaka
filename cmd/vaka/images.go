@@ -35,9 +35,10 @@ type DockerServices interface {
 	// CheckRuntimeCompatibility verifies the selected Engine and local Compose
 	// plugin before generating image-mount syntax.
 	CheckRuntimeCompatibility(ctx context.Context) error
-	// ResolveRuntimeImage returns the immutable local ID of Vaka's runtime
-	// image. When repair is true, a missing or incompatible image is pulled once
-	// before failing.
+	// ResolveRuntimeImage returns the complete immutable local ID of Vaka's
+	// runtime image and the source syntax selected for the detected Engine and
+	// Compose versions. When repair is true, a missing or incompatible image is
+	// pulled once before failing.
 	ResolveRuntimeImage(ctx context.Context, ref, expectedVersion string, repair bool) (ResolvedImage, error)
 	// ImageExists returns true if ref is available locally. Transport errors
 	// other than NotFound are propagated.
@@ -47,10 +48,12 @@ type DockerServices interface {
 	ResolveRuntime(ctx context.Context, svcName string, svc composetypes.ServiceConfig) (ResolvedRuntime, error)
 }
 
-// ResolvedImage identifies the exact local image selected for a run. Compose
-// receives ID rather than the mutable tag that was used to locate it.
+// ResolvedImage identifies the exact local image selected for a run.
+// MountSource is either ID or the immutable compact prefix required by affected
+// Engine versions; it is never the mutable tag used to locate the image.
 type ResolvedImage struct {
-	ID string
+	ID          string
+	MountSource string
 }
 
 // ResolvedRuntime is resolved service runtime metadata from compose + image.
@@ -76,9 +79,10 @@ type dockerClient interface {
 // The API client is initialized through docker/cli flag/env/config resolution
 // so it targets the same backend Docker CLI would use for this invocation.
 type dockerServices struct {
-	c          dockerClient
-	legacy     legacyRuntimeClient
-	targetDesc string
+	c                          dockerClient
+	legacy                     legacyRuntimeClient
+	targetDesc                 string
+	useCompactImageMountSource bool
 	// cfg is the resolved Docker config file; used to attach registry
 	// credentials (X-Registry-Auth) to pulls so private images work.
 	cfg *configfile.ConfigFile
@@ -168,6 +172,11 @@ func (d *dockerServices) CheckRuntimeCompatibility(ctx context.Context) error {
 	if err := checkComposeCompatibility(composeVersion); err != nil {
 		return err
 	}
+	useCompactSource, err := resolveImageMountVersionCompatibility(server.Version, composeVersion)
+	if err != nil {
+		return fmt.Errorf("Docker target %s: %w", d.targetDesc, err)
+	}
+	d.useCompactImageMountSource = useCompactSource
 	return nil
 }
 
@@ -202,6 +211,9 @@ func (d *dockerServices) ResolveRuntimeImage(ctx context.Context, ref, expectedV
 	}
 
 	resolved, validationErr := validateRuntimeImage(ref, expectedVersion, inspect)
+	if validationErr == nil {
+		resolved = d.selectRuntimeMountSource(resolved)
+	}
 	if validationErr == nil || !repair {
 		return resolved, validationErr
 	}
@@ -219,7 +231,15 @@ func (d *dockerServices) ResolveRuntimeImage(ctx context.Context, ref, expectedV
 	if validationErr != nil {
 		return ResolvedImage{}, fmt.Errorf("runtime image %s remains incompatible after refresh: %w", ref, validationErr)
 	}
-	return resolved, nil
+	return d.selectRuntimeMountSource(resolved), nil
+}
+
+func (d *dockerServices) selectRuntimeMountSource(resolved ResolvedImage) ResolvedImage {
+	resolved.MountSource = resolved.ID
+	if d.useCompactImageMountSource {
+		resolved.MountSource = strings.TrimPrefix(resolved.ID, "sha256:")[:40]
+	}
+	return resolved
 }
 
 func validateRuntimeImage(ref, expectedVersion string, inspect dockerimage.InspectResponse) (ResolvedImage, error) {

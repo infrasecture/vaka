@@ -162,16 +162,29 @@ func TestCheckRuntimeCompatibility(t *testing.T) {
 	t.Cleanup(func() { queryComposeVersion = originalQuery })
 
 	tests := []struct {
-		name           string
-		server         dockertypes.Version
-		clientVersion  string
-		composeVersion string
-		wantErr        string
+		name             string
+		server           dockertypes.Version
+		clientVersion    string
+		composeVersion   string
+		wantCompactMount bool
+		wantErr          string
 	}{
 		{
 			name:           "minimum versions",
 			server:         dockertypes.Version{Version: "28.0.0", APIVersion: "1.48"},
 			composeVersion: "2.35.0",
+		},
+		{
+			name:             "engine 29.1 with compose 5.0",
+			server:           dockertypes.Version{Version: "29.1.3", APIVersion: "1.52"},
+			composeVersion:   "5.0.1",
+			wantCompactMount: true,
+		},
+		{
+			name:           "engine 29.1 with compose 5.1 path bug",
+			server:         dockertypes.Version{Version: "29.1.3", APIVersion: "1.52"},
+			composeVersion: "5.1.0",
+			wantErr:        "path-length incompatibility",
 		},
 		{
 			name:           "engine too old",
@@ -210,6 +223,9 @@ func TestCheckRuntimeCompatibility(t *testing.T) {
 			if tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
 				t.Fatalf("error = %v, want contains %q", err, tc.wantErr)
 			}
+			if err == nil && ds.useCompactImageMountSource != tc.wantCompactMount {
+				t.Fatalf("useCompactImageMountSource = %v, want %v", ds.useCompactImageMountSource, tc.wantCompactMount)
+			}
 		})
 	}
 }
@@ -235,8 +251,27 @@ func TestResolveRuntimeImageReturnsExactIDWithoutPull(t *testing.T) {
 	if got.ID != testRuntimeImageID {
 		t.Fatalf("ID = %q, want %q", got.ID, testRuntimeImageID)
 	}
+	if got.MountSource != testRuntimeImageID {
+		t.Fatalf("MountSource = %q, want complete ID", got.MountSource)
+	}
 	if dc.pullCalled {
 		t.Fatal("present compatible runtime image was re-pulled")
+	}
+}
+
+func TestResolveRuntimeImageUsesCompactSourceForAffectedEngine(t *testing.T) {
+	dc := &fakeDockerClient{inspectResult: runtimeImageConfig("v0.1.0")}
+	ds := &dockerServices{
+		c:                          dc,
+		targetDesc:                 "test-context",
+		useCompactImageMountSource: true,
+	}
+	got, err := ds.ResolveRuntimeImage(context.Background(), "emsi/vaka-init:runtime-v0.1.0", "v0.1.0", false)
+	if err != nil {
+		t.Fatalf("ResolveRuntimeImage: %v", err)
+	}
+	if got.ID != testRuntimeImageID || got.MountSource != strings.Repeat("a", 40) {
+		t.Fatalf("resolved image = %+v", got)
 	}
 }
 

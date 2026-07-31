@@ -262,8 +262,10 @@ partial architecture push can be completed, and only mutable `:latest` is
 rewritten.
 
 The Vaka CLI itself resolves the versioned runtime image, validates its label,
-and passes the exact local `sha256:` image ID to Compose. It never relies on
-`:latest` for execution.
+and normally passes the exact local `sha256:` image ID to Compose. Engine 29.0
+and 29.1 receive an immutable 40-hex-character compatibility prefix instead.
+Vaka retains the complete ID in metadata and never relies on `:latest` for
+execution.
 
 ### Runtime-Only Registry Maintenance
 
@@ -303,7 +305,8 @@ Run the real image-mount smoke after a native build:
 ```
 
 The smoke starts a service through Vaka and verifies that `/opt/vaka` is an
-image mount sourced from the exact local runtime image ID, is read-only, exposes
+image mount whose source resolves to the exact local runtime image ID, is
+read-only, exposes
 both executables with execute permission, and reports the selected stable or
 nightly runtime identity.
 
@@ -319,3 +322,9 @@ VAKA_SMOKE_EXPECT_ENGINE_VERSION=<selected-engine-28-version> \
 VAKA_SMOKE_EXPECT_COMPOSE_VERSION=2.35.0 \
 ./scripts/smoke-image-mount.sh
 ```
+
+Also exercise Engine 29.1.x with Compose 5.0.x. That pair covers the compact
+image-ID mount source required by the Engine 29.0/29.1 filesystem-name bug.
+Engine 29.2 fixes the daemon bug; Compose 5.1+ expands image-volume sources back
+to full IDs, so Vaka deliberately rejects Compose 5.1+ when paired with Engine
+29.0 or 29.1.

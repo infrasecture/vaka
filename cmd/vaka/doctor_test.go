@@ -74,6 +74,38 @@ func TestCheckDockerClientCompatibility(t *testing.T) {
 	}
 }
 
+func TestCheckImageMountVersionCompatibility(t *testing.T) {
+	tests := []struct {
+		name        string
+		engine      string
+		compose     string
+		wantCompact bool
+		wantErr     bool
+	}{
+		{name: "minimum pair", engine: "28.0.0", compose: "2.35.0"},
+		{name: "engine 28 current compose", engine: "28.5.2", compose: "5.3.1"},
+		{name: "engine 29.0 old compose", engine: "29.0.4", compose: "5.0.1", wantCompact: true},
+		{name: "engine 29.0 expanding compose", engine: "29.0.4", compose: "5.1.0", wantErr: true},
+		{name: "engine 29.1 expanding compose", engine: "29.1.5", compose: "5.3.1", wantErr: true},
+		{name: "fixed engine", engine: "29.2.0", compose: "5.3.1"},
+		{name: "current pair", engine: "29.6.2", compose: "5.3.1"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			compact, err := resolveImageMountVersionCompatibility(tc.engine, tc.compose)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("resolveImageMountVersionCompatibility(%q, %q) error = %v, wantErr=%v", tc.engine, tc.compose, err, tc.wantErr)
+			}
+			if tc.wantErr && !strings.Contains(err.Error(), imageMountPathBugEngineFix) {
+				t.Fatalf("error = %v, want Engine upgrade remediation", err)
+			}
+			if err == nil && compact != tc.wantCompact {
+				t.Fatalf("compact source = %v, want %v", compact, tc.wantCompact)
+			}
+		})
+	}
+}
+
 func TestDoctorDockerCompatibilityRejectsPinnedOldClientAPI(t *testing.T) {
 	originalProbe := doctorDockerProbe
 	t.Cleanup(func() { doctorDockerProbe = originalProbe })
@@ -88,6 +120,37 @@ func TestDoctorDockerCompatibilityRejectsPinnedOldClientAPI(t *testing.T) {
 	_, err := check.run(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "Docker client API") {
 		t.Fatalf("pinned old client API error = %v", err)
+	}
+}
+
+func TestDoctorReportsImageMountVersionPairIncompatibility(t *testing.T) {
+	originalProbe := doctorDockerProbe
+	t.Cleanup(func() { doctorDockerProbe = originalProbe })
+	doctorDockerProbe = func(_ context.Context, args []string) (string, string, error) {
+		joined := strings.Join(args, " ")
+		switch {
+		case strings.HasPrefix(joined, "version "):
+			return "29.1.3 1.52 1.52", "", nil
+		case joined == "compose version --short":
+			return "5.1.0", "", nil
+		default:
+			return "", "", fmt.Errorf("unexpected probe: %v", args)
+		}
+	}
+
+	checks := defaultDoctorChecks()
+	engineCheck := mustDoctorCheckByName(t, checks, "docker engine compatible")
+	composeCheck := mustDoctorCheckByName(t, checks, "docker compose compatible")
+	imageMountCheck := mustDoctorCheckByName(t, checks, "docker image mounts supported")
+	if _, err := engineCheck.run(context.Background()); err != nil {
+		t.Fatalf("engine check: %v", err)
+	}
+	if _, err := composeCheck.run(context.Background()); err != nil {
+		t.Fatalf("compose check: %v", err)
+	}
+	_, err := imageMountCheck.run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), imageMountPathBugEngineFix) {
+		t.Fatalf("image mount compatibility error = %v", err)
 	}
 }
 

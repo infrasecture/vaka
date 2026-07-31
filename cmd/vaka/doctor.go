@@ -247,9 +247,11 @@ func defaultDoctorChecks() []doctorCheck {
 	vakaInitImageRef := vakaInitImageReference()
 
 	var (
-		dsOnce sync.Once
-		ds     DockerServices
-		dsErr  error
+		dsOnce                 sync.Once
+		ds                     DockerServices
+		dsErr                  error
+		detectedEngineVersion  string
+		detectedComposeVersion string
 	)
 	getDockerServices := func() (DockerServices, error) {
 		dsOnce.Do(func() {
@@ -309,6 +311,7 @@ func defaultDoctorChecks() []doctorCheck {
 				if err := checkDockerClientCompatibility(fields[2]); err != nil {
 					return "", err
 				}
+				detectedEngineVersion = fields[0]
 				return fmt.Sprintf("server %s / API %s; client API %s", fields[0], fields[1], fields[2]), nil
 			},
 		},
@@ -326,6 +329,7 @@ func defaultDoctorChecks() []doctorCheck {
 				if err := checkComposeCompatibility(v); err != nil {
 					return "", err
 				}
+				detectedComposeVersion = v
 				return v, nil
 			},
 		},
@@ -363,11 +367,24 @@ func defaultDoctorChecks() []doctorCheck {
 			},
 		},
 		{
-			name:      "docker image mounts supported",
-			required:  true,
-			dependsOn: []string{"docker engine compatible", "docker compose compatible", "linux container backend"},
+			name:     "docker image mounts supported",
+			required: true,
+			dependsOn: []string{
+				"docker engine compatible",
+				"docker compose compatible",
+				"linux container backend",
+			},
+			remediation: fmt.Sprintf(
+				"For Docker Engine 29.0/29.1, use Docker Compose %s through 5.0.x or upgrade the Engine to %s+. Other supported Engines work with Compose %s+.",
+				minimumComposeVersion,
+				imageMountPathBugEngineFix,
+				minimumComposeVersion,
+			),
 			run: func(context.Context) (string, error) {
-				return fmt.Sprintf("Engine %s+ / Compose %s+", minimumDockerEngineVersion, minimumComposeVersion), nil
+				if err := checkImageMountVersionCompatibility(detectedEngineVersion, detectedComposeVersion); err != nil {
+					return "", err
+				}
+				return fmt.Sprintf("Engine %s / Compose %s", detectedEngineVersion, detectedComposeVersion), nil
 			},
 		},
 		{

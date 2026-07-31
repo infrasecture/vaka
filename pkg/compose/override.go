@@ -1,6 +1,7 @@
 package compose
 
 import (
+	"encoding/hex"
 	"fmt"
 	"strings"
 
@@ -12,6 +13,11 @@ const (
 	vakaInitPath        = "/opt/vaka/sbin/vaka-init"
 	runtimeMountTarget  = "/opt/vaka"
 	runtimeImageSubpath = "opt/vaka"
+	// Engine 29.0 and 29.1 hex-encode the container ID, mount source, and
+	// destination into one filesystem component. Forty hex characters retain
+	// 160 bits of immutable image identity while keeping that component below
+	// NAME_MAX. Docker rejects an ambiguous local image-ID prefix.
+	runtimeMountSourceLength = 40
 
 	ManagedLabel        = "agent.vaka.managed"
 	PolicyRevisionLabel = "agent.vaka.policy-revision"
@@ -24,6 +30,9 @@ const (
 // service image.
 type RuntimeMount struct {
 	ImageID string
+	// Source is either ImageID or its Engine-compatible immutable prefix. An
+	// empty value defaults to the complete ImageID.
+	Source  string
 	Version string
 }
 
@@ -77,11 +86,21 @@ type secretMount struct {
 }
 
 // BuildOverride constructs the policy-enforcing compose override. The runtime
-// image is mounted by immutable local ID; its mutable lookup tag is never
-// included in the generated Compose model.
+// image is mounted by its complete immutable local ID or an Engine-compatible
+// prefix; its mutable lookup tag is never included in the generated Compose
+// model. Metadata and labels retain the complete ID for auditing and
+// container-state comparisons.
 func BuildOverride(entries []ServiceEntry, runtime RuntimeMount) (string, error) {
 	if strings.TrimSpace(runtime.Version) == "" {
 		return "", fmt.Errorf("build compose override: runtime version is required")
+	}
+	mountSource := ""
+	if runtime.ImageID != "" {
+		var err error
+		mountSource, err = runtimeImageMountSource(runtime.ImageID, runtime.Source)
+		if err != nil {
+			return "", fmt.Errorf("build compose override: %w", err)
+		}
 	}
 	override := composeOverride{
 		Metadata: &runtimeMetadata{
@@ -120,7 +139,7 @@ func BuildOverride(entries []ServiceEntry, runtime RuntimeMount) (string, error)
 			svc.Labels[RuntimeImageLabel] = runtime.ImageID
 			svc.Volumes = []composetypes.ServiceVolumeConfig{{
 				Type:     composetypes.VolumeTypeImage,
-				Source:   runtime.ImageID,
+				Source:   mountSource,
 				Target:   runtimeMountTarget,
 				ReadOnly: true,
 				Image:    &composetypes.ServiceVolumeImage{SubPath: runtimeImageSubpath},
@@ -131,6 +150,24 @@ func BuildOverride(entries []ServiceEntry, runtime RuntimeMount) (string, error)
 	}
 
 	return marshalOverride(override)
+}
+
+func runtimeImageMountSource(imageID, source string) (string, error) {
+	digest, ok := strings.CutPrefix(imageID, "sha256:")
+	if !ok || len(digest) != 64 {
+		return "", fmt.Errorf("runtime image ID %q is not sha256:<64 hex>", imageID)
+	}
+	if _, err := hex.DecodeString(digest); err != nil {
+		return "", fmt.Errorf("runtime image ID %q is not sha256:<64 hex>", imageID)
+	}
+	if source == "" || source == imageID {
+		return imageID, nil
+	}
+	wantCompact := digest[:runtimeMountSourceLength]
+	if source != wantCompact {
+		return "", fmt.Errorf("runtime mount source %q does not identify image %s", source, imageID)
+	}
+	return source, nil
 }
 
 // BuildReferenceOverride returns the metadata-only override used for Compose

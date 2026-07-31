@@ -8,6 +8,13 @@ read-only Compose image mounts used to deliver the runtime on both rootful and
 rootless Docker. If `DOCKER_API_VERSION` is set, it must not pin the client
 below 1.48.
 
+Docker Engine 29.0.x and 29.1.x have an upstream image-mount path-length bug.
+With those Engine versions, use Docker Compose 2.35.0 through 5.0.x, or
+preferably upgrade the Engine to 29.2.0 or newer. Compose 5.1.0 and newer expand
+compact image-ID prefixes before container creation and therefore cannot avoid
+the affected Engine behavior. `vaka doctor` detects and rejects this specific
+combination before running Compose.
+
 ## Linux Packages
 
 Linux release assets are distributed as Debian, RPM, and Arch Linux packages from the [GitHub releases page](https://github.com/infrasecture/vaka/releases).
