@@ -26,13 +26,9 @@ curl -fLO https://github.com/infrasecture/vaka/releases/download/v0.0.2/vaka-0.0
 sudo pacman -U vaka-0.0.2-1-x86_64.pkg.tar.zst
 ```
 
-Package installs place files at:
-
-- `/usr/local/bin/vaka`
-- `/opt/vaka/sbin/vaka-init`
-- `/opt/vaka/sbin/nft`
-
-The host CLI is `/usr/local/bin/vaka`. The `/opt/vaka/sbin` binaries are helper binaries used for baked-in or package-managed environments.
+Packages install the host CLI at `/usr/local/bin/vaka`. They do not install
+`vaka-init` or `nft` on the host; those are delivered together by the
+independently versioned runtime image.
 
 ## Linux Build From Source
 
@@ -86,7 +82,8 @@ brew tap infrasecture/tap
 brew install vaka-nightly
 ```
 
-The Homebrew formula installs both `vaka` and the local `vaka-init` helper binary used by the CLI package.
+The Homebrew formula installs only `vaka`. The Linux helper runtime is pulled
+as an image by Vaka and never executes on the macOS host.
 
 `vaka` and `vaka-nightly` install the same command names, so only one channel should be linked at a time.
 

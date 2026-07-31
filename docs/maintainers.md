@@ -1,28 +1,103 @@
 # Maintainers
 
-This page is for project maintainers and release work. User installation and operation docs live elsewhere.
+This page defines Vaka's build identities and release procedure. User-facing
+installation and operation are documented elsewhere.
 
 ## Build Requirements
 
+- Bash 4 or newer.
 - Docker with buildx.
 - `git`.
-- `gh` for releases.
-- QEMU/binfmt only when building foreign-arch nft images on Linux.
+- QEMU/binfmt when the Linux builder compiles the non-native `nft` target.
+- `gh` only for the publication phase.
 
-The normal build path does not require a local Go toolchain; Go builds run in `golang:1.25-alpine`.
+The build does not require a host Go toolchain. Go, nFPM, Alpine, and the
+runtime assembly inputs use image references pinned by digest. The public
+release build should run on one builder host because prepared state records
+local runtime image IDs which publication verifies on that same Docker target.
 
-## Local Build
+## Component Model
+
+Vaka has exactly two release identities:
+
+1. **CLI version.** Stable releases use an explicit canonical `vX.Y.Z`. There
+   is no CLI version file; `build.sh --cli-version` stamps the selected value
+   into the binary. Nightlies use the 12-character lowercase Git commit ID.
+2. **Runtime bundle version.** The stable base is committed in
+   `internal/runtimebundle/VERSION`. It covers `vaka-init`, the bundled `nft`
+   executable, the `/opt/vaka` image layout and modes, and the generated policy
+   contract consumed inside containers.
+
+There is deliberately no separate `vaka-init` version. It cannot be selected
+independently from the generated policy and bundled `nft`, so another public
+version would create invalid combinations without useful flexibility.
+
+`nft` is even narrower: it is an internal build dependency of the runtime
+bundle. `build.sh` derives a SHA-256 fingerprint from `nft/Dockerfile` and uses
+the local cache tag `vaka-internal/nft-static:<fingerprint>-<arch>`. That image
+is never pushed, included in a manifest, put in a host package, or attached to
+a GitHub release. Its version and fingerprint are recorded in runtime labels
+and `dist/component-manifest.json`.
+
+### When To Bump The CLI
+
+Choose the next CLI `vX.Y.Z` for every stable Vaka release, including releases
+containing only host orchestration, parser, Compose, registry, documentation,
+or packaging changes. Pass it to the release command; do not edit source to
+record it.
+
+### When To Bump The Runtime
+
+Bump `internal/runtimebundle/VERSION` in the same commit whenever shipped
+runtime content or its compatibility contract changes, including:
+
+- `cmd/vaka-init` behavior or runtime dependencies;
+- `pkg/nft`, `pkg/policy`, or generated policy fields/semantics used by
+  `vaka-init`;
+- the bundled nftables version, source verification, build base, or output;
+- the runtime Go toolchain pin when it changes the selected runtime inputs;
+- `docker/init/Dockerfile`, runtime paths, file modes, labels, or image-mount
+  contract;
+- a security fix whose enforcement depends on changed in-container bytes.
+
+Use SemVer to communicate the runtime change:
+
+- **Patch:** compatible implementation, dependency, bundled `nft`, or security
+  fix.
+- **Minor:** backward-compatible runtime capability or policy-contract
+  extension.
+- **Major:** incompatible behavior, policy contract, or filesystem layout.
+
+Do not bump the runtime for host-only CLI behavior, Compose dispatch, recipe
+registry work, documentation, packaging, or tests. Test-only Go files are
+excluded from shipped-component fingerprints.
+
+When nftables itself changes, update its version and verified hashes in
+`nft/Dockerfile` and bump the runtime version. Do not maintain a separate Vaka
+`nft` version or manually copy a cache fingerprint; the build derives it.
+
+Stable CLI releases use the committed runtime version exactly. Nightlies derive
+an effective runtime identity automatically:
+
+```text
+<stable-runtime-base>-nightly.<12-character-git-id>
+```
+
+For example, base `v0.1.0` at commit `0123456789ab` becomes
+`v0.1.0-nightly.0123456789ab`. Do not edit `VERSION` for a nightly. This keeps
+the nightly CLI, generated policy, runtime image, and `vaka-init` exact even
+when several nightly releases share the same stable base. Nightlies never
+update `emsi/vaka-init:latest`.
+
+## Local Builds
+
+Build native host targets:
 
 ```bash
 ./build.sh
 ```
 
-Default behavior builds native host artifacts:
-
-- `ARCHS` defaults to host architecture.
-- `CLI_TARGETS` defaults to host OS/architecture.
-
-Build the full release matrix:
+Build the full release matrix without publishing:
 
 ```bash
 ./build.sh --release
@@ -34,242 +109,164 @@ Build packages:
 ./build.sh --packages
 ```
 
-Build and push release images:
+Linux and Homebrew packages contain only the host `vaka` CLI. `vaka-init` and
+`nft` remain raw internal build outputs used to assemble the runtime image.
+Linux packages install only `/usr/local/bin/vaka`.
+
+To test a non-development release version locally without tagging, pushing an
+image, or publishing anything:
 
 ```bash
-./build.sh --release --packages --push
+./build.sh --release --packages --cli-version v0.2.0
 ```
 
-## Build Outputs
+This is intentionally allowed from an ordinary development checkout. The
+binary reports `v0.2.0`, but prepared state records a dirty tree when relevant,
+and publication rejects it. `build.sh` never publishes as part of a build.
+Legacy `--push` and `--manifest` are rejected.
 
-Raw binaries in `dist/`:
-
-- `vaka-linux-amd64`
-- `vaka-linux-arm64`
-- `vaka-darwin-amd64`
-- `vaka-darwin-arm64`
-- `vaka-init-linux-amd64`
-- `vaka-init-linux-arm64`
-- `nft-linux-amd64`
-- `nft-linux-arm64`
-
-Linux packages:
-
-- `.deb`
-- `.rpm`
-- `.pkg.tar.*`
-
-Package install paths:
-
-- `/usr/local/bin/vaka`
-- `/opt/vaka/sbin/vaka-init`
-- `/opt/vaka/sbin/nft`
-
-## Release Script
-
-Stable release:
+Useful rebuild controls are independent:
 
 ```bash
-git tag v0.0.2
-git push origin v0.0.2
-./release.sh
+./build.sh --rebuild-cli
+./build.sh --rebuild-runtime
+./build.sh --rebuild-nft
 ```
 
-Nightly release:
+`--rebuild-go` remains an alias for rebuilding the CLI and `vaka-init`. Normal
+cache reuse validates both the input fingerprint and output binary hash; a file
+with the right name is not sufficient.
+
+## Prepared Metadata
+
+Every successful build writes:
+
+- `dist/component-manifest.json`: CLI version and artifact hashes, stable and
+  effective runtime versions, runtime image IDs, source fingerprints, bundled
+  nftables metadata, and host package contents.
+- `dist/.vaka-release-state`: strict machine-readable state consumed by runtime
+  preflight/publication.
+
+Release preparation additionally writes an exact artifact list, `SHA256SUMS`,
+and release-gate state binding the Git commit, build state, checksums, Go tests,
+vulnerability scan, image-mount smoke, and registry preflight. Publication
+fails if any bound file changes.
+
+## Stable Release
+
+Push the clean release commit to an origin branch first. Do not create the Git
+tag manually; the publish phase creates it only after immutable runtime
+publication succeeds.
+
+Run preparation on the release builder:
 
 ```bash
-./release.sh --nightly
+./release.sh --version v0.2.0 --prepare-only
 ```
 
-Nightly releases use the 12-character commit SHA as the GitHub release tag and
-mark the release as a pre-release. They build and upload the same artifact
-classes as stable releases, update `Formula/vaka-nightly.rb`, and push the
-Homebrew tap update. The runtime image keeps its independent
-`runtime-vX.Y.Z` tag; nightly releases do not update `:latest`.
+Preparation:
 
-`release.sh`:
+1. requires a clean source tree;
+2. runs the pinned `govulncheck` gate and full Go test suite;
+3. builds the amd64/arm64 Linux runtime and Linux/macOS CLI matrix;
+4. builds CLI-only Debian, RPM, Arch, and Homebrew artifacts;
+5. runs the real read-only image-mount smoke test;
+6. performs a read-only registry preflight;
+7. records bound prepared state.
 
-- requires a clean working tree,
-- initializes and updates the `homebrew-tap` submodule,
-- runs `VERSION=<release-tag> ./build.sh --release --packages --push`,
-- sets `PUBLISH_LATEST=false` for nightly releases,
-- creates release checksums,
-- publishes a GitHub release,
-- updates the stable or nightly Homebrew formula,
-- pushes the tap,
-- commits and pushes the submodule pointer bump when needed.
+It does not push images, create manifests or tags, call GitHub, or update the
+Homebrew tap. Registry reads are required for the immutability preflight.
 
-GitHub release assets include Linux packages, macOS raw binaries, Homebrew bundles, and `SHA256SUMS`. Raw Linux CLI binaries, raw `vaka-init` binaries, and raw `nft` binaries are build outputs but are not uploaded as release assets.
-
-## Homebrew Tap
-
-The tap lives in the `homebrew-tap` submodule.
-
-User-facing install command:
+After reviewing the prepared output, publish on the same builder and Docker
+target:
 
 ```bash
-brew tap infrasecture/tap
-brew install vaka
+./release.sh --version v0.2.0 --publish-prepared
 ```
 
-Nightly:
+The publish phase validates all prepared state again, preflights external Git,
+GitHub, and Homebrew prerequisites, repeats runtime registry preflight, then:
+
+1. pushes only missing immutable runtime architecture tags;
+2. creates the immutable multi-platform runtime manifest when absent;
+3. verifies its exact platform/digest children;
+4. updates runtime `:latest` for a stable release;
+5. creates and pushes the CLI Git tag;
+6. creates or repairs the GitHub release assets;
+7. updates and pushes the Homebrew formula and submodule pointer.
+
+Preparation and publication may also run in one invocation:
 
 ```bash
-brew install vaka-nightly
+./release.sh --version v0.2.0
 ```
 
-The formula installs both:
+Keeping the two commands is recommended for a deliberate review point.
 
-- `vaka`
-- `vaka-init`
+## Nightly Release
 
-## Multi-Arch Publishing
-
-Single host with QEMU:
+Nightlies use the same phases and derive both the CLI Git ID and effective
+runtime identity from `HEAD`:
 
 ```bash
-sudo apt-get install -y qemu-user-static
-./build.sh --release --push
+./release.sh --nightly --prepare-only
+./release.sh --nightly --publish-prepared
 ```
 
-Separate native hosts:
+The GitHub release is marked as a prerelease, the nightly Homebrew formula is
+updated, and runtime `:latest` remains unchanged.
 
-```bash
-ARCHS=amd64 ./build.sh --push
-ARCHS=arm64 ./build.sh --push
-./build.sh --release --manifest
-```
+## Runtime Immutability
 
-Published manifest tags:
+The release registry contains only:
 
-- `emsi/nft-static:<nftables-version>`
-- `emsi/nft-static:latest`
-- `emsi/vaka-init:runtime-<runtime-version>`
-- `emsi/vaka-init:latest`
+- `emsi/vaka-init:runtime-<effective-version>-amd64`;
+- `emsi/vaka-init:runtime-<effective-version>-arm64`;
+- `emsi/vaka-init:runtime-<effective-version>` as the exact multi-platform
+  manifest;
+- `emsi/vaka-init:latest` as a stable-only convenience tag.
 
-Architecture staging tags append `-amd64` or `-arm64`, for example
-`emsi/vaka-init:runtime-v0.1.0-arm64`.
+Before any push, `scripts/release-runtime.sh` checks every existing architecture
+tag by pulling it and comparing its image config ID with the prepared local ID.
+If the version manifest already exists, its platform/digest children must
+exactly equal the architecture tags. Unknown registry errors fail closed.
 
-## CLI And Runtime Versioning
+A missing architecture tag may be pushed. An existing different tag or
+manifest is never replaced. If stable runtime bytes changed under an existing
+version, bump `internal/runtimebundle/VERSION`; do not repair the tag in place.
+Publication retries are safe: matching immutable data is reused, a prior
+partial architecture push can be completed, and only mutable `:latest` is
+rewritten.
 
-Vaka has two release identities with different reasons to change:
+The Vaka CLI itself resolves the versioned runtime image, validates its label,
+and passes the exact local `sha256:` image ID to Compose. It never relies on
+`:latest` for execution.
 
-- The **CLI version** is derived from the Git release tag (or commit description
-  for development builds) and stamped into `cmd/vaka`. Bump it for normal Vaka
-  releases, including host parser, registry, documentation, and orchestration
-  changes.
-- The **runtime bundle version** is the single value in
-  `internal/runtimebundle/VERSION`. It covers `vaka-init`, the bundled `nft`
-  executable, the `/opt/vaka` layout and modes, and the injected policy contract
-  consumed in the container.
+## Verification
 
-There is deliberately no separate `vaka-init` version. `vaka-init`, `nft`, and
-the generated policy contract are delivered and checked as one runtime bundle;
-versioning one component separately would add release states without allowing
-Vaka to usefully mix and match them.
-
-The runtime uses v-prefixed SemVer, but compatibility is deliberately exact.
-The CLI writes `requiredRuntimeVersion` into every generated service policy;
-`vaka-init` refuses to run unless it has the same version. A range would allow
-the policy generator and in-container enforcer to drift silently.
-
-Use the runtime SemVer components as release communication:
-
-- **Patch:** compatible implementation, dependency, bundled `nft`, or security
-  fix that changes runtime image content.
-- **Minor:** backward-compatible runtime capability or injected-policy contract
-  extension.
-- **Major:** incompatible policy contract, behavior, or filesystem layout.
-
-Bump `internal/runtimebundle/VERSION` in the same commit whenever any of these
-change:
-
-- `cmd/vaka-init` behavior or dependencies;
-- nft generation/execution code used by `vaka-init` or the bundled `nft` binary;
-- the Go/runtime build toolchain when it changes the shipped runtime bytes;
-- generated policy fields or semantics consumed by `vaka-init`;
-- runtime image paths, file modes, or image-mount contract;
-- a security fix whose enforcement depends on changed runtime bytes.
-
-Do **not** bump it for host-only CLI parsing, Compose dispatch, recipe-registry,
-documentation, or test changes. This prevents routine CLI releases from
-creating a new runtime image and recreating every managed service.
-
-For a release:
-
-1. Decide whether the changes affect the runtime bundle using the rules above.
-2. If they do, update `internal/runtimebundle/VERSION` and the version shown in
-   `docs/installation.md` and `docker/init/Dockerfile` in the same commit. If
-   they do not, leave the runtime version unchanged.
-3. Create the normal next `vX.Y.Z` Git tag for the CLI release. The CLI has no
-   source version file to edit; `release.sh` passes that Git tag into the build.
-4. Run the normal release command. It republishes identical runtime tags only
-   after verifying their exact image identity and refuses changed bytes under
-   an existing architecture tag.
-
-`build.sh` reads the same VERSION file embedded in both host and runtime code,
-tags the image as `emsi/vaka-init:runtime-vX.Y.Z`, stamps the OCI/runtime label,
-builds a normalized root filesystem without VCS or wall-clock identity, and
-verifies:
-
-- the runtime label matches;
-- no legacy `VOLUME /opt/vaka` is declared;
-- both binaries are mode `0555`;
-- `vaka-init --version` reports the expected version.
-
-Runtime tags are immutable. Never publish changed image content under an
-existing `runtime-vX.Y.Z` tag; bump the runtime version first. Before pushing,
-`build.sh` compares every existing architecture tag with the local image ID and
-refuses replacement when they differ. Identical-content retries remain
-possible. The multi-platform `runtime-vX.Y.Z` manifest is created only when
-absent and is never rewritten; an incomplete published manifest requires a new
-runtime version rather than in-place repair. After a version is first
-published, the exact image comparison is authoritative: even a source or
-toolchain change believed to be semantically neutral needs a version bump if it
-changes the image ID. `:latest` is a convenience tag for humans and Dockerfiles
-only. The Vaka CLI always resolves the versioned tag, validates its label, and
-passes the exact local image ID to Compose.
-
-## Tests
+Run unit and shell contract tests:
 
 ```bash
 go test ./...
+for test_script in scripts/tests/*_test.sh; do "$test_script"; done
 ```
 
-Dockerized:
+Run the real image-mount smoke after a native build:
 
 ```bash
-docker run --rm \
-  -v "$(pwd):/src:ro" -w /src \
-  -e GOWORK=off \
-  golang:1.25-alpine \
-  go test ./...
-```
-
-### Runtime Image-Mount Smoke Test
-
-The unit tests verify the generated Compose override, but the image-mount
-contract also requires an end-to-end test against a real Docker Engine. Build
-the native CLI and runtime image, then run the smoke test against the currently
-selected Docker target:
-
-```bash
-./build.sh --rebuild-go
+./build.sh
 ./scripts/smoke-image-mount.sh
 ```
 
-The script runs `vaka doctor`, starts a real service through `vaka compose up`,
-and verifies that `/opt/vaka` is an `image` mount sourced from the exact local
-`sha256:` runtime image ID. It also verifies that the mount is read-only, both
-runtime binaries are executable, and `vaka-init` reports the required runtime
-version. It inherits `DOCKER_HOST`, `DOCKER_CONTEXT`, TLS variables, and
-`DOCKER_CONFIG`, so the Vaka and inspection commands use the same target.
+The smoke starts a service through Vaka and verifies that `/opt/vaka` is an
+image mount sourced from the exact local runtime image ID, is read-only, exposes
+both executables with execute permission, and reports the selected stable or
+nightly runtime identity.
 
-Before a release that changes the runtime mount or compatibility checks, run
-the same test against the lower-bound matrix: an Engine 28 target and Docker
-Compose 2.35.0. Select or provision that target, install Compose 2.35.0 in an
-isolated `DOCKER_CONFIG`, load the freshly built runtime image into it, and make
-the versions part of the assertion:
+Before a runtime-affecting release, also run against the lower supported
+matrix: Engine 28 and Compose 2.35.0. Select that Docker target and assert the
+exact versions so a newer local installation cannot be mistaken for minimum
+coverage:
 
 ```bash
 DOCKER_HOST=<engine-28-endpoint> \
@@ -278,7 +275,3 @@ VAKA_SMOKE_EXPECT_ENGINE_VERSION=<selected-engine-28-version> \
 VAKA_SMOKE_EXPECT_COMPOSE_VERSION=2.35.0 \
 ./scripts/smoke-image-mount.sh
 ```
-
-The exact-version variables are optional during ordinary development. They are
-required for the lower-bound release check so a newer local daemon or Compose
-plugin cannot accidentally be reported as minimum-version coverage.
