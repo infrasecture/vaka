@@ -58,6 +58,12 @@ printf 'changed' > "${tmp}/b"
 hash_changed="$(vaka_hash_paths "${tmp}" a b)"
 [[ "${hash_ab}" != "${hash_changed}" ]] || fail "content change must affect fingerprint"
 
+mkdir -p "${tmp}/nft"
+printf 'FROM scratch\n' >"${tmp}/nft/Dockerfile"
+nft_hash="$(vaka_nft_inputs_sha256 "${tmp}" 1.2.3)"
+assert_equal "${nft_hash}" "$(vaka_nft_inputs_sha256 "${tmp}" 1.2.3)" "stable nft fingerprint"
+[[ "${nft_hash}" != "$(vaka_nft_inputs_sha256 "${tmp}" 1.2.4)" ]] || fail "nft version must affect fingerprint"
+
 state="${tmp}/state"
 cat > "${state}" <<'STATE'
 FORMAT=1

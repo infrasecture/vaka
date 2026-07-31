@@ -89,6 +89,18 @@ vaka_hash_paths() {
     ) | vaka_sha256_stream
 }
 
+vaka_nft_inputs_sha256() {
+    local repo_root="$1"
+    local nftables_version="$2"
+    (
+        printf 'nft\0nftables=%s\0' "${nftables_version}"
+        cd "${repo_root}"
+        printf 'nft/Dockerfile\0'
+        cat -- nft/Dockerfile
+        printf '\0'
+    ) | vaka_sha256_stream
+}
+
 vaka_state_get() {
     local state_file="$1"
     local key="$2"

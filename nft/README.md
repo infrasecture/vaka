@@ -1,110 +1,57 @@
-# emsi/nft-static
+# Internal nft Build
 
-Portable static `nft` CLI image built from verified upstream Netfilter sources.
+This directory builds the static `nft` executable embedded in Vaka's runtime
+bundle. It is not a separately released Vaka component.
 
-The image is designed to be used as a build artifact source in multi-stage Dockerfiles:
+`build.sh` creates a local, architecture-specific build artifact named:
 
-- copy `/opt/nftables/bin/nft` into your target image
-- use the same binary across Alpine, Ubuntu, Fedora, and other Linux container bases
+```text
+vaka-internal/nft-static:<input-sha256>-<arch>
+```
 
-## What this image provides
+It extracts `/opt/nftables/bin/nft` from that image and copies the binary into
+the versioned `emsi/vaka-init` runtime image. The internal image is never pushed,
+given a multi-platform manifest, included in a host package, or attached to a
+GitHub release.
 
-- `nftables` CLI pinned to `1.1.6`
-- static binary output (`/opt/nftables/bin/nft`)
-- reproducible source build with checksum + signature verification
-- build metadata file at `/opt/nftables/BUILDINFO`
+## Pinned Inputs
 
-## Versions and dependencies
+The Dockerfile currently builds:
 
-Pinned source versions:
+- nftables `1.1.6`;
+- libnftnl `1.3.1`;
+- libmnl `1.0.5`.
 
-- `nftables` `1.1.6`
-- `libnftnl` `1.3.1`
-- `libmnl` `1.0.5`
+Each upstream tarball is checked against a pinned SHA-256 digest and detached
+OpenPGP signature. The expected signer fingerprints are declared in the
+Dockerfile. The Alpine build base is pinned by image digest.
 
-Dependency chain:
+The fingerprint in the local image tag is derived automatically from the
+Dockerfile and selected nftables version. It is a cache identity, not a version
+maintainers edit or publish.
 
-- `nftables -> libnftnl -> libmnl`
+## Why Static
 
-`libmnl` is included intentionally so the full build chain is pinned and reproducible.
-
-## Security and provenance
-
-The build verifies each source tarball in two ways:
-
-1. pinned SHA-256 digest
-2. detached OpenPGP signature (`.sig`)
-
-Pinned signer fingerprints:
-
-- current Netfilter Core Team key (used for current `nftables`/`libnftnl`):
-  - `8C5F7146A1757A65E2422A94D70D1A666ACF2B21`
-- historical Netfilter Core Team key (used for `libmnl-1.0.5`):
-  - `37D964ACC04981C75500FB9BD55D978A8A1420E4`
-
-Upstream references:
-
-- https://www.netfilter.org/projects/nftables/downloads.html
-- https://www.netfilter.org/projects/libnftnl/downloads.html
-- https://www.netfilter.org/projects/libmnl/downloads.html
-- https://www.netfilter.org/files/coreteam-gpg-key-0xD70D1A666ACF2B21.txt
-- https://www.netfilter.org/files/coreteam-gpg-key-0xD55D978A8A1420E4.txt
-
-## Why static
-
-A dynamically linked Linux binary depends on the runtime loader and libc ABI of the target image. In practice this breaks cross-libc portability (glibc vs musl).
-
-This project builds `nft` as fully static, so downstream images do not need compatible runtime libc/loader stacks just to run the CLI.
-
-Implementation detail: because `nftables` links through libtool, static linking is enforced with:
+A dynamically linked Linux executable depends on the target image's loader and
+libc ABI. Vaka mounts the same runtime into services using different base
+distributions, so `nft` is linked fully statically with:
 
 ```bash
 make LDFLAGS="-all-static" src/nft
 ```
 
-## Build and test
+## Developer Check
 
-Run:
-
-```bash
-./build_and_test.sh
-```
-
-The script:
-
-- reads `NFTABLES_VERSION` from [Dockerfile](Dockerfile)
-- builds `--target artifacts`
-- tags:
-  - `emsi/nft-static:<nftables-version>`
-  - `emsi/nft-static:latest`
-- validates:
-  - binary is statically linked
-  - `nft --version` matches the pinned nftables version
-
-## Publish
-
-For the current pinned version:
+Run the native build and static/version checks with:
 
 ```bash
-docker push emsi/nft-static:1.1.6
-docker push emsi/nft-static:latest
+./nft/build_and_test.sh
 ```
 
-## Use in other images (multi-stage)
+The resulting image remains local and internal. The normal multi-architecture
+release build is driven by the repository-level `build.sh`.
 
-Example:
-
-```dockerfile
-FROM emsi/nft-static:1.1.6 AS nftbuild
-FROM ubuntu:24.04
-COPY --from=nftbuild /opt/nftables/bin/nft /opt/vaka/sbin/nft
-ENTRYPOINT ["/opt/vaka/sbin/nft"]
-```
-
-Also works with Alpine/Fedora-style targets using the same copy path.
-
-## Runtime notes
-
-- `nft` manages kernel netfilter state, so runtime privileges still apply.
-- Typical requirement: `CAP_NET_ADMIN`.
-- If you need host firewall control, networking/namespace setup must match your deployment model.
+Changing nftables, its dependencies, verification inputs, build base, or output
+changes the runtime bundle. Update `nft/Dockerfile` and bump
+`internal/runtimebundle/VERSION` in the same commit. There is no independent
+Vaka nft version.

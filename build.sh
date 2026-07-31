@@ -296,9 +296,7 @@ mapfile -d '' runtime_source_files < <(
         ! -name '*_test.go' -print0 | LC_ALL=C sort -z
 )
 
-NFT_INPUTS_SHA256="$(hash_build_inputs nft \
-    "nftables=${NFTABLES_VERSION}" \
-    nft/Dockerfile)"
+NFT_INPUTS_SHA256="$(vaka_nft_inputs_sha256 "${SCRIPT_DIR}" "${NFTABLES_VERSION}")"
 CLI_INPUTS_SHA256="$(hash_build_inputs cli \
     "cli=${CLI_VERSION};runtime=${RUNTIME_VERSION};builder=${GOLANG_IMAGE}" \
     go.mod go.sum "${cli_source_files[@]}")"
