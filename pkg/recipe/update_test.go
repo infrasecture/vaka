@@ -328,6 +328,44 @@ func TestUpdateMatrix(t *testing.T) {
 		}
 	})
 
+	t.Run("unrelated nested untracked files are preserved", func(t *testing.T) {
+		target := installedV1(t)
+		secretDir := filepath.Join(target, ".secrets")
+		secretPath := filepath.Join(secretDir, "openai_api_key")
+		if err := os.Mkdir(secretDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(secretPath, []byte("test-user-secret\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		res, err := updateTo(target, "2.0.0", digestV2, tarballV2(t))
+		if err != nil {
+			t.Fatalf("update: %v", err)
+		}
+		if got := readFile(t, target, ".secrets/openai_api_key"); got != "test-user-secret\n" {
+			t.Fatalf("untracked secret changed to %q", got)
+		}
+		secretInfo, err := os.Stat(secretPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dirInfo, err := os.Stat(secretDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if secretInfo.Mode().Perm() != 0o600 || dirInfo.Mode().Perm() != 0o700 {
+			t.Fatalf("untracked modes changed: dir=%#o file=%#o", dirInfo.Mode().Perm(), secretInfo.Mode().Perm())
+		}
+		lock := lockOf(t, target)
+		if _, tracked := lock.Files[".secrets/openai_api_key"]; tracked {
+			t.Fatal("untracked secret was adopted into the recipe lock")
+		}
+		if len(res.Warnings) != 0 || len(lock.Deviations) != 0 {
+			t.Fatalf("unrelated untracked file produced warnings=%v deviations=%v", res.Warnings, lock.Deviations)
+		}
+	})
+
 	t.Run("untracked collision is skipped and converges after resolution", func(t *testing.T) {
 		target := installedV1(t)
 		mutate(t, target, "newfile.txt", "mine, not the recipe's\n")
