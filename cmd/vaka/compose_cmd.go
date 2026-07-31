@@ -8,14 +8,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// composeMetadataVerbs are compose subcommands that never interact with a
-// compose project. They are proxied without any vaka override so they work
-// outside project directories.
-var composeMetadataVerbs = map[string]bool{
-	"version": true,
-	"ls":      true,
-}
-
 // newComposeCmd exposes the full docker compose surface under `vaka compose`.
 // Flag parsing is disabled so the compose payload reaches the engine verbatim;
 // note that with DisableFlagParsing cobra also stops handling -h/--help, so
@@ -52,19 +44,25 @@ func runComposeCLI(root *RootInvocation, argv []string) error {
 	if inv.Subcommand == "" || isProxySubcommandHelp(inv) {
 		return execDockerComposeFn(inv, "", nil)
 	}
-	if composeMetadataVerbs[inv.Subcommand] {
+	spec := composeCommandSpecFor(inv.Subcommand)
+	switch spec.class {
+	case verbMetadata:
 		return execDockerComposeFn(inv, "", nil)
-	}
-
-	switch classifyComposeVerb(inv.Subcommand) {
 	case verbRender:
 		// One-line notice while an instantiated recipe deviates from its
 		// published version (design §6): the render verbs are the moment
 		// trust is exercised.
 		printDeviationNotice(os.Stderr, inv.ProjectDirectory)
 		return runFull(root.VakaFile, inv, root.VakaInitPresent, root.PullPolicy)
-	default:
+	case verbReference:
+		if spec.ensureRuntime && !root.VakaInitPresent {
+			if err := ensureReferenceRuntime(inv); err != nil {
+				return err
+			}
+		}
 		return runReference(inv)
+	default:
+		return fmt.Errorf("internal error: unhandled compose command class for %q", inv.Subcommand)
 	}
 }
 

@@ -277,6 +277,87 @@ services:
 	}
 }
 
+func TestContainerCreatingAndUnknownComposeCommandsUseFullOverride(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	writeFixtureFiles(t, dir, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+`, `
+services:
+  app:
+    image: alpine:3.20
+    user: "1000:1000"
+    entrypoint: ["sleep"]
+    command: ["infinity"]
+`)
+
+	for _, args := range [][]string{
+		{"compose", "scale", "app=2"},
+		{"compose", "watch"},
+		{"compose", "future-container-command"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			calls, err := runRootCapturingExec(t, args)
+			if err != nil {
+				t.Fatalf("execute: %v", err)
+			}
+			if len(calls) != 1 {
+				t.Fatalf("expected one compose execution, got %+v", calls)
+			}
+			if !strings.Contains(calls[0].overrideYAML, "services:") ||
+				!strings.Contains(calls[0].overrideYAML, "agent.vaka.policy-revision") {
+				t.Fatalf("command must receive full policy override:\n%s", calls[0].overrideYAML)
+			}
+		})
+	}
+}
+
+func TestComposePullEnsuresRuntimeBeforeReferenceProxy(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	writeFixtureFiles(t, dir, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services: {}
+`, `
+services:
+  app:
+    image: alpine:3.20
+`)
+
+	ds := &fakeBuilderDockerServices{}
+	setDockerServicesFactoryForTest(t, ds)
+	var calls []composeExecCall
+	setExecDockerComposeForTest(t, func(inv *ComposeInvocation, overrideYAML string, extraEnv []string) error {
+		calls = append(calls, composeExecCall{
+			args:         append([]string{}, inv.Args...),
+			overrideYAML: overrideYAML,
+			extraEnv:     append([]string{}, extraEnv...),
+		})
+		return nil
+	})
+
+	root := newRootCmd(&RootInvocation{VakaFile: "vaka.yaml"})
+	root.SetArgs([]string{"compose", "pull"})
+	root.SetOut(io.Discard)
+	root.SetErr(io.Discard)
+	if err := root.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !reflect.DeepEqual(ds.ensureRefs, []string{vakaInitImageReference()}) {
+		t.Fatalf("resolved runtime refs = %v, want %s", ds.ensureRefs, vakaInitImageReference())
+	}
+	if len(calls) != 1 || !strings.Contains(calls[0].overrideYAML, "x-vaka:") || strings.Contains(calls[0].overrideYAML, "services:") {
+		t.Fatalf("pull reference call = %+v", calls)
+	}
+}
+
 func TestShowNftArgErrorsNameTheMissingService(t *testing.T) {
 	t.Run("no args", func(t *testing.T) {
 		_, err := runRootCapturingExec(t, []string{"show-nft"})

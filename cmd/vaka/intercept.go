@@ -51,20 +51,69 @@ var defaultDockerCaps = map[string]bool{
 type composeVerbClass int
 
 const (
-	verbRender    composeVerbClass = iota // up, run, create: full policy injection
-	verbReference                         // every other compose verb: metadata-only override
+	verbRender    composeVerbClass = iota // full policy injection
+	verbReference                         // metadata-only override
+	verbMetadata                          // direct proxy; no project or override required
 )
 
-// classifyComposeVerb maps a compose subcommand name to its execution class.
-// Unknown verbs default to reference forwarding so future docker compose
-// subcommands keep working (docker rejects truly bogus ones itself).
-func classifyComposeVerb(verb string) composeVerbClass {
-	switch verb {
-	case "up", "run", "create":
-		return verbRender
-	default:
-		return verbReference
+type composeCommandSpec struct {
+	class         composeVerbClass
+	ensureRuntime bool
+}
+
+// composeCommandSpecs is the security boundary for Compose dispatch. Commands
+// known not to create containers use the lightweight reference path. Commands
+// that can create or recreate containers require a full policy render.
+var composeCommandSpecs = map[string]composeCommandSpec{
+	"attach":  {class: verbReference},
+	"build":   {class: verbReference},
+	"commit":  {class: verbReference},
+	"config":  {class: verbReference},
+	"cp":      {class: verbReference},
+	"create":  {class: verbRender},
+	"down":    {class: verbReference},
+	"events":  {class: verbReference},
+	"exec":    {class: verbReference},
+	"export":  {class: verbReference},
+	"help":    {class: verbMetadata},
+	"images":  {class: verbReference},
+	"kill":    {class: verbReference},
+	"logs":    {class: verbReference},
+	"ls":      {class: verbMetadata},
+	"pause":   {class: verbReference},
+	"port":    {class: verbReference},
+	"ps":      {class: verbReference},
+	"publish": {class: verbReference},
+	"pull":    {class: verbReference, ensureRuntime: true},
+	"push":    {class: verbReference},
+	"restart": {class: verbReference},
+	"rm":      {class: verbReference},
+	"run":     {class: verbRender},
+	"scale":   {class: verbRender},
+	"start":   {class: verbReference},
+	"stats":   {class: verbReference},
+	"stop":    {class: verbReference},
+	"top":     {class: verbReference},
+	"unpause": {class: verbReference},
+	"up":      {class: verbRender},
+	"version": {class: verbMetadata},
+	"volumes": {class: verbReference},
+	"wait":    {class: verbReference},
+	"watch":   {class: verbRender},
+}
+
+// composeCommandSpecFor defaults unknown future verbs to full policy rendering.
+// This keeps forwarding extensible without allowing a newly introduced
+// container-creating command to bypass Vaka's entrypoint and firewall.
+func composeCommandSpecFor(verb string) composeCommandSpec {
+	if spec, ok := composeCommandSpecs[verb]; ok {
+		return spec
 	}
+	return composeCommandSpec{class: verbRender}
+}
+
+func classifyComposeVerb(verb string) composeVerbClass {
+	return composeCommandSpecFor(verb).class
 }
 
 // execDockerCompose executes docker compose with the given args.
@@ -325,6 +374,22 @@ func runReference(inv *ComposeInvocation) error {
 	execErr := execDockerComposeFn(inv, overrideYAML, extraEnv)
 	cleanupLegacyRuntime(ctx, ds, legacyState)
 	return execErr
+}
+
+// ensureReferenceRuntime preserves `vaka compose pull` as an offline-prefetch
+// workflow without loading policy or inspecting service images. The runtime is
+// resolved on the same Docker target as the subsequent Compose invocation.
+func ensureReferenceRuntime(inv *ComposeInvocation) error {
+	ctx := context.Background()
+	ds, err := newDockerServices(inv, PullNever)
+	if err != nil {
+		return err
+	}
+	if err := ds.CheckRuntimeCompatibility(ctx); err != nil {
+		return err
+	}
+	_, err = ds.ResolveRuntimeImage(ctx, vakaInitImageReference(), runtimeBundleVersion, true)
+	return err
 }
 
 // servicesNeedingPrebuild returns the sorted list of services whose image must

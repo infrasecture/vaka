@@ -19,6 +19,8 @@ func TestClassifyComposeVerb(t *testing.T) {
 		{"up", verbRender},
 		{"run", verbRender},
 		{"create", verbRender},
+		{"scale", verbRender},
+		{"watch", verbRender},
 		{"volumes", verbReference},
 		{"down", verbReference},
 		{"stop", verbReference},
@@ -28,7 +30,9 @@ func TestClassifyComposeVerb(t *testing.T) {
 		{"ps", verbReference},
 		{"exec", verbReference},
 		{"pull", verbReference},
-		{"foo", verbReference},
+		{"version", verbMetadata},
+		{"ls", verbMetadata},
+		{"future-container-command", verbRender},
 	}
 	for _, tc := range tests {
 		if got := classifyComposeVerb(tc.verb); got != tc.want {
