@@ -1,21 +1,9 @@
 #!/usr/bin/env bash
-# release.sh — build and publish a vaka GitHub release from local machine.
+# release.sh — prepare and optionally publish a vaka release from a builder host.
 #
-# Default mode (stable release):
-#   - Requires a release tag (vX.Y.Z) pointing at HEAD.
-#   - Fails if no release tag is found.
-#
-# Nightly mode:
-#   - Uses short commit SHA (12 chars) as the release tag.
-#   - Marks the release as a pre-release.
-#
-# Build behavior:
-#   - Calls build.sh exactly once:
-#       VERSION=<release-tag> ./build.sh --release --packages --push --rebuild-go
-#     Nightly mode sets PUBLISH_LATEST=false so :latest remains stable-only.
-#   - Generates SHA256SUMS for this release's artifacts only.
-#   - Updates Homebrew tap formulas, then commits + pushes the vaka repo
-#     submodule pointer bump when changed.
+# Stable versions are explicit. Preparation builds and tests without publishing;
+# publication consumes the exact prepared state, publishes the runtime, and only
+# then creates the Git tag and GitHub/Homebrew release data.
 #
 # Requirements:
 #   - git
@@ -25,29 +13,37 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${SCRIPT_DIR}"
+source "${SCRIPT_DIR}/scripts/lib/release-versioning.sh"
 
 usage() {
     cat <<'EOF'
 Usage:
-  ./release.sh [--nightly] [--title TITLE] [--notes-file PATH]
+  ./release.sh --version vX.Y.Z [--prepare-only|--publish-prepared]
+  ./release.sh --nightly [--prepare-only|--publish-prepared]
 
 Options:
-  --nightly          Create a nightly pre-release tagged with short git SHA.
+  --version VERSION  Stable CLI release version; tag creation happens at publish.
+  --nightly          Use the 12-character Git ID and a commit-specific runtime.
+  --prepare-only     Build, test, package, and preflight without publishing.
+  --publish-prepared Publish existing dist/ prepared state; do not rebuild.
   --title TITLE      Override GitHub release title (default: tag).
   --notes-file PATH  Use explicit release notes file (otherwise --generate-notes).
   -h, --help         Show this help.
 
 Behavior:
-  - Default mode requires a release tag (vX.Y.Z) on HEAD; otherwise exits non-zero.
-  - Build is executed once via: VERSION=<release-tag> ./build.sh --release --packages --push --rebuild-go
-  - Nightly mode sets PUBLISH_LATEST=false, so container :latest tags remain
-    stable-release tags.
+  - With neither phase flag, preparation and publication run in sequence.
+  - Preparation never writes registry, Git, GitHub, or Homebrew state.
+  - Stable tags and :latest are updated only after immutable runtime publication.
+  - Nightlies never update the runtime :latest tag.
   - If Homebrew formula changes, script updates and pushes homebrew-tap,
     then commits and pushes the vaka repo submodule pointer bump.
 EOF
 }
 
 nightly=false
+requested_version=""
+prepare_only=false
+publish_prepared=false
 release_title=""
 notes_file=""
 
@@ -55,6 +51,19 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --nightly)
             nightly=true
+            shift
+            ;;
+        --version)
+            [[ $# -ge 2 ]] || { echo "ERROR: --version requires a value" >&2; exit 1; }
+            requested_version="$2"
+            shift 2
+            ;;
+        --prepare-only)
+            prepare_only=true
+            shift
+            ;;
+        --publish-prepared)
+            publish_prepared=true
             shift
             ;;
         --title)
@@ -78,6 +87,24 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [[ "${prepare_only}" == true && "${publish_prepared}" == true ]]; then
+    echo "ERROR: --prepare-only and --publish-prepared are mutually exclusive" >&2
+    exit 1
+fi
+if [[ "${nightly}" == true && -n "${requested_version}" ]]; then
+    echo "ERROR: --nightly and --version are mutually exclusive" >&2
+    exit 1
+fi
+if [[ "${nightly}" == false ]]; then
+    [[ -n "${requested_version}" ]] || { echo "ERROR: stable releases require --version vX.Y.Z" >&2; exit 1; }
+    vaka_require_stable_version "CLI release version" "${requested_version}"
+fi
+
+do_prepare=true
+do_publish=true
+[[ "${prepare_only}" == true ]] && do_publish=false
+[[ "${publish_prepared}" == true ]] && do_prepare=false
 
 require_cmd() {
     local c="$1"
@@ -129,7 +156,6 @@ class ${class_name} < Formula
 
   def install
     bin.install "vaka"
-    bin.install "vaka-init"
   end
 
   test do
@@ -142,14 +168,12 @@ EOF
 
 make_brew_bundle() {
     local darwin_bin="$1"
-    local init_bin="$2"
-    local out_tar="$3"
+    local out_tar="$2"
     local tmp
     tmp="$(mktemp -d)"
     cp "${darwin_bin}" "${tmp}/vaka"
-    cp "${init_bin}" "${tmp}/vaka-init"
-    chmod 0755 "${tmp}/vaka" "${tmp}/vaka-init"
-    tar -C "${tmp}" -czf "${out_tar}" vaka vaka-init
+    chmod 0755 "${tmp}/vaka"
+    tar -C "${tmp}" -czf "${out_tar}" vaka
     rm -rf -- "${tmp}"
 }
 
@@ -161,16 +185,24 @@ make_brew_bundle() {
 # a local/dev build with VAKA_SKIP_VULNCHECK=1 when a currently-unfixable
 # dependency would otherwise block functionality testing.
 #   Keep the default image in sync with build.sh's GOLANG_IMAGE.
+VULNCHECK_RESULT=passed
 govulncheck_gate() {
-    local image="${GOLANG_IMAGE:-golang:1.25.12-alpine}"
+    local image="${GOLANG_IMAGE:-golang:1.25.12-alpine@sha256:56961d79ea8129efddcc0b8643fd8a5416b4e6228cfd477e3fd61deb2672c587}"
+    local vuln_version="${GOVULNCHECK_VERSION:-v1.6.0}"
     local allowlist_file="${SCRIPT_DIR}/.govulncheck-allowlist"
     local out rc reachable allow blocking count id attempt
 
     if [[ -n "${VAKA_SKIP_VULNCHECK:-}" ]]; then
+        VULNCHECK_RESULT=skipped
         echo "==> govulncheck gate SKIPPED (VAKA_SKIP_VULNCHECK set)." >&2
         echo "    Do not skip this for a public release." >&2
         return 0
     fi
+
+    [[ "${vuln_version}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+        echo "ERROR: GOVULNCHECK_VERSION must be a canonical vX.Y.Z module version" >&2
+        exit 1
+    }
 
     echo "==> govulncheck: scanning for reachable vulnerabilities (${image})..."
     # Reuse build.sh's module/build caches so this does not re-download every
@@ -183,7 +215,7 @@ govulncheck_gate() {
             -v "vaka-gomodcache:/go/pkg/mod" \
             -v "vaka-gobuildcache:/root/.cache/go/build" \
             -w /src "${image}" \
-            sh -c 'go install golang.org/x/vuln/cmd/govulncheck@latest && govulncheck ./...' 2>&1)"
+            sh -c "go install golang.org/x/vuln/cmd/govulncheck@${vuln_version} && govulncheck ./..." 2>&1)"
         rc=$?
         set -e
         # 0 = clean, 3 = findings; both are definitive. Anything else is a
@@ -237,273 +269,302 @@ govulncheck_gate() {
     exit 1
 }
 
+go_test_gate() {
+    local image="${GOLANG_IMAGE:-golang:1.25.12-alpine@sha256:56961d79ea8129efddcc0b8643fd8a5416b4e6228cfd477e3fd61deb2672c587}"
+    echo "==> Running release test suite (${image})..."
+    docker run --rm \
+        --volume "${SCRIPT_DIR}:/src:ro" \
+        --volume "vaka-gomodcache:/go/pkg/mod" \
+        --volume "vaka-gobuildcache:/root/.cache/go/build" \
+        --workdir /src \
+        --env GOWORK=off \
+        "${image}" \
+        go test ./...
+}
+
+require_clean_source() {
+    git rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
+        echo "ERROR: not inside a git repository" >&2
+        exit 1
+    }
+    [[ -z "$(git status --porcelain)" ]] || {
+        echo "ERROR: working tree is not clean; commit/stash changes before release" >&2
+        exit 1
+    }
+}
+
+prepare_artifacts() {
+    local pkg_version="$1"
+    local head_commit="$2"
+    local path name hash
+    local -a artifact_names=()
+    local -a package_files=()
+
+    artifacts=(
+        dist/vaka-darwin-amd64
+        dist/vaka-darwin-arm64
+        dist/component-manifest.json
+    )
+    for path in "${artifacts[@]}"; do
+        [[ -f "${path}" ]] || { echo "ERROR: missing release artifact: ${path}" >&2; exit 1; }
+    done
+
+    brew_bundle_amd="dist/vaka-brew-darwin-amd64.tar.gz"
+    brew_bundle_arm="dist/vaka-brew-darwin-arm64.tar.gz"
+    make_brew_bundle dist/vaka-darwin-amd64 "${brew_bundle_amd}"
+    make_brew_bundle dist/vaka-darwin-arm64 "${brew_bundle_arm}"
+    artifacts+=("${brew_bundle_amd}" "${brew_bundle_arm}")
+
+    mapfile -d '' package_files < <(
+        find dist -maxdepth 1 -type f \
+            \( -name "vaka_${pkg_version}_*.deb" -o -name "vaka-${pkg_version}-*.rpm" \
+               -o -name "vaka-${pkg_version}-*.pkg.tar.*" -o -name "vaka_${pkg_version}_*.pkg.tar.*" \) \
+            -print0 | LC_ALL=C sort -z
+    )
+    [[ "$(printf '%s\n' "${package_files[@]}" | grep -c '\.deb$')" -eq 2 ]] || { echo "ERROR: release requires exactly two .deb packages" >&2; exit 1; }
+    [[ "$(printf '%s\n' "${package_files[@]}" | grep -c '\.rpm$')" -eq 2 ]] || { echo "ERROR: release requires exactly two .rpm packages" >&2; exit 1; }
+    [[ "$(printf '%s\n' "${package_files[@]}" | grep -c '\.pkg\.tar\.')" -eq 2 ]] || { echo "ERROR: release requires exactly two Arch packages" >&2; exit 1; }
+    artifacts+=("${package_files[@]}")
+
+    : >dist/SHA256SUMS
+    for path in "${artifacts[@]}"; do
+        name="$(basename "${path}")"
+        hash="$(sha256_of "${path}")"
+        printf '%s  %s\n' "${hash}" "${name}" >>dist/SHA256SUMS
+        artifact_names+=("${name}")
+    done
+    artifacts+=(dist/SHA256SUMS)
+
+    artifacts_file=dist/.vaka-release-artifacts
+    {
+        printf 'FORMAT=1\nGIT_COMMIT=%s\nCLI_VERSION=%s\n' "${head_commit}" "${release_tag}"
+        for path in "${artifacts[@]}"; do
+            printf 'ARTIFACT=%s\n' "${path}"
+        done
+    } >"${artifacts_file}"
+}
+
+load_prepared_artifacts() {
+    local path hash name expected
+    local artifacts_file=dist/.vaka-release-artifacts
+    [[ -f "${artifacts_file}" ]] || { echo "ERROR: prepared artifact list is missing" >&2; exit 1; }
+    [[ "$(vaka_state_require "${artifacts_file}" FORMAT)" == 1 ]] || { echo "ERROR: unsupported artifact-list format" >&2; exit 1; }
+    [[ "$(vaka_state_require "${artifacts_file}" GIT_COMMIT)" == "${head_commit}" ]] || { echo "ERROR: artifact list belongs to another commit" >&2; exit 1; }
+    [[ "$(vaka_state_require "${artifacts_file}" CLI_VERSION)" == "${release_tag}" ]] || { echo "ERROR: artifact list belongs to another CLI version" >&2; exit 1; }
+
+    mapfile -t artifacts < <(awk -F= '$1 == "ARTIFACT" { print substr($0, 10) }' "${artifacts_file}")
+    [[ "${#artifacts[@]}" -gt 0 ]] || { echo "ERROR: prepared artifact list is empty" >&2; exit 1; }
+    for path in "${artifacts[@]}"; do
+        [[ "${path}" =~ ^dist/[A-Za-z0-9._+-]+$ && "${path}" != *..* ]] || { echo "ERROR: unsafe prepared artifact path: ${path}" >&2; exit 1; }
+        [[ -f "${path}" ]] || { echo "ERROR: prepared artifact is missing: ${path}" >&2; exit 1; }
+        case "$(basename "${path}")" in
+            nft-*|vaka-init-*) echo "ERROR: runtime internals must not be GitHub release assets: ${path}" >&2; exit 1 ;;
+        esac
+    done
+
+    [[ -f dist/SHA256SUMS ]] || { echo "ERROR: SHA256SUMS is missing" >&2; exit 1; }
+    while read -r expected name; do
+        [[ "${expected}" =~ ^[0-9a-f]{64}$ && "${name}" =~ ^[A-Za-z0-9._+-]+$ ]] || { echo "ERROR: malformed SHA256SUMS entry" >&2; exit 1; }
+        path="dist/${name}"
+        [[ -f "${path}" ]] || { echo "ERROR: checksummed artifact is missing: ${path}" >&2; exit 1; }
+        hash="$(sha256_of "${path}")"
+        [[ "${hash}" == "${expected}" ]] || { echo "ERROR: artifact checksum mismatch: ${path}" >&2; exit 1; }
+    done <dist/SHA256SUMS
+
+    brew_bundle_amd=dist/vaka-brew-darwin-amd64.tar.gz
+    brew_bundle_arm=dist/vaka-brew-darwin-arm64.tar.gz
+    [[ -f "${brew_bundle_amd}" && -f "${brew_bundle_arm}" ]] || { echo "ERROR: prepared Homebrew bundles are missing" >&2; exit 1; }
+}
+
+write_release_gates() {
+    local state_sha
+    state_sha="$(sha256_of dist/.vaka-release-state)"
+    {
+        printf 'FORMAT=1\nGIT_COMMIT=%s\nCLI_VERSION=%s\n' "${head_commit}" "${release_tag}"
+        printf 'BUILD_STATE_SHA256=%s\n' "${state_sha}"
+        printf 'ARTIFACT_LIST_SHA256=%s\n' "$(sha256_of dist/.vaka-release-artifacts)"
+        printf 'CHECKSUMS_SHA256=%s\n' "$(sha256_of dist/SHA256SUMS)"
+        printf 'GO_TEST=passed\nVULNCHECK=%s\nIMAGE_MOUNT_SMOKE=passed\nREGISTRY_PREFLIGHT=passed\n' "${VULNCHECK_RESULT}"
+    } >dist/.vaka-release-gates
+}
+
+verify_release_gates() {
+    local gates=dist/.vaka-release-gates
+    [[ -f "${gates}" ]] || { echo "ERROR: prepared release gates are missing" >&2; exit 1; }
+    [[ "$(vaka_state_require "${gates}" FORMAT)" == 1 ]] || { echo "ERROR: unsupported release-gate format" >&2; exit 1; }
+    [[ "$(vaka_state_require "${gates}" GIT_COMMIT)" == "${head_commit}" ]] || { echo "ERROR: release gates belong to another commit" >&2; exit 1; }
+    [[ "$(vaka_state_require "${gates}" CLI_VERSION)" == "${release_tag}" ]] || { echo "ERROR: release gates belong to another CLI version" >&2; exit 1; }
+    [[ "$(vaka_state_require "${gates}" BUILD_STATE_SHA256)" == "$(sha256_of dist/.vaka-release-state)" ]] || { echo "ERROR: prepared build state changed after release gates" >&2; exit 1; }
+    [[ "$(vaka_state_require "${gates}" ARTIFACT_LIST_SHA256)" == "$(sha256_of dist/.vaka-release-artifacts)" ]] || { echo "ERROR: prepared artifact list changed after release gates" >&2; exit 1; }
+    [[ "$(vaka_state_require "${gates}" CHECKSUMS_SHA256)" == "$(sha256_of dist/SHA256SUMS)" ]] || { echo "ERROR: prepared checksums changed after release gates" >&2; exit 1; }
+    for key in GO_TEST VULNCHECK IMAGE_MOUNT_SMOKE REGISTRY_PREFLIGHT; do
+        [[ "$(vaka_state_require "${gates}" "${key}")" == passed ]] || { echo "ERROR: release gate ${key} did not pass" >&2; exit 1; }
+    done
+}
+
+initialize_publish_services() {
+    require_cmd gh
+    [[ -z "${notes_file}" || -f "${notes_file}" ]] || { echo "ERROR: release notes file not found: ${notes_file}" >&2; exit 1; }
+    git config --file .gitmodules --get "submodule.homebrew-tap.path" >/dev/null 2>&1 || {
+        echo "ERROR: homebrew-tap submodule is not configured" >&2
+        exit 1
+    }
+
+    origin_url="$(git config --get remote.origin.url || true)"
+    repo_slug="$(printf '%s' "${origin_url}" | sed -E -e 's#^git@github\.com:##' -e 's#^https://github\.com/##' -e 's#\.git$##')"
+    if [[ -n "${repo_slug}" && "${repo_slug}" != "${origin_url}" ]]; then
+        gh repo view "${repo_slug}" >/dev/null 2>&1 || { echo "ERROR: gh cannot access ${repo_slug}" >&2; exit 1; }
+    else
+        gh auth token >/dev/null 2>&1 || { echo "ERROR: gh has no active auth token" >&2; exit 1; }
+    fi
+
+    echo "==> Preparing Homebrew tap checkout..."
+    git submodule update --init --checkout -- homebrew-tap
+    tap_path="${SCRIPT_DIR}/homebrew-tap"
+    [[ -d "${tap_path}" ]] || { echo "ERROR: homebrew-tap checkout is missing" >&2; exit 1; }
+    [[ -z "$(git -C "${tap_path}" status --porcelain)" ]] || { echo "ERROR: homebrew-tap has uncommitted changes" >&2; exit 1; }
+
+    git fetch --quiet origin
+    git branch -r --contains "${head_commit}" | grep -q . || {
+        echo "ERROR: release commit ${head_commit} is not reachable from an origin branch" >&2
+        exit 1
+    }
+
+    validate_release_tag
+    github_release_exists=false
+    if gh release view "${release_tag}" >/dev/null 2>&1; then
+        existing_prerelease="$(gh release view "${release_tag}" --json isPrerelease --jq .isPrerelease)"
+        [[ "${existing_prerelease}" == "${is_prerelease}" ]] || { echo "ERROR: existing GitHub release has the wrong prerelease state" >&2; exit 1; }
+        github_release_exists=true
+    fi
+}
+
+validate_release_tag() {
+    local target remote_target
+    if git rev-parse -q --verify "refs/tags/${release_tag}" >/dev/null; then
+        target="$(git rev-list -n1 "${release_tag}")"
+        [[ "${target}" == "${head_commit}" ]] || { echo "ERROR: local tag ${release_tag} points to ${target}" >&2; exit 1; }
+    fi
+
+    remote_target="$(git ls-remote --tags origin "refs/tags/${release_tag}^{}" | awk '{print $1}')"
+    [[ -n "${remote_target}" ]] || remote_target="$(git ls-remote --tags origin "refs/tags/${release_tag}" | awk '{print $1}')"
+    if [[ -n "${remote_target}" ]]; then
+        [[ "${remote_target}" == "${head_commit}" ]] || { echo "ERROR: remote tag ${release_tag} points to ${remote_target}" >&2; exit 1; }
+    fi
+}
+
+ensure_release_tag() {
+    validate_release_tag
+    if ! git rev-parse -q --verify "refs/tags/${release_tag}" >/dev/null; then
+        git tag "${release_tag}" "${head_commit}"
+    fi
+    if ! git ls-remote --exit-code --tags origin "refs/tags/${release_tag}" >/dev/null 2>&1; then
+        echo "==> Pushing release tag ${release_tag}"
+        git push origin "refs/tags/${release_tag}:refs/tags/${release_tag}"
+    fi
+}
+
 require_cmd git
 require_cmd docker
-require_cmd gh
-
-if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    echo "ERROR: not inside a git repository" >&2
-    exit 1
-fi
-
-if [[ -n "$(git status --porcelain)" ]]; then
-    echo "ERROR: working tree is not clean; commit/stash changes before release" >&2
-    exit 1
-fi
-
-if ! git config --file .gitmodules --get "submodule.homebrew-tap.path" >/dev/null 2>&1; then
-    echo "ERROR: homebrew-tap submodule is not configured in .gitmodules" >&2
-    exit 1
-fi
-
-echo "==> Ensuring homebrew-tap submodule checkout..."
-git submodule update --init --checkout -- homebrew-tap
-tap_path="${SCRIPT_DIR}/homebrew-tap"
-if [[ ! -d "${tap_path}" ]]; then
-    echo "ERROR: homebrew-tap submodule directory is missing at ${tap_path}" >&2
-    exit 1
-fi
-if [[ -n "$(git -C "${tap_path}" status --porcelain)" ]]; then
-    echo "ERROR: homebrew-tap submodule has uncommitted changes; clean it first" >&2
-    exit 1
-fi
-
-# Keep tap branch current before writing formulas.
-# Single-network-step sync: fetch once, then set local main to origin/main.
-git -C "${tap_path}" fetch origin main
-git -C "${tap_path}" checkout -B main origin/main
-
-origin_url="$(git config --get remote.origin.url || true)"
-repo_slug=""
-if [[ -n "${origin_url}" ]]; then
-    repo_slug="$(printf '%s' "${origin_url}" | sed -E \
-        -e 's#^git@github\.com:##' \
-        -e 's#^https://github\.com/##' \
-        -e 's#\.git$##')"
-fi
-
-if [[ -n "${repo_slug}" && "${repo_slug}" != "${origin_url}" ]]; then
-    if ! gh repo view "${repo_slug}" >/dev/null 2>&1; then
-        echo "ERROR: gh cannot access GitHub repository ${repo_slug}." >&2
-        echo "       Check active account/token with: gh auth status" >&2
-        exit 1
-    fi
-else
-    if ! gh auth token >/dev/null 2>&1; then
-        echo "ERROR: gh has no active auth token; run: gh auth login" >&2
-        exit 1
-    fi
-fi
+require_clean_source
 
 head_commit="$(git rev-parse --verify HEAD)"
 head_short="$(git rev-parse --short=12 HEAD)"
-
-release_tag=""
 is_prerelease=false
-
-if [[ "${nightly}" == "true" ]]; then
+if [[ "${nightly}" == true ]]; then
     release_tag="${head_short}"
     is_prerelease=true
 else
-    mapfile -t release_tags < <(git tag --points-at HEAD | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$' || true)
-
-    if [[ "${#release_tags[@]}" -eq 0 ]]; then
-        echo "ERROR: no release tag (vX.Y.Z) points at HEAD." >&2
-        echo "       Tag the commit first, or run with --nightly." >&2
-        exit 1
-    fi
-    if [[ "${#release_tags[@]}" -gt 1 ]]; then
-        echo "ERROR: multiple release tags point at HEAD: ${release_tags[*]}" >&2
-        echo "       Keep a single release tag on HEAD before running release.sh." >&2
-        exit 1
-    fi
-    release_tag="${release_tags[0]}"
+    release_tag="${requested_version}"
 fi
-
-if gh release view "${release_tag}" >/dev/null 2>&1; then
-    echo "ERROR: GitHub release already exists for tag ${release_tag}" >&2
-    exit 1
-fi
-
-if [[ -z "${release_title}" ]]; then
-    if [[ "${nightly}" == "true" ]]; then
-        release_title="vaka-${head_short}"
-    else
-        release_title="${release_tag}"
-    fi
-fi
-
-govulncheck_gate
-
-echo "==> Building release artifacts and publishing container images with VERSION=${release_tag}"
-publish_latest=true
-if [[ "${is_prerelease}" == "true" ]]; then
-    publish_latest=false
-fi
-# --rebuild-go forces a fresh Go build: build.sh otherwise skips the build when
-# dist/ already holds binaries (existence check), which would ship stale binaries
-# from a previous release/version. A release must always rebuild from the tagged
-# source.
-VERSION="${release_tag}" PUBLISH_LATEST="${publish_latest}" ./build.sh --release --packages --push --rebuild-go
-
-artifacts=()
-artifact_names=()
 pkg_version="${release_tag#v}"
+[[ -n "${release_title}" ]] || release_title="$( [[ "${nightly}" == true ]] && printf 'vaka-%s' "${head_short}" || printf '%s' "${release_tag}" )"
 
-# GitHub release payload policy:
-#   - include package artifacts (.deb/.rpm/.pkg.tar.*)
-#   - include macOS vaka binaries
-#   - include Homebrew bundles containing both vaka + vaka-init
-#   - exclude nft/vaka-init artifacts and Linux raw vaka binaries
-required_macos=(
-    "dist/vaka-darwin-amd64"
-    "dist/vaka-darwin-arm64"
-)
-for path in "${required_macos[@]}"; do
-    if [[ ! -f "${path}" ]]; then
-        echo "ERROR: missing required macOS binary: ${path}" >&2
-        exit 1
-    fi
-    artifacts+=("${path}")
-    artifact_names+=("$(basename "${path}")")
-done
+if [[ "${do_prepare}" == true ]]; then
+    docker volume create vaka-gomodcache >/dev/null
+    docker volume create vaka-gobuildcache >/dev/null
+    govulncheck_gate
+    go_test_gate
 
-required_runtime=(
-    "dist/vaka-init-linux-amd64"
-    "dist/vaka-init-linux-arm64"
-)
-for path in "${required_runtime[@]}"; do
-    if [[ ! -f "${path}" ]]; then
-        echo "ERROR: missing required runtime binary: ${path}" >&2
-        exit 1
-    fi
-done
+    echo "==> Preparing release ${release_tag}; no publication occurs in this phase"
+    ARCHS="amd64 arm64" \
+    CLI_TARGETS="linux/amd64 linux/arm64 darwin/amd64 darwin/arm64" \
+        ./build.sh --release --packages --cli-version "${release_tag}" --rebuild-cli
 
-brew_bundle_amd="dist/vaka-brew-darwin-amd64.tar.gz"
-brew_bundle_arm="dist/vaka-brew-darwin-arm64.tar.gz"
-make_brew_bundle "dist/vaka-darwin-amd64" "dist/vaka-init-linux-amd64" "${brew_bundle_amd}"
-make_brew_bundle "dist/vaka-darwin-arm64" "dist/vaka-init-linux-arm64" "${brew_bundle_arm}"
-artifacts+=("${brew_bundle_amd}" "${brew_bundle_arm}")
-artifact_names+=("$(basename "${brew_bundle_amd}")" "$(basename "${brew_bundle_arm}")")
+    echo "==> Running real image-mount smoke test"
+    ./scripts/smoke-image-mount.sh
 
-shopt -s nullglob
-deb_pkgs=(dist/vaka_"${pkg_version}"_*.deb)
-rpm_pkgs=(dist/vaka-"${pkg_version}"-*.rpm)
-arch_pkgs=(
-    dist/vaka-"${pkg_version}"-*.pkg.tar.*
-    dist/vaka_"${pkg_version}"_*.pkg.tar.*
-)
-shopt -u nullglob
-
-if [[ "${#deb_pkgs[@]}" -eq 0 ]]; then
-    echo "ERROR: no .deb packages found in dist/" >&2
-    exit 1
-fi
-if [[ "${#rpm_pkgs[@]}" -eq 0 ]]; then
-    echo "ERROR: no .rpm packages found in dist/" >&2
-    exit 1
-fi
-if [[ "${#arch_pkgs[@]}" -eq 0 ]]; then
-    echo "ERROR: no Arch Linux packages (.pkg.tar.*) found in dist/" >&2
-    echo "       Ensure build.sh package phase includes archlinux output." >&2
-    exit 1
+    prepare_artifacts "${pkg_version}" "${head_commit}"
+    echo "==> Read-only runtime registry preflight"
+    ./scripts/release-runtime.sh preflight
+    write_release_gates
+    echo "Prepared release ${release_tag}; registry, Git tags, GitHub, and Homebrew were not modified."
 fi
 
-declare -A seen_pkg=()
-for path in "${deb_pkgs[@]}" "${rpm_pkgs[@]}" "${arch_pkgs[@]}"; do
-    [[ -n "${seen_pkg[${path}]:-}" ]] && continue
-    seen_pkg["${path}"]=1
-    artifacts+=("${path}")
-    artifact_names+=("$(basename "${path}")")
-done
+if [[ "${do_publish}" == false ]]; then
+    exit 0
+fi
 
-if command -v sha256sum >/dev/null 2>&1; then
-    (cd dist && sha256sum "${artifact_names[@]}" > SHA256SUMS)
-elif command -v shasum >/dev/null 2>&1; then
-    (cd dist && shasum -a 256 "${artifact_names[@]}" > SHA256SUMS)
+load_prepared_artifacts
+verify_release_gates
+initialize_publish_services
+
+state_channel="$(vaka_state_require dist/.vaka-release-state CHANNEL)"
+state_cli="$(vaka_state_require dist/.vaka-release-state CLI_VERSION)"
+state_commit="$(vaka_state_require dist/.vaka-release-state GIT_COMMIT)"
+[[ "${state_cli}" == "${release_tag}" && "${state_commit}" == "${head_commit}" ]] || { echo "ERROR: prepared build does not match requested release" >&2; exit 1; }
+if [[ "${nightly}" == true ]]; then
+    [[ "${state_channel}" == nightly ]] || { echo "ERROR: prepared build is not nightly" >&2; exit 1; }
 else
-    echo "ERROR: neither sha256sum nor shasum is available for checksums" >&2
-    exit 1
-fi
-artifacts+=("dist/SHA256SUMS")
-
-if [[ "${is_prerelease}" == "true" ]]; then
-    # Pre-create and push the nightly tag so release creation can use --verify-tag
-    # and avoid API-side auto-tag creation edge cases.
-    if git rev-parse -q --verify "refs/tags/${release_tag}" >/dev/null 2>&1; then
-        tag_target="$(git rev-list -n1 "${release_tag}")"
-        if [[ "${tag_target}" != "${head_commit}" ]]; then
-            echo "ERROR: local tag ${release_tag} points to ${tag_target}, expected ${head_commit}" >&2
-            exit 1
-        fi
-    else
-        git tag "${release_tag}" "${head_commit}"
-    fi
-    if git ls-remote --exit-code --tags origin "refs/tags/${release_tag}" >/dev/null 2>&1; then
-        remote_tag_target="$(git ls-remote --tags origin "refs/tags/${release_tag}^{}" | awk '{print $1}' || true)"
-        if [[ -z "${remote_tag_target}" ]]; then
-            remote_tag_target="$(git ls-remote --tags origin "refs/tags/${release_tag}" | awk '{print $1}' || true)"
-        fi
-        if [[ -n "${remote_tag_target}" && "${remote_tag_target}" != "${head_commit}" ]]; then
-            echo "ERROR: remote tag ${release_tag} points to ${remote_tag_target}, expected ${head_commit}" >&2
-            exit 1
-        fi
-    else
-        echo "==> Pushing nightly tag ${release_tag}"
-        git push origin "refs/tags/${release_tag}:refs/tags/${release_tag}"
-    fi
+    [[ "${state_channel}" == stable ]] || { echo "ERROR: prepared build is not stable" >&2; exit 1; }
 fi
 
-echo "==> Creating GitHub release ${release_tag}"
-gh_args=(release create "${release_tag}")
-gh_args+=("${artifacts[@]}")
-gh_args+=(--title "${release_title}")
+echo "==> Repeating runtime preflight immediately before publication"
+./scripts/release-runtime.sh preflight
+./scripts/release-runtime.sh publish
 
-if [[ -n "${notes_file}" ]]; then
-    gh_args+=(--notes-file "${notes_file}")
+# Git identity is intentionally created only after immutable runtime publication.
+ensure_release_tag
+
+if [[ "${github_release_exists}" == true ]]; then
+    echo "==> GitHub release exists; replacing its prepared assets for retry safety"
+    gh release upload "${release_tag}" "${artifacts[@]}" --clobber
 else
-    if [[ "${is_prerelease}" == "true" ]]; then
+    echo "==> Creating GitHub release ${release_tag}"
+    gh_args=(release create "${release_tag}" "${artifacts[@]}" --title "${release_title}")
+    if [[ -n "${notes_file}" ]]; then
+        gh_args+=(--notes-file "${notes_file}")
+    elif [[ "${is_prerelease}" == true ]]; then
         gh_args+=(--notes "Nightly build for commit ${head_commit}")
     else
         gh_args+=(--generate-notes)
     fi
-fi
-
-if [[ "${is_prerelease}" == "true" ]]; then
-    gh_args+=(--prerelease --verify-tag)
-else
+    [[ "${is_prerelease}" == true ]] && gh_args+=(--prerelease)
     gh_args+=(--verify-tag)
+    gh "${gh_args[@]}"
 fi
 
-gh "${gh_args[@]}"
-
-echo "==> Updating Homebrew tap formulas..."
+echo "==> Updating Homebrew tap formula..."
+git -C "${tap_path}" fetch origin main
+git -C "${tap_path}" checkout -B main origin/main
 amd_sha="$(sha256_of "${brew_bundle_amd}")"
 arm_sha="$(sha256_of "${brew_bundle_arm}")"
-
-if [[ "${is_prerelease}" == "true" ]]; then
-    formula_rel_path="Formula/vaka-nightly.rb"
-    formula_class="VakaNightly"
-    formula_version="0.0.0-nightly.$(git show -s --date=format:%Y%m%d%H%M --format=%cd HEAD).${head_short}"
+if [[ "${is_prerelease}" == true ]]; then
+    formula_rel_path=Formula/vaka-nightly.rb
+    formula_class=VakaNightly
+    formula_version="0.0.0-nightly.$(git show -s --date=format:%Y%m%d%H%M --format=%cd "${head_commit}").${head_short}"
     formula_desc_suffix=" (nightly)"
     tap_commit_msg="chore(formula): update vaka-nightly to ${release_tag}"
 else
-    formula_rel_path="Formula/vaka.rb"
-    formula_class="Vaka"
+    formula_rel_path=Formula/vaka.rb
+    formula_class=Vaka
     formula_version="${pkg_version}"
     formula_desc_suffix=""
     tap_commit_msg="chore(formula): update vaka to ${release_tag}"
 fi
 
-write_formula_file \
-    "${tap_path}/${formula_rel_path}" \
-    "${formula_class}" \
-    "${formula_version}" \
-    "${release_tag}" \
-    "${amd_sha}" \
-    "${arm_sha}" \
-    "${formula_desc_suffix}"
-
+write_formula_file "${tap_path}/${formula_rel_path}" "${formula_class}" "${formula_version}" \
+    "${release_tag}" "${amd_sha}" "${arm_sha}" "${formula_desc_suffix}"
 git -C "${tap_path}" add "${formula_rel_path}"
 if ! git -C "${tap_path}" diff --cached --quiet; then
     git -C "${tap_path}" commit -m "${tap_commit_msg}"
@@ -517,22 +578,11 @@ vaka_repo_commit_created=false
 if ! git diff --cached --quiet -- homebrew-tap; then
     git commit -m "chore(submodule): bump homebrew-tap after ${release_tag} release"
     vaka_repo_commit_created=true
-else
-    echo "    Submodule pointer unchanged; no vaka repo commit needed."
 fi
-
-if [[ "${vaka_repo_commit_created}" == "true" ]]; then
+if [[ "${vaka_repo_commit_created}" == true ]]; then
     current_branch="$(git symbolic-ref --quiet --short HEAD || true)"
-    if [[ -z "${current_branch}" ]]; then
-        echo "ERROR: created a vaka repo commit on detached HEAD; cannot auto-push." >&2
-        echo "       Push it manually, e.g.: git push origin HEAD:<branch>" >&2
-        exit 1
-    fi
+    [[ -n "${current_branch}" ]] || { echo "ERROR: cannot push submodule update from detached HEAD" >&2; exit 1; }
     git push origin "${current_branch}"
 fi
 
-echo ""
-echo "Release complete:"
-echo "  tag:   ${release_tag}"
-echo "  title: ${release_title}"
-echo "  mode:  $( [[ "${is_prerelease}" == "true" ]] && echo nightly || echo tagged-release )"
+echo "Release complete: ${release_tag} ($( [[ "${is_prerelease}" == true ]] && echo nightly || echo stable ))"

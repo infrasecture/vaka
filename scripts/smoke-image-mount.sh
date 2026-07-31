@@ -4,6 +4,7 @@ set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+source "${REPO_ROOT}/scripts/lib/release-versioning.sh"
 
 die() {
     printf 'FAIL: %s\n' "$*" >&2
@@ -21,7 +22,7 @@ case "$(uname -m)" in
 esac
 
 VAKA_BIN="${VAKA_BIN:-${REPO_ROOT}/dist/vaka-linux-${native_arch}}"
-SERVICE_IMAGE="${VAKA_SMOKE_SERVICE_IMAGE:-alpine:3.21}"
+SERVICE_IMAGE="${VAKA_SMOKE_SERVICE_IMAGE:-alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d}"
 EXPECT_ENGINE="${VAKA_SMOKE_EXPECT_ENGINE_VERSION:-}"
 EXPECT_COMPOSE="${VAKA_SMOKE_EXPECT_COMPOSE_VERSION:-}"
 
@@ -29,6 +30,14 @@ command -v docker >/dev/null 2>&1 || die "docker CLI not found"
 [[ -x "${VAKA_BIN}" ]] || die "Vaka binary is not executable: ${VAKA_BIN}; run ./build.sh --rebuild-go first"
 
 runtime_version="$(tr -d '[:space:]' < "${REPO_ROOT}/internal/runtimebundle/VERSION")"
+prepared_state="${REPO_ROOT}/dist/.vaka-release-state"
+if [[ -f "${prepared_state}" ]]; then
+    prepared_commit="$(vaka_state_require "${prepared_state}" GIT_COMMIT 2>/dev/null || true)"
+    current_commit="$(git -C "${REPO_ROOT}" rev-parse --verify HEAD)"
+    if [[ "${prepared_commit}" == "${current_commit}" ]]; then
+        runtime_version="$(vaka_state_require "${prepared_state}" RUNTIME_EFFECTIVE_VERSION)"
+    fi
+fi
 [[ -n "${runtime_version}" ]] || die "runtime bundle version is empty"
 runtime_ref="emsi/vaka-init:runtime-${runtime_version}"
 

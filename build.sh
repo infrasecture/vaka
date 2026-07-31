@@ -287,11 +287,13 @@ hash_build_inputs() {
 }
 
 mapfile -d '' cli_source_files < <(
-    find cmd/vaka pkg internal -type f \( -name '*.go' -o -name '*.tmpl' -o -name VERSION \) -print0 | LC_ALL=C sort -z
+    find cmd/vaka pkg internal -type f \( -name '*.go' -o -name '*.tmpl' -o -name VERSION \) \
+        ! -name '*_test.go' -print0 | LC_ALL=C sort -z
 )
 mapfile -d '' runtime_source_files < <(
     find cmd/vaka-init pkg/nft pkg/policy internal/runtimebundle -type f \
-        \( -name '*.go' -o -name '*.tmpl' -o -name VERSION \) -print0 | LC_ALL=C sort -z
+        \( -name '*.go' -o -name '*.tmpl' -o -name VERSION \) \
+        ! -name '*_test.go' -print0 | LC_ALL=C sort -z
 )
 
 NFT_INPUTS_SHA256="$(hash_build_inputs nft \

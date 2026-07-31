@@ -19,13 +19,13 @@ const (
 //go:embed VERSION
 var versionFile string
 
-// buildVersion is set only for release artifacts whose effective runtime
-// identity differs from VERSION, currently commit-specific nightly builds.
-// Stable and development builds normally leave it empty.
+// buildVersion is set by build.sh so the CLI and vaka-init share the selected
+// effective identity. It differs from VERSION for commit-specific nightlies;
+// direct Go builds leave it empty and use the committed stable identity.
 var buildVersion string
 
 // Version returns the exact version expected by both the host CLI and
-// vaka-init. VERSION is also the source used by build.sh for image tags.
+// vaka-init. VERSION is the stable base used by build.sh for image tags.
 func Version() string {
 	if strings.TrimSpace(buildVersion) != "" {
 		return strings.TrimSpace(buildVersion)
