@@ -117,15 +117,30 @@ if [[ "$1 $2 $3" == "buildx imagetools inspect" ]]; then
     arch="$(arch_for_ref "${ref}")"
     if [[ "${arch}" != none ]]; then
         [[ -f "${registry}/arch-${arch}" ]] || { echo 'manifest unknown' >&2; exit 1; }
+        if [[ "${FAKE_JSON_FORMAT_BROKEN:-}" == 1 && "${format}" == *'{{json '* ]]; then
+            printf 'Name:      %s\nMediaType: application/vnd.docker.distribution.manifest.v2+json\nDigest:    %s\n' \
+                "${ref}" "${amd_digest}"
+            exit 0
+        fi
         case "${format}" in
             '') printf 'Name: %s\n' "${ref}" ;;
-            '{{.Manifest.Digest}}') [[ "${arch}" == amd64 ]] && printf '%s\n' "${amd_digest}" || printf '%s\n' "${arm_digest}" ;;
-            '{{.Manifest.MediaType}}')
+            '{{.Manifest.Digest}}'|'{{.Manifest.MediaType}}')
+                # Reproduce docker/buildx#1175: ordinary templates are silently
+                # ignored and the human-readable report is printed instead.
+                printf 'Name: %s\n' "${ref}"
+                ;;
+            '{{json .Manifest.Digest}}')
+                [[ "${arch}" == amd64 ]] && printf '"%s"' "${amd_digest}" || printf '"%s"' "${arm_digest}"
+                ;;
+            '{{json .Manifest.MediaType}}')
                 if [[ "${FAKE_INDEX_ARCH:-}" == "${arch}" ]]; then
-                    printf 'application/vnd.oci.image.index.v1+json\n'
+                    media_type=application/vnd.oci.image.index.v1+json
+                elif [[ "${FAKE_SCHEMA2_ARCH:-}" == "${arch}" || "${FAKE_SCHEMA2_ARCH:-}" == all ]]; then
+                    media_type=application/vnd.docker.distribution.manifest.v2+json
                 else
-                    printf 'application/vnd.oci.image.manifest.v1+json\n'
+                    media_type=application/vnd.oci.image.manifest.v1+json
                 fi
+                printf '"%s"' "${media_type}"
                 ;;
             *) printf 'unexpected arch manifest format: %s\n' "${format}" >&2; exit 92 ;;
         esac
@@ -138,12 +153,17 @@ if [[ "$1 $2 $3" == "buildx imagetools inspect" ]]; then
     [[ -f "${registry}/version" ]] || { echo 'manifest unknown' >&2; exit 1; }
     if [[ -z "${format}" ]]; then
         printf 'Name: %s\n' "${ref}"
+    elif [[ "${format}" == '{{range .Manifest.Manifests}}{{.Platform.OS}}/{{.Platform.Architecture}} {{.Digest}}{{println}}{{end}}' ]]; then
+        printf 'Name: %s\n' "${ref}"
+    elif [[ "${format}" != '{{range .Manifest.Manifests}}{{json .Platform.OS}} {{json .Platform.Architecture}} {{json .Digest}}{{println}}{{end}}' ]]; then
+        printf 'unexpected version manifest format: %s\n' "${format}" >&2
+        exit 93
     elif [[ "${FAKE_BAD_MANIFEST:-}" == 1 ]]; then
-        printf 'linux/amd64 %s\nlinux/arm64 sha256:%064d\n' "${amd_digest}" 9
+        printf '"linux" "amd64" "%s"\n"linux" "arm64" "sha256:%064d"\n' "${amd_digest}" 9
     elif [[ "${FAKE_EXTRA_MANIFEST:-}" == 1 ]]; then
-        printf 'linux/amd64 %s\nlinux/arm64 %s\nunknown/unknown sha256:%064d\n' "${amd_digest}" "${arm_digest}" 8
+        printf '"linux" "amd64" "%s"\n"linux" "arm64" "%s"\n"unknown" "unknown" "sha256:%064d"\n' "${amd_digest}" "${arm_digest}" 8
     else
-        printf 'linux/amd64 %s\nlinux/arm64 %s\n' "${amd_digest}" "${arm_digest}"
+        printf '"linux" "amd64" "%s"\n"linux" "arm64" "%s"\n' "${amd_digest}" "${arm_digest}"
     fi
     exit 0
 fi
@@ -224,6 +244,23 @@ if grep -Eq '^push |runtime-v0\.1\.0$' "${tmp}/docker.log"; then
     fail "identical publication retry rewrote an immutable tag"
 fi
 assert_contains "${tmp}/docker.log" "create example/vaka-init:latest"
+
+# Recover the exact real-world partial state: immutable architecture tags exist
+# as Docker schema-2 images, while the combined version manifest and :latest do
+# not. A retry must verify and reuse both tags without another push.
+rm -f -- "${tmp}/registry/version" "${tmp}/registry/latest"
+: >"${tmp}/docker.log"
+FAKE_SCHEMA2_ARCH=all "${REPO_ROOT}/scripts/release-runtime.sh" publish "${state}" >"${tmp}/partial-retry.out"
+if grep -q '^push ' "${tmp}/docker.log"; then
+    fail "partial publication retry pushed an existing immutable architecture tag"
+fi
+assert_contains "${tmp}/docker.log" "create example/vaka-init:runtime-v0.1.0"
+assert_contains "${tmp}/docker.log" "create example/vaka-init:latest"
+
+if FAKE_JSON_FORMAT_BROKEN=1 "${REPO_ROOT}/scripts/release-runtime.sh" preflight "${state}" >"${tmp}/format.out" 2>&1; then
+    fail "human-readable Buildx output was accepted as JSON-formatted manifest data"
+fi
+assert_contains "${tmp}/format.out" "docker buildx returned invalid JSON-formatted MediaType"
 
 rm -f -- "${tmp}/registry/version" "${tmp}/registry/latest"
 touch "${tmp}/registry/arch-amd64" "${tmp}/registry/arch-arm64"
