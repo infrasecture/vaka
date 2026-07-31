@@ -2,6 +2,10 @@
 
 vaka enforces outbound network policy inside each managed container's Linux network namespace.
 
+A managed container is a Compose service explicitly listed under `services` in
+`vaka.yaml`. Compose services omitted from `vaka.yaml` receive no Vaka override
+and retain their existing egress behavior; enforcement is opt-in per service.
+
 ## What It Enforces
 
 - nftables rules are loaded before the application process starts.

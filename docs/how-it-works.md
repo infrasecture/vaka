@@ -112,6 +112,13 @@ removes the containers and then removes the unused volume. Cleanup never uses
 force, never removes named volumes, and revalidates Docker's anonymous-volume
 marker immediately before deletion.
 
+When that exact legacy state is present, Vaka sets
+`COMPOSE_IGNORE_ORPHANS=true` for the migration's Compose subprocess so Compose
+does not compete with Vaka for the historical `__vaka-init` helper. This also
+means `--remove-orphans` does not remove unrelated project orphans during that
+one invocation. After migration removes the helper, a subsequent command no
+longer sets the variable and normal orphan handling resumes.
+
 ## Ruleset Shape
 
 vaka creates an `inet` table and an `output` hook chain. The `inet` family covers IPv4 and IPv6.
