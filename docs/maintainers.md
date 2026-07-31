@@ -91,51 +91,74 @@ update `emsi/vaka-init:latest`.
 
 ## Local Builds
 
-Build native host targets:
+For the normal development loop, build the native host targets:
 
 ```bash
 ./build.sh
 ```
 
-Build the full release matrix without publishing:
+The following controls can expand or force parts of that build:
 
 ```bash
 ./build.sh --release
-```
-
-Build packages:
-
-```bash
 ./build.sh --packages
-```
-
-Linux and Homebrew packages contain only the host `vaka` CLI. `vaka-init` and
-`nft` remain raw internal build outputs used to assemble the runtime image.
-Linux packages install only `/usr/local/bin/vaka`.
-
-To test a non-development release version locally without tagging, pushing an
-image, or publishing anything:
-
-```bash
-./build.sh --release --packages --cli-version v0.2.0
-```
-
-This is intentionally allowed from an ordinary development checkout. The
-binary reports `v0.2.0`, but prepared state records a dirty tree when relevant,
-and publication rejects it. `build.sh` never publishes as part of a build.
-Legacy `--push` and `--manifest` are rejected.
-
-Useful rebuild controls are independent:
-
-```bash
 ./build.sh --rebuild-cli
 ./build.sh --rebuild-runtime
 ./build.sh --rebuild-nft
 ```
 
-`--rebuild-go` remains an alias for rebuilding the CLI and `vaka-init`. Normal
-cache reuse validates both the input fingerprint and output binary hash; a file
-with the right name is not sufficient.
+`--release` selects the complete Linux/macOS CLI and Linux runtime architecture
+matrix. `--packages` adds CLI-only Debian, RPM, and Arch packages. The rebuild
+controls are independent; `--rebuild-go` remains an alias for rebuilding the
+CLI and `vaka-init`. Normal cache reuse validates both the input fingerprint
+and output binary hash, so a file with the expected name is not sufficient.
+
+Linux and Homebrew packages contain only the host `vaka` CLI. `vaka-init` and
+`nft` remain raw internal build outputs used to assemble the runtime image.
+Linux packages install only `/usr/local/bin/vaka`.
+
+## Testing A Versioned Release Build
+
+There are two non-publishing workflows. Choose according to whether the test is
+about the built artifacts or the complete release-preparation procedure.
+
+### Build And Inspect Artifacts
+
+On an ordinary development checkout, build version-stamped artifacts with:
+
+```bash
+./build.sh --release --packages --cli-version v0.2.0
+```
+
+This builds the full architecture matrix, local runtime images, and Linux
+packages. The resulting CLI reports `v0.2.0`, making this path suitable for
+local installation, packaging, and behavior tests. It does not require a clean
+checkout and does not run the release vulnerability scan, full release test
+gate, image-mount smoke test, registry preflight, or release-asset preparation.
+
+The build records the source commit and dirty state in its prepared metadata.
+The build itself never publishes images, Git tags, GitHub releases, or Homebrew
+changes. Legacy `--push` and `--manifest` options are rejected.
+
+### Exercise Complete Release Preparation
+
+On a host satisfying all release-builder requirements, qualify the exact
+release candidate without publishing it:
+
+```bash
+./release.sh --version v0.2.0 --prepare-only
+```
+
+This path requires a clean checkout. In addition to building the exact release
+matrix and packages, it runs `govulncheck`, the full Go test suite, the real
+image-mount smoke test, and the read-only runtime registry preflight. It also
+creates the Homebrew archives, checksums, release-asset list, and bound release
+gates needed by the publication phase.
+
+Preparation reads the runtime registry but does not modify it and does not
+create Git tags, GitHub releases, or Homebrew changes. Stop after this command
+when the purpose is only to test the release procedure. A candidate intended
+for later publication must remain on the same builder host and Docker target.
 
 ## Prepared Metadata
 
@@ -241,6 +264,27 @@ rewritten.
 The Vaka CLI itself resolves the versioned runtime image, validates its label,
 and passes the exact local `sha256:` image ID to Compose. It never relies on
 `:latest` for execution.
+
+### Runtime-Only Registry Maintenance
+
+The runtime registry can be checked or updated independently from a complete
+Vaka release:
+
+```bash
+./build.sh --preflight-runtime
+./build.sh --publish-runtime
+```
+
+Both commands consume the exact runtime images and metadata from the preceding
+build on the same clean checkout and Docker target. `--preflight-runtime` is
+read-only. `--publish-runtime` repeats that preflight and publishes only the
+immutable runtime architecture tags, runtime manifest, and stable `:latest`
+tag where applicable.
+
+These are advanced runtime-component operations. They do not create or publish
+a Vaka CLI tag, GitHub release, release assets, or Homebrew update, and are not
+a substitute for `release.sh --publish-prepared` when publishing a complete
+release. The distinct `runtime` and `prepared` names make that scope explicit.
 
 ## Verification
 

@@ -8,9 +8,9 @@
 #   ./build.sh --release        build full release matrix without publishing
 #   ./build.sh --release --cli-version v0.2.0 --packages
 #                               build an unpublished, non-dev release locally
-#   ./build.sh --preflight-prepared
+#   ./build.sh --preflight-runtime
 #                               check the prepared runtime against the registry
-#   ./build.sh --publish-prepared
+#   ./build.sh --publish-runtime
 #                               publish an already-prepared runtime after preflight
 #   ./build.sh --packages       also produce CLI-only Linux packages via nfpm
 #   ./build.sh --rebuild-nft    force rebuild of the internal nft build artifact
@@ -61,7 +61,7 @@ REBUILD_RUNTIME=false
 RELEASE_MODE=false
 CLI_VERSION_ARG=""
 RUNTIME_VERSION_ARG=""
-PREPARED_ACTION=""
+RUNTIME_ACTION=""
 
 usage() {
     cat <<'EOF'
@@ -75,8 +75,8 @@ Usage: ./build.sh [OPTIONS]
   --rebuild-cli              Rebuild all selected CLI binaries.
   --rebuild-runtime          Rebuild vaka-init and runtime images.
   --rebuild-go               Alias for --rebuild-cli --rebuild-runtime.
-  --preflight-prepared       Validate dist/.vaka-release-state and the registry.
-  --publish-prepared         Publish only the already-prepared runtime images.
+  --preflight-runtime        Validate the prepared runtime against the registry.
+  --publish-runtime          Publish only the prepared runtime images.
   -h, --help                 Show this help.
 
 Publishing is intentionally separate from building. Legacy --push and
@@ -104,10 +104,10 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --runtime-version=*) RUNTIME_VERSION_ARG="${1#*=}"; shift ;;
-        --preflight-prepared) PREPARED_ACTION=preflight; shift ;;
-        --publish-prepared) PREPARED_ACTION=publish; shift ;;
+        --preflight-runtime) RUNTIME_ACTION=preflight; shift ;;
+        --publish-runtime) RUNTIME_ACTION=publish; shift ;;
         --push|--manifest)
-            echo "ERROR: $1 was removed; build first, then use --preflight-prepared or --publish-prepared" >&2
+            echo "ERROR: $1 was removed; build first, then use --preflight-runtime or --publish-runtime" >&2
             exit 1
             ;;
         -h|--help) usage; exit 0 ;;
@@ -115,14 +115,14 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ -n "${PREPARED_ACTION}" ]]; then
+if [[ -n "${RUNTIME_ACTION}" ]]; then
     if [[ "${BUILD_PACKAGES}" == true || "${REBUILD_NFT}" == true || "${REBUILD_CLI}" == true ||
           "${REBUILD_RUNTIME}" == true || "${RELEASE_MODE}" == true || -n "${CLI_VERSION_ARG}" ||
           -n "${RUNTIME_VERSION_ARG}" ]]; then
-        echo "ERROR: prepared publication actions cannot be combined with build options" >&2
+        echo "ERROR: runtime registry actions cannot be combined with build options" >&2
         exit 1
     fi
-    exec "${SCRIPT_DIR}/scripts/release-runtime.sh" "${PREPARED_ACTION}"
+    exec "${SCRIPT_DIR}/scripts/release-runtime.sh" "${RUNTIME_ACTION}"
 fi
 
 # ── Version ───────────────────────────────────────────────────────────────────
@@ -879,7 +879,9 @@ echo "  ${component_manifest}"
 echo "  ${state_file}"
 echo ""
 if [[ "${RELEASE_CHANNEL}" == stable || "${RELEASE_CHANNEL}" == nightly ]]; then
-    echo "No registry data was changed. Next steps on this same builder host:"
-    echo "  ./build.sh --preflight-prepared"
-    echo "  ./build.sh --publish-prepared"
+    echo "No registry data was changed. For complete release qualification and"
+    echo "publication, use release.sh as documented in docs/maintainers.md."
+    echo "Advanced runtime-only registry actions on this same builder host:"
+    echo "  ./build.sh --preflight-runtime"
+    echo "  ./build.sh --publish-runtime"
 fi

@@ -33,10 +33,15 @@ bash -n build.sh release.sh scripts/release-runtime.sh scripts/smoke-image-mount
 
 build_help="$(./build.sh --help)"
 grep -Fq -- '--cli-version VERSION' <<<"${build_help}" || fail "build help omits explicit CLI version"
-grep -Fq -- '--publish-prepared' <<<"${build_help}" || fail "build help omits prepared publication"
+grep -Fq -- '--preflight-runtime' <<<"${build_help}" || fail "build help omits runtime preflight"
+grep -Fq -- '--publish-runtime' <<<"${build_help}" || fail "build help omits runtime publication"
+if grep -Fq -- '--publish-prepared' <<<"${build_help}"; then
+    fail "build help collides with release.sh --publish-prepared"
+fi
 assert_fails_with 'was removed' ./build.sh --push
 assert_fails_with 'CLI release version must be' ./build.sh --cli-version v1.2.3-rc.1
-assert_fails_with 'cannot be combined with build options' ./build.sh --preflight-prepared --release
+assert_fails_with 'runtime registry actions cannot be combined with build options' ./build.sh --preflight-runtime --release
+assert_fails_with 'unknown argument' ./build.sh --publish-prepared
 
 release_help="$(./release.sh --help)"
 grep -Fq -- '--prepare-only' <<<"${release_help}" || fail "release help omits prepare-only"
