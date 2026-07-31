@@ -699,27 +699,25 @@ services:
 	}
 }
 
-func TestValidateVakaVersionForbiddenInUserYAML(t *testing.T) {
-	p := mustParse(t, `
+func TestValidateGeneratedFieldsForbiddenInUserYAML(t *testing.T) {
+	for _, field := range []string{"generatedBy: vaka/v0.1.0", "requiredRuntimeVersion: v0.1.0"} {
+		t.Run(strings.Split(field, ":")[0], func(t *testing.T) {
+			p := mustParse(t, `
 apiVersion: agent.vaka/v1alpha1
 kind: ServicePolicy
-vakaVersion: v0.1.0
+`+field+`
 services:
   s: {}
 `)
-	errs := policy.Validate(p, nil)
-	if len(errs) == 0 {
-		t.Fatal("expected error for user-supplied vakaVersion, got none")
-	}
-	found := false
-	for _, e := range errs {
-		if strings.Contains(e.Error(), "vakaVersion") {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("expected error mentioning vakaVersion, got: %v", errs)
+			errs := policy.Validate(p, nil)
+			if len(errs) == 0 {
+				t.Fatalf("expected error for user-supplied %s, got none", field)
+			}
+			fieldName := strings.Split(field, ":")[0]
+			if !strings.Contains(errs[0].Error(), fieldName) {
+				t.Errorf("expected error mentioning %s, got: %v", fieldName, errs)
+			}
+		})
 	}
 }
 
@@ -747,11 +745,12 @@ services:
 	}
 }
 
-func TestValidateInjectedAllowsServiceUserAndRequiresVakaVersion(t *testing.T) {
+func TestValidateInjectedAllowsGeneratedFieldsAndRequiresRuntimeVersion(t *testing.T) {
 	ok := mustParse(t, `
 apiVersion: agent.vaka/v1alpha1
 kind: ServicePolicy
-vakaVersion: v0.1.2
+generatedBy: vaka/v0.1.2
+requiredRuntimeVersion: v0.1.0
 services:
   s:
     user: "1000:1000"
@@ -769,16 +768,16 @@ services:
 `)
 	errs := policy.ValidateInjected(missingVersion)
 	if len(errs) == 0 {
-		t.Fatal("expected error for missing vakaVersion in injected policy, got none")
+		t.Fatal("expected error for missing requiredRuntimeVersion in injected policy, got none")
 	}
 	found := false
 	for _, e := range errs {
-		if strings.Contains(e.Error(), "vakaVersion") {
+		if strings.Contains(e.Error(), "requiredRuntimeVersion") {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("expected error mentioning vakaVersion, got: %v", errs)
+		t.Errorf("expected error mentioning requiredRuntimeVersion, got: %v", errs)
 	}
 }

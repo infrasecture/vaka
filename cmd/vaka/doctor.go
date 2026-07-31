@@ -244,8 +244,7 @@ func doctorResultDetail(r doctorResult) string {
 }
 
 func defaultDoctorChecks() []doctorCheck {
-	vakaInitImageRef := vakaInitBaseImage + ":" + version
-	isDevBuild := strings.TrimSpace(version) == "dev"
+	vakaInitImageRef := vakaInitImageReference()
 
 	var (
 		dsOnce sync.Once
@@ -266,23 +265,15 @@ func defaultDoctorChecks() []doctorCheck {
 		"If the image is missing, `vaka doctor --fix` can pull it. Otherwise verify Docker target reachability/auth, or pull manually: `docker pull %s`.",
 		vakaInitImageRef,
 	)
-	var imageFix func(context.Context) (string, error)
-	if isDevBuild {
-		imageRemediation = fmt.Sprintf(
-			"Not auto-fixable on unstamped dev builds (version=%q). Build with a stamped VERSION (tag/SHA) so the required helper image tag resolves.",
-			version,
-		)
-	} else {
-		imageFix = func(ctx context.Context) (string, error) {
-			ds, err := getDockerServices()
-			if err != nil {
-				return "", err
-			}
-			if err := ds.EnsureImage(ctx, vakaInitImageRef); err != nil {
-				return "", err
-			}
-			return "pulled " + vakaInitImageRef, nil
+	imageFix := func(ctx context.Context) (string, error) {
+		ds, err := getDockerServices()
+		if err != nil {
+			return "", err
 		}
+		if err := ds.EnsureImage(ctx, vakaInitImageRef); err != nil {
+			return "", err
+		}
+		return "pulled " + vakaInitImageRef, nil
 	}
 
 	return []doctorCheck{
@@ -384,12 +375,6 @@ func defaultDoctorChecks() []doctorCheck {
 			dependsOn:   []string{"docker engine compatible", "docker compose compatible"},
 			remediation: imageRemediation,
 			run: func(ctx context.Context) (string, error) {
-				if isDevBuild {
-					return "", fmt.Errorf(
-						"unstamped dev build (version=%q) resolves helper image to %s, which is not published (not auto-fixable)",
-						version, vakaInitImageRef,
-					)
-				}
 				ds, err := getDockerServices()
 				if err != nil {
 					return "", err

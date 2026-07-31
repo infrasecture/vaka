@@ -13,6 +13,7 @@ import (
 
 	composetypes "github.com/compose-spec/compose-go/v2/types"
 	"gopkg.in/yaml.v3"
+	"vaka.dev/vaka/internal/runtimebundle"
 	"vaka.dev/vaka/pkg/compose"
 	"vaka.dev/vaka/pkg/policy"
 )
@@ -22,15 +23,19 @@ import (
 // does not depend on the __vaka-init volume helper container.
 const vakaInitLabel = "agent.vaka.init"
 
-// vakaInitBaseImage is the image repository for the __vaka-init helper
-// container. The full reference is built by appending ":" + version.
+// vakaInitBaseImage is the image repository for the container runtime bundle.
 const vakaInitBaseImage = "emsi/vaka-init"
 
 // Test hooks: overridden in unit tests to avoid real Docker side effects.
 var (
-	newDockerServices   = NewDockerServices
-	execDockerComposeFn = execDockerCompose
+	newDockerServices    = NewDockerServices
+	execDockerComposeFn  = execDockerCompose
+	runtimeBundleVersion = runtimebundle.Version()
 )
+
+func vakaInitImageReference() string {
+	return vakaInitBaseImage + ":" + runtimeBundleVersion
+}
 
 // defaultDockerCaps is the set of capabilities present in a default Docker
 // container (no cap_drop, no cap_add). NET_ADMIN is notably absent.
@@ -217,7 +222,8 @@ func buildInjectionOverride(
 		if err != nil {
 			return "", nil, err
 		}
-		sliced.VakaVersion = version
+		sliced.GeneratedBy = "vaka/" + version
+		sliced.RequiredRuntimeVersion = runtimeBundleVersion
 		restoreUser := strings.TrimSpace(composeSvc.User)
 		if restoreUser == "" {
 			restoreUser = strings.TrimSpace(rt.ImageUser)
@@ -252,7 +258,7 @@ func buildInjectionOverride(
 	}
 	vakaInitImageRef := ""
 	if !vakaInitPresent && needsInjection {
-		vakaInitImageRef = vakaInitBaseImage + ":" + version
+		vakaInitImageRef = vakaInitImageReference()
 		if err := ds.EnsureImage(ctx, vakaInitImageRef); err != nil {
 			return "", nil, err
 		}
@@ -278,7 +284,7 @@ func referenceOverrideYAML(vakaInitPresent bool, imageRef string) (string, error
 // runReference handles all reference commands by injecting only the minimal
 // __vaka-init compose service override.
 func runReference(inv *ComposeInvocation, vakaInitPresent bool) error {
-	overrideYAML, err := referenceOverrideYAML(vakaInitPresent, vakaInitBaseImage+":"+version)
+	overrideYAML, err := referenceOverrideYAML(vakaInitPresent, vakaInitImageReference())
 	if err != nil {
 		return fmt.Errorf("build vaka-init container override: %w", err)
 	}

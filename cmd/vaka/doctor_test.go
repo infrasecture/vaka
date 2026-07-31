@@ -325,7 +325,7 @@ func TestDoctorCheckRequiredVakaInitImageMissing(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected missing-image error, got nil")
 	}
-	expectedRef := vakaInitBaseImage + ":" + version
+	expectedRef := vakaInitImageReference()
 	if !strings.Contains(err.Error(), expectedRef) {
 		t.Fatalf("error %q does not contain image ref %q", err.Error(), expectedRef)
 	}
@@ -357,7 +357,7 @@ func TestDoctorCheckRequiredVakaInitImagePresent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	expectedRef := vakaInitBaseImage + ":" + version
+	expectedRef := vakaInitImageReference()
 	if gotDetail != expectedRef {
 		t.Fatalf("detail = %q, want %q", gotDetail, expectedRef)
 	}
@@ -389,7 +389,7 @@ func TestDoctorFixPullsRequiredVakaInitImage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	expectedRef := vakaInitBaseImage + ":" + version
+	expectedRef := vakaInitImageReference()
 	wantFixDetail := "pulled " + expectedRef
 	if gotDetail != wantFixDetail {
 		t.Fatalf("detail = %q, want %q", gotDetail, wantFixDetail)
@@ -405,40 +405,39 @@ func TestDoctorFixPullsRequiredVakaInitImage(t *testing.T) {
 	}
 }
 
-func TestDoctorRequiredVakaInitImageDevBuildNonFixable(t *testing.T) {
+func TestDoctorDevBuildUsesFixableRuntimeBundleImage(t *testing.T) {
 	origNewDoctorDockerServices := newDoctorDockerServices
 	defer func() { newDoctorDockerServices = origNewDoctorDockerServices }()
 	origVersion := version
 	version = "dev"
 	defer func() { version = origVersion }()
 
-	ctorCount := 0
+	fake := &fakeDoctorDockerServices{imageExists: false}
 	newDoctorDockerServices = func(inv *ComposeInvocation, _ PullPolicy) (DockerServices, error) {
-		ctorCount++
-		return &fakeDoctorDockerServices{}, nil
+		return fake, nil
 	}
 
 	check := mustDoctorCheckByName(t, defaultDoctorChecks(), "required vaka-init image present")
-	if check.fix != nil {
-		t.Fatal("dev build check should be non-fixable (fix must be nil)")
+	if check.fix == nil {
+		t.Fatal("dev build runtime image check should be fixable")
 	}
 	_, err := check.run(context.Background())
 	if err == nil {
-		t.Fatal("expected dev non-fixable error, got nil")
+		t.Fatal("expected missing-image error, got nil")
 	}
-	if !strings.Contains(err.Error(), "not auto-fixable") {
-		t.Fatalf("error = %q, want contains %q", err.Error(), "not auto-fixable")
+	if !strings.Contains(err.Error(), vakaInitImageReference()) {
+		t.Fatalf("error = %q, want runtime image %q", err.Error(), vakaInitImageReference())
 	}
-	if ctorCount != 0 {
-		t.Fatalf("docker services constructor called %d times, want 0", ctorCount)
+	if strings.Contains(vakaInitImageReference(), version) {
+		t.Fatalf("runtime image %q must not depend on CLI version %q", vakaInitImageReference(), version)
 	}
 
 	results := runDoctorChecks(context.Background(), []doctorCheck{check}, true)
 	if len(results) != 1 {
 		t.Fatalf("results len = %d, want 1", len(results))
 	}
-	if results[0].fixAttempted {
-		t.Fatal("fixAttempted=true, want false for non-fixable dev check")
+	if !results[0].fixAttempted || !results[0].fixApplied {
+		t.Fatalf("fixAttempted=%v fixApplied=%v, want successful repair", results[0].fixAttempted, results[0].fixApplied)
 	}
 }
 

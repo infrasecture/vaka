@@ -36,9 +36,8 @@
 #     emsi/nft-static:1.1.6    → points at the native-arch image only
 #     emsi/vaka-init:v0.1.0    → points at the native-arch image only
 #   The alias makes the unsuffixed ref resolvable locally without a registry
-#   round-trip. vaka's CLI constructs emsi/vaka-init:<version> at runtime
-#   from its baked-in version string; this alias is what lets dirty dev
-#   builds run locally without pushing.
+#   round-trip. vaka's CLI constructs emsi/vaka-init:<runtime-version> from
+#   internal/runtimebundle/VERSION; CLI and runtime releases are independent.
 #
 #   Manifest lists (registry only, created by --push or --manifest):
 #     emsi/nft-static:1.1.6    → auto-selects amd64 or arm64 at pull time
@@ -104,6 +103,16 @@ fi
 # ── Version ───────────────────────────────────────────────────────────────────
 VERSION="${VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo "dev")}"
 PKG_VERSION="${VERSION#v}"
+RUNTIME_VERSION_FILE="${SCRIPT_DIR}/internal/runtimebundle/VERSION"
+if [[ ! -f "${RUNTIME_VERSION_FILE}" ]]; then
+    echo "ERROR: runtime bundle version file not found: ${RUNTIME_VERSION_FILE}" >&2
+    exit 1
+fi
+RUNTIME_VERSION="$(<"${RUNTIME_VERSION_FILE}")"
+if [[ ! "${RUNTIME_VERSION}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+    echo "ERROR: runtime bundle version must be canonical v-prefixed SemVer (got ${RUNTIME_VERSION})" >&2
+    exit 1
+fi
 
 if [[ "${DO_PUSH}" == "true" || "${DO_MANIFEST_ONLY}" == "true" ]] && \
    [[ "${VERSION}" == *"-dirty" ]]; then
@@ -166,7 +175,7 @@ esac
 
 mkdir -p dist
 
-echo "==> vaka ${VERSION} (runtime archs: ${ARCHS}; CLI targets: ${CLI_TARGETS})"
+echo "==> vaka ${VERSION}; runtime bundle ${RUNTIME_VERSION} (runtime archs: ${ARCHS}; CLI targets: ${CLI_TARGETS})"
 echo ""
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -180,11 +189,11 @@ if [[ "${DO_MANIFEST_ONLY}" == "true" ]]; then
     init_sources=()
     for ARCH in $ARCHS; do
         nft_sources+=("${NFT_IMAGE}:${NFTABLES_VERSION}-${ARCH}")
-        init_sources+=("${INIT_IMAGE}:${VERSION}-${ARCH}")
+        init_sources+=("${INIT_IMAGE}:${RUNTIME_VERSION}-${ARCH}")
     done
 
     nft_tags=(--tag "${NFT_IMAGE}:${NFTABLES_VERSION}")
-    init_tags=(--tag "${INIT_IMAGE}:${VERSION}")
+    init_tags=(--tag "${INIT_IMAGE}:${RUNTIME_VERSION}")
     if [[ "${PUBLISH_LATEST}" == "true" ]]; then
         nft_tags+=(--tag "${NFT_IMAGE}:latest")
         init_tags+=(--tag "${INIT_IMAGE}:latest")
@@ -195,7 +204,7 @@ if [[ "${DO_MANIFEST_ONLY}" == "true" ]]; then
         "${nft_tags[@]}" \
         "${nft_sources[@]}"
 
-    printf '    %s\n' "${INIT_IMAGE}:${VERSION}"
+    printf '    %s\n' "${INIT_IMAGE}:${RUNTIME_VERSION}"
     docker buildx imagetools create \
         "${init_tags[@]}" \
         "${init_sources[@]}"
@@ -203,7 +212,7 @@ if [[ "${DO_MANIFEST_ONLY}" == "true" ]]; then
     echo ""
     echo "Manifest lists created in registry:"
     printf '  %s   (%s)\n' "${NFT_IMAGE}:${NFTABLES_VERSION}" "${ARCHS}"
-    printf '  %s   (%s)\n' "${INIT_IMAGE}:${VERSION}"         "${ARCHS}"
+    printf '  %s   (%s)\n' "${INIT_IMAGE}:${RUNTIME_VERSION}" "${ARCHS}"
     if [[ "${PUBLISH_LATEST}" == "true" ]]; then
         printf '  %s  (%s)\n'  "${NFT_IMAGE}:latest"              "${ARCHS}"
         printf '  %s  (%s)\n'  "${INIT_IMAGE}:latest"             "${ARCHS}"
@@ -350,7 +359,7 @@ if [[ "${need_go_build}" == "false" ]]; then
             oldest_out="${out}"
         fi
     done
-    if find cmd pkg -name '*.go' -newer "${oldest_out}" | grep -q .; then
+    if find cmd pkg internal -type f \( -name '*.go' -o -name VERSION \) -newer "${oldest_out}" | grep -q .; then
         need_go_build=true
     fi
 fi
@@ -403,7 +412,7 @@ else
             go build \
                 -trimpath \
                 -tags "netgo,osusergo" \
-                -ldflags="-s -w -extldflags=-static -X main.version=${VERSION}" \
+                -ldflags="-s -w -extldflags=-static" \
                 -o "/dist/vaka-init-linux-${ARCH}" \
                 ./cmd/vaka-init
         echo "OK"
@@ -474,11 +483,10 @@ echo ""
 # Each arch gets its own minimal build context with the matching binaries.
 #
 # Native-arch alias: after building the native-arch image, also tag it as the
-# unsuffixed tag (emsi/vaka-init:VERSION). The `vaka` CLI constructs that ref
-# at runtime from its baked-in version string; without the alias, local dev
-# builds (especially --dirty) would have no tag to resolve to.
+# unsuffixed tag (emsi/vaka-init:RUNTIME_VERSION). The CLI and build use the
+# same committed runtime version source, including in dirty development builds.
 for ARCH in $ARCHS; do
-    arch_init_tag="${INIT_IMAGE}:${VERSION}-${ARCH}"
+    arch_init_tag="${INIT_IMAGE}:${RUNTIME_VERSION}-${ARCH}"
     echo "==> Building ${arch_init_tag} (platform linux/${ARCH})..."
     ctx="$(mktemp -d)"
     cleanup_ctx() { rm -rf -- "${ctx}"; }
@@ -490,7 +498,7 @@ for ARCH in $ARCHS; do
         --platform "linux/${ARCH}" \
         --load \
         --file docker/init/Dockerfile \
-        --build-arg "VERSION=${VERSION}" \
+        --build-arg "RUNTIME_VERSION=${RUNTIME_VERSION}" \
         --build-arg "NFTABLES_VERSION=${NFTABLES_VERSION}" \
         --tag "${arch_init_tag}" \
         "${ctx}"
@@ -498,8 +506,8 @@ for ARCH in $ARCHS; do
     rm -rf -- "${ctx}"
     trap - EXIT
     if [[ "${ARCH}" == "${NATIVE_ARCH}" ]]; then
-        docker tag "${arch_init_tag}" "${INIT_IMAGE}:${VERSION}"
-        echo "    Tagged native-arch alias: ${INIT_IMAGE}:${VERSION}"
+        docker tag "${arch_init_tag}" "${INIT_IMAGE}:${RUNTIME_VERSION}"
+        echo "    Tagged native-arch alias: ${INIT_IMAGE}:${RUNTIME_VERSION}"
     fi
     echo ""
 done
@@ -521,7 +529,7 @@ if ! echo " ${ARCHS} " | grep -qF " ${verify_arch} "; then
 fi
 
 if [[ -n "${verify_arch}" ]]; then
-    verify_tag="${INIT_IMAGE}:${VERSION}-${verify_arch}"
+    verify_tag="${INIT_IMAGE}:${RUNTIME_VERSION}-${verify_arch}"
     echo "==> Verifying ${verify_tag}..."
     cid="$(docker create --platform "linux/${verify_arch}" "${verify_tag}" /opt/vaka/sbin/vaka-init)"
     cleanup_cid() { docker rm -f -- "${cid}" >/dev/null 2>&1 || true; }
@@ -611,7 +619,7 @@ if [[ "${DO_PUSH}" == "true" ]]; then
 
     for ARCH in $ARCHS; do
         arch_nft_tag="${NFT_IMAGE}:${NFTABLES_VERSION}-${ARCH}"
-        arch_init_tag="${INIT_IMAGE}:${VERSION}-${ARCH}"
+        arch_init_tag="${INIT_IMAGE}:${RUNTIME_VERSION}-${ARCH}"
 
         printf '    %s  ' "${arch_nft_tag}"
         docker push "${arch_nft_tag}"
@@ -628,7 +636,7 @@ if [[ "${DO_PUSH}" == "true" ]]; then
 
     echo "==> Creating manifest lists..."
     nft_tags=(--tag "${NFT_IMAGE}:${NFTABLES_VERSION}")
-    init_tags=(--tag "${INIT_IMAGE}:${VERSION}")
+    init_tags=(--tag "${INIT_IMAGE}:${RUNTIME_VERSION}")
     if [[ "${PUBLISH_LATEST}" == "true" ]]; then
         nft_tags+=(--tag "${NFT_IMAGE}:latest")
         init_tags+=(--tag "${INIT_IMAGE}:latest")
@@ -639,7 +647,7 @@ if [[ "${DO_PUSH}" == "true" ]]; then
         "${nft_tags[@]}" \
         "${nft_sources[@]}"
 
-    printf '    %s\n' "${INIT_IMAGE}:${VERSION}"
+    printf '    %s\n' "${INIT_IMAGE}:${RUNTIME_VERSION}"
     docker buildx imagetools create \
         "${init_tags[@]}" \
         "${init_sources[@]}"
@@ -658,20 +666,20 @@ echo ""
 echo "Local images (arch-specific staging tags):"
 for ARCH in $ARCHS; do
     echo "  ${NFT_IMAGE}:${NFTABLES_VERSION}-${ARCH}"
-    echo "  ${INIT_IMAGE}:${VERSION}-${ARCH}"
+    echo "  ${INIT_IMAGE}:${RUNTIME_VERSION}-${ARCH}"
 done
 if echo " ${ARCHS} " | grep -qF " ${NATIVE_ARCH} "; then
     echo ""
     echo "Native-arch local aliases (unsuffixed, for local 'vaka up'):"
     echo "  ${NFT_IMAGE}:${NFTABLES_VERSION}"
-    echo "  ${INIT_IMAGE}:${VERSION}"
+    echo "  ${INIT_IMAGE}:${RUNTIME_VERSION}"
 fi
 echo ""
 
 if [[ "${DO_PUSH}" == "true" ]]; then
     echo "Registry manifest tags (resolve to requested ARCHS at pull time):"
     echo "  ${NFT_IMAGE}:${NFTABLES_VERSION}"
-    echo "  ${INIT_IMAGE}:${VERSION}"
+    echo "  ${INIT_IMAGE}:${RUNTIME_VERSION}"
     if [[ "${PUBLISH_LATEST}" == "true" ]]; then
         echo "  ${NFT_IMAGE}:latest"
         echo "  ${INIT_IMAGE}:latest"
