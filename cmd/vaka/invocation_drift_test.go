@@ -103,24 +103,23 @@ func parseComposeHelpValueFlags(help string) map[string]bool {
 	return flags
 }
 
-// TestComposeVerbBaselineDrift pins the composeVerbBaseline hint table against
-// the live `docker compose --help` command list. A verb docker advertises but
-// the baseline lacks means stale unknown-command hints, so it fails; baseline
-// entries missing from the local docker version are only logged (the local
-// docker may simply be older).
-func TestComposeVerbBaselineDrift(t *testing.T) {
+// TestComposeCommandSpecsDrift pins the command security table against the live
+// `docker compose --help` command list. A newly advertised verb must be reviewed
+// and classified explicitly; until then, production dispatch takes the secure
+// full-render default. Entries missing from local Compose are only logged.
+func TestComposeCommandSpecsDrift(t *testing.T) {
 	verbs, err := discoverComposeVerbs()
 	if err != nil {
 		t.Skipf("docker compose --help unavailable: %v", err)
 	}
 	for verb := range verbs {
-		if !composeVerbBaseline[verb] {
-			t.Errorf("docker compose --help lists %q but composeVerbBaseline is missing it", verb)
+		if _, ok := composeCommandSpecs[verb]; !ok {
+			t.Errorf("docker compose --help lists %q but composeCommandSpecs is missing it (unknown commands use full policy rendering until classified)", verb)
 		}
 	}
-	for verb := range composeVerbBaseline {
+	for verb := range composeCommandSpecs {
 		if !verbs[verb] {
-			t.Logf("composeVerbBaseline contains %q but the local docker compose does not list it (older docker?)", verb)
+			t.Logf("composeCommandSpecs contains %q but the local docker compose does not list it (older docker?)", verb)
 		}
 	}
 }

@@ -103,7 +103,7 @@ and `--profile`) lives under `vaka compose`:
 
 ```bash
 vaka compose -f compose.prod.yaml up -d
-vaka compose pull
+vaka compose pull  # prefetch service images and the Vaka runtime
 ```
 
 Ready-made, policy-hardened stacks are published in the
@@ -132,10 +132,10 @@ If the firewall cannot be installed, the app does not start.
 
 ## Requirements
 
-- Docker Engine or Docker Desktop with Docker Compose v2.
+- Docker Engine 28.0.0 or newer (effective API 1.48+) and Docker Compose 2.35.0 or newer.
 - Linux containers. Docker Desktop on macOS is supported because containers run inside Docker's Linux VM.
 - A Compose project and a matching `vaka.yaml`.
-- Network access to pull the `emsi/vaka-init:<version>` helper image on first use, unless you bake the helper binaries into your image.
+- Network access to pull the versioned `emsi/vaka-init:runtime-vX.Y.Z` runtime image on first use, unless you bake the helper binaries into your image.
 
 ## Limits
 

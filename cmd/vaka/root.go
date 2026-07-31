@@ -20,20 +20,6 @@ const (
 // so future vaka-native commands cannot collide with docker compose.
 var composeShorthands = []string{"up", "down", "start", "stop", "run", "exec", "logs", "ps"}
 
-// composeVerbBaseline is the built-in list of docker compose subcommands used
-// to shape unknown-top-level-command errors. It is a hint table only — compose
-// execution never consults it — so staleness is cosmetic. A live list from
-// `docker compose --help` supplements it at error time.
-var composeVerbBaseline = map[string]bool{
-	"attach": true, "build": true, "commit": true, "config": true, "cp": true,
-	"create": true, "down": true, "events": true, "exec": true, "export": true,
-	"images": true, "kill": true, "logs": true, "ls": true, "pause": true,
-	"port": true, "ps": true, "publish": true, "pull": true, "push": true,
-	"restart": true, "rm": true, "run": true, "scale": true, "start": true,
-	"stats": true, "stop": true, "top": true, "unpause": true, "up": true,
-	"version": true, "wait": true, "watch": true,
-}
-
 // newRootCmd builds the vaka command tree. root.Rest is consulted to shape
 // flag errors for unknown commands such as `vaka pull -q`.
 func newRootCmd(root *RootInvocation) *cobra.Command {
@@ -154,10 +140,10 @@ func unknownCommandError(cmd *cobra.Command, name string) error {
 }
 
 // isComposeVerb reports whether name looks like a docker compose subcommand.
-// The baseline table is supplemented with the live list from
+// The command security table is supplemented with the live list from
 // `docker compose --help` when available.
 func isComposeVerb(name string) bool {
-	if composeVerbBaseline[name] {
+	if _, known := composeCommandSpecs[name]; known {
 		return true
 	}
 	verbs, err := discoverComposeVerbs()

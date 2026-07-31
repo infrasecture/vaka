@@ -8,9 +8,9 @@ import (
 // PullPolicy controls whether vaka fetches a service image it must inspect
 // (for ENTRYPOINT/USER defaults) when that image is not present locally.
 //
-// It governs *service* images only. vaka's own helper image
-// (emsi/vaka-init:<version>) is always ensured via EnsureImage regardless of
-// this policy — it is a trusted, vaka-managed image, not recipe content.
+// It governs *service* images only. vaka's own runtime image
+// (emsi/vaka-init:runtime-<version>) is resolved separately regardless of this
+// policy; it is a trusted, vaka-managed image, not recipe content.
 type PullPolicy int
 
 const (

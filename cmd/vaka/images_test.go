@@ -13,6 +13,7 @@ import (
 	dockercli "github.com/docker/cli/cli/command"
 	dockerconfig "github.com/docker/cli/cli/config"
 	"github.com/docker/cli/cli/config/configfile"
+	dockertypes "github.com/docker/docker/api/types"
 	dockerimage "github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/errdefs"
@@ -20,15 +21,36 @@ import (
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
 	composetypes "github.com/compose-spec/compose-go/v2/types"
+	"vaka.dev/vaka/internal/runtimebundle"
 )
 
 // fakeDockerClient implements dockerClient for unit tests without a live daemon.
 type fakeDockerClient struct {
+	serverVersion dockertypes.Version
+	clientVersion string
+	serverErr     error
 	notFound      bool                        // ImageInspect returns NotFound when true
 	inspectResult dockerimage.InspectResponse // returned when notFound == false
 	inspectCalled int                         // number of ImageInspect invocations
 	pullErr       error                       // error to return from ImagePull; nil = success
 	pullCalled    bool
+}
+
+func (f *fakeDockerClient) ClientVersion() string {
+	if f.clientVersion != "" {
+		return f.clientVersion
+	}
+	return minimumDockerAPIVersion
+}
+
+func (f *fakeDockerClient) ServerVersion(context.Context) (dockertypes.Version, error) {
+	if f.serverErr != nil {
+		return dockertypes.Version{}, f.serverErr
+	}
+	if f.serverVersion.Version != "" || f.serverVersion.APIVersion != "" {
+		return f.serverVersion, nil
+	}
+	return dockertypes.Version{Version: minimumDockerEngineVersion, APIVersion: minimumDockerAPIVersion}, nil
 }
 
 func (f *fakeDockerClient) ImageInspect(_ context.Context, _ string, _ ...client.ImageInspectOption) (dockerimage.InspectResponse, error) {
@@ -44,6 +66,7 @@ func (f *fakeDockerClient) ImagePull(_ context.Context, _ string, _ dockerimage.
 	if f.pullErr != nil {
 		return nil, f.pullErr
 	}
+	f.notFound = false
 	return io.NopCloser(strings.NewReader("{\"status\":\"Pulling from emsi/vaka-init\"}\n")), nil
 }
 
@@ -134,40 +157,172 @@ func TestDockerTargetDescriptionPrecedence(t *testing.T) {
 	}
 }
 
-// --- EnsureImage tests ---
+func TestCheckRuntimeCompatibility(t *testing.T) {
+	originalQuery := queryComposeVersion
+	t.Cleanup(func() { queryComposeVersion = originalQuery })
 
-func TestEnsureImagePresent(t *testing.T) {
-	dc := &fakeDockerClient{notFound: false}
-	e := &dockerServices{c: dc, targetDesc: "test-context"}
-	if err := e.EnsureImage(context.Background(), "emsi/vaka-init:v0.1.0"); err != nil {
-		t.Fatalf("present: unexpected error: %v", err)
+	tests := []struct {
+		name             string
+		server           dockertypes.Version
+		clientVersion    string
+		composeVersion   string
+		wantCompactMount bool
+		wantErr          string
+	}{
+		{
+			name:           "minimum versions",
+			server:         dockertypes.Version{Version: "28.0.0", APIVersion: "1.48"},
+			composeVersion: "2.35.0",
+		},
+		{
+			name:             "engine 29.1 with compose 5.0",
+			server:           dockertypes.Version{Version: "29.1.3", APIVersion: "1.52"},
+			composeVersion:   "5.0.1",
+			wantCompactMount: true,
+		},
+		{
+			name:           "engine 29.1 with compose 5.1 path bug",
+			server:         dockertypes.Version{Version: "29.1.3", APIVersion: "1.52"},
+			composeVersion: "5.1.0",
+			wantErr:        "path-length incompatibility",
+		},
+		{
+			name:           "engine too old",
+			server:         dockertypes.Version{Version: "27.5.0", APIVersion: "1.47"},
+			composeVersion: "2.35.0",
+			wantErr:        "Docker Engine",
+		},
+		{
+			name:           "client API override too old",
+			server:         dockertypes.Version{Version: "28.0.0", APIVersion: "1.48"},
+			clientVersion:  "1.47",
+			composeVersion: "2.35.0",
+			wantErr:        "Docker client API",
+		},
+		{
+			name:           "compose too old",
+			server:         dockertypes.Version{Version: "28.0.0", APIVersion: "1.48"},
+			composeVersion: "2.34.0",
+			wantErr:        "Docker Compose",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			queryComposeVersion = func(context.Context) (string, error) {
+				return tc.composeVersion, nil
+			}
+			ds := &dockerServices{
+				c:          &fakeDockerClient{serverVersion: tc.server, clientVersion: tc.clientVersion},
+				targetDesc: "test-context",
+			}
+			err := ds.CheckRuntimeCompatibility(context.Background())
+			if tc.wantErr == "" && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
+				t.Fatalf("error = %v, want contains %q", err, tc.wantErr)
+			}
+			if err == nil && ds.useCompactImageMountSource != tc.wantCompactMount {
+				t.Fatalf("useCompactImageMountSource = %v, want %v", ds.useCompactImageMountSource, tc.wantCompactMount)
+			}
+		})
+	}
+}
+
+// --- ResolveRuntimeImage tests ---
+
+const testRuntimeImageID = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+func runtimeImageConfig(version string) dockerimage.InspectResponse {
+	inspect := imageConfig(nil, nil, "")
+	inspect.ID = testRuntimeImageID
+	inspect.Config.Labels = map[string]string{runtimebundle.VersionLabel: version}
+	return inspect
+}
+
+func TestResolveRuntimeImageReturnsExactIDWithoutPull(t *testing.T) {
+	dc := &fakeDockerClient{inspectResult: runtimeImageConfig("v0.1.0")}
+	ds := &dockerServices{c: dc, targetDesc: "test-context"}
+	got, err := ds.ResolveRuntimeImage(context.Background(), "emsi/vaka-init:runtime-v0.1.0", "v0.1.0", true)
+	if err != nil {
+		t.Fatalf("ResolveRuntimeImage: %v", err)
+	}
+	if got.ID != testRuntimeImageID {
+		t.Fatalf("ID = %q, want %q", got.ID, testRuntimeImageID)
+	}
+	if got.MountSource != testRuntimeImageID {
+		t.Fatalf("MountSource = %q, want complete ID", got.MountSource)
 	}
 	if dc.pullCalled {
-		t.Error("present: pull must not be called when image is already present")
+		t.Fatal("present compatible runtime image was re-pulled")
 	}
 }
 
-func TestEnsureImageAbsentPullSucceeds(t *testing.T) {
-	dc := &fakeDockerClient{notFound: true}
-	e := &dockerServices{c: dc, targetDesc: "test-context"}
-	if err := e.EnsureImage(context.Background(), "emsi/vaka-init:v0.1.0"); err != nil {
-		t.Fatalf("absent+pull succeeds: unexpected error: %v", err)
+func TestResolveRuntimeImageUsesCompactSourceForAffectedEngine(t *testing.T) {
+	dc := &fakeDockerClient{inspectResult: runtimeImageConfig("v0.1.0")}
+	ds := &dockerServices{
+		c:                          dc,
+		targetDesc:                 "test-context",
+		useCompactImageMountSource: true,
 	}
-	if !dc.pullCalled {
-		t.Error("absent+pull succeeds: pull must be called when image is absent")
+	got, err := ds.ResolveRuntimeImage(context.Background(), "emsi/vaka-init:runtime-v0.1.0", "v0.1.0", false)
+	if err != nil {
+		t.Fatalf("ResolveRuntimeImage: %v", err)
+	}
+	if got.ID != testRuntimeImageID || got.MountSource != strings.Repeat("a", 40) {
+		t.Fatalf("resolved image = %+v", got)
 	}
 }
 
-func TestEnsureImageAbsentPullFails(t *testing.T) {
+func TestResolveRuntimeImageMissingRespectsRepair(t *testing.T) {
+	dc := &fakeDockerClient{notFound: true, inspectResult: runtimeImageConfig("v0.1.0")}
+	ds := &dockerServices{c: dc, targetDesc: "test-context"}
+	if _, err := ds.ResolveRuntimeImage(context.Background(), "runtime", "v0.1.0", false); err == nil {
+		t.Fatal("missing runtime image accepted without repair")
+	}
+	if dc.pullCalled {
+		t.Fatal("repair=false pulled missing runtime image")
+	}
+	got, err := ds.ResolveRuntimeImage(context.Background(), "runtime", "v0.1.0", true)
+	if err != nil {
+		t.Fatalf("repair missing runtime image: %v", err)
+	}
+	if got.ID != testRuntimeImageID || !dc.pullCalled {
+		t.Fatalf("resolved=%+v pullCalled=%v", got, dc.pullCalled)
+	}
+}
+
+func TestResolveRuntimeImageRejectsVersionMismatch(t *testing.T) {
+	dc := &fakeDockerClient{inspectResult: runtimeImageConfig("v0.0.9")}
+	ds := &dockerServices{c: dc, targetDesc: "test-context"}
+	_, err := ds.ResolveRuntimeImage(context.Background(), "runtime", "v0.1.0", false)
+	if err == nil || !strings.Contains(err.Error(), "has bundle version v0.0.9, require v0.1.0") {
+		t.Fatalf("version mismatch error = %v", err)
+	}
+	if dc.pullCalled {
+		t.Fatal("repair=false refreshed incompatible runtime image")
+	}
+}
+
+func TestResolveRuntimeImagePullFailureIsWrapped(t *testing.T) {
 	pullErr := errors.New("network unreachable")
 	dc := &fakeDockerClient{notFound: true, pullErr: pullErr}
-	e := &dockerServices{c: dc, targetDesc: "test-context"}
-	err := e.EnsureImage(context.Background(), "emsi/vaka-init:v0.1.0")
-	if err == nil {
-		t.Fatal("pull fails: expected error, got nil")
+	ds := &dockerServices{c: dc, targetDesc: "test-context"}
+	_, err := ds.ResolveRuntimeImage(context.Background(), "runtime", "v0.1.0", true)
+	if err == nil || !errors.Is(err, pullErr) {
+		t.Fatalf("pull failure = %v, want wrapped %v", err, pullErr)
 	}
-	if !errors.Is(err, pullErr) {
-		t.Errorf("pull fails: expected %v wrapped, got %v", pullErr, err)
+}
+
+func TestResolveRuntimeImageRejectsInvalidImageID(t *testing.T) {
+	inspect := runtimeImageConfig("v0.1.0")
+	inspect.ID = "runtime:mutable"
+	dc := &fakeDockerClient{inspectResult: inspect}
+	ds := &dockerServices{c: dc, targetDesc: "test-context"}
+	_, err := ds.ResolveRuntimeImage(context.Background(), "runtime", "v0.1.0", false)
+	if err == nil || !strings.Contains(err.Error(), "invalid image ID") {
+		t.Fatalf("invalid ID error = %v", err)
 	}
 }
 

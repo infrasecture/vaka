@@ -2,6 +2,10 @@
 
 vaka enforces outbound network policy inside each managed container's Linux network namespace.
 
+A managed container is a Compose service explicitly listed under `services` in
+`vaka.yaml`. Compose services omitted from `vaka.yaml` receive no Vaka override
+and retain their existing egress behavior; enforcement is opt-in per service.
+
 ## What It Enforces
 
 - nftables rules are loaded before the application process starts.
@@ -48,7 +52,21 @@ vaka never writes the generated per-service policy to disk on the host. The poli
 
 The Compose override is streamed through an inherited `/dev/fd/3` pipe instead of being written to `/tmp` or the project directory.
 
-Normal Docker state still exists where Docker keeps it: containers, images, volumes, and Docker-managed metadata.
+The runtime image is validated by its exact bundle-version label, resolved on
+the selected Docker target, and mounted by immutable local image ID. The mount
+is read-only. `vaka-init` also requires the generated policy's exact runtime
+bundle version before loading nftables, so an incorrectly tagged or stale
+runtime fails closed.
+
+Normal Docker state still exists where Docker keeps it: containers, images,
+volumes, and Docker-managed metadata. Vaka's current delivery path does not
+create a helper container or helper volume; conservative cleanup exists only
+for volumes left by older releases.
+
+Compose verbs are classified explicitly. Verbs known to create containers use
+the full policy override; unknown future verbs also use that path until
+reviewed. This prevents Compose feature growth from silently introducing an
+unprotected container-creation path.
 
 ## Kernel And nftables Compatibility
 

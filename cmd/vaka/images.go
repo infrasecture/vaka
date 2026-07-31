@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -14,6 +16,7 @@ import (
 	dockerconfig "github.com/docker/cli/cli/config"
 	"github.com/docker/cli/cli/config/configfile"
 	dockerflags "github.com/docker/cli/cli/flags"
+	dockertypes "github.com/docker/docker/api/types"
 	dockerimage "github.com/docker/docker/api/types/image"
 	registrytypes "github.com/docker/docker/api/types/registry"
 	"github.com/docker/docker/client"
@@ -22,20 +25,35 @@ import (
 	"github.com/docker/docker/registry"
 	"github.com/moby/term"
 	"github.com/spf13/pflag"
+	"vaka.dev/vaka/internal/runtimebundle"
 )
 
 // DockerServices is the interface for all Docker daemon interactions in vaka.
 // A single implementation is created per runFull invocation; a test double can
 // replace it entirely.
 type DockerServices interface {
-	// EnsureImage inspects ref locally and pulls it if absent.
-	EnsureImage(ctx context.Context, ref string) error
+	// CheckRuntimeCompatibility verifies the selected Engine and local Compose
+	// plugin before generating image-mount syntax.
+	CheckRuntimeCompatibility(ctx context.Context) error
+	// ResolveRuntimeImage returns the complete immutable local ID of Vaka's
+	// runtime image and the source syntax selected for the detected Engine and
+	// Compose versions. When repair is true, a missing or incompatible image is
+	// pulled once before failing.
+	ResolveRuntimeImage(ctx context.Context, ref, expectedVersion string, repair bool) (ResolvedImage, error)
 	// ImageExists returns true if ref is available locally. Transport errors
 	// other than NotFound are propagated.
 	ImageExists(ctx context.Context, ref string) (bool, error)
 	// ResolveRuntime resolves runtime metadata needed by vaka:
 	// effective entrypoint/command vectors and image-level USER fallback.
 	ResolveRuntime(ctx context.Context, svcName string, svc composetypes.ServiceConfig) (ResolvedRuntime, error)
+}
+
+// ResolvedImage identifies the exact local image selected for a run.
+// MountSource is either ID or the immutable compact prefix required by affected
+// Engine versions; it is never the mutable tag used to locate the image.
+type ResolvedImage struct {
+	ID          string
+	MountSource string
 }
 
 // ResolvedRuntime is resolved service runtime metadata from compose + image.
@@ -51,6 +69,8 @@ type ResolvedRuntime struct {
 // dockerClient is a narrow interface over the Docker API operations used by
 // dockerServices. *client.Client satisfies it; tests inject a stub.
 type dockerClient interface {
+	ServerVersion(ctx context.Context) (dockertypes.Version, error)
+	ClientVersion() string
 	ImageInspect(ctx context.Context, ref string, opts ...client.ImageInspectOption) (dockerimage.InspectResponse, error)
 	ImagePull(ctx context.Context, ref string, opts dockerimage.PullOptions) (io.ReadCloser, error)
 }
@@ -59,8 +79,10 @@ type dockerClient interface {
 // The API client is initialized through docker/cli flag/env/config resolution
 // so it targets the same backend Docker CLI would use for this invocation.
 type dockerServices struct {
-	c          dockerClient
-	targetDesc string
+	c                          dockerClient
+	legacy                     legacyRuntimeClient
+	targetDesc                 string
+	useCompactImageMountSource bool
 	// cfg is the resolved Docker config file; used to attach registry
 	// credentials (X-Registry-Auth) to pulls so private images work.
 	cfg *configfile.ConfigFile
@@ -71,6 +93,15 @@ type dockerServices struct {
 }
 
 var loadDockerConfigFile = dockerconfig.LoadDefaultConfigFile
+
+var queryComposeVersion = func(ctx context.Context) (string, error) {
+	c := exec.CommandContext(ctx, "docker", "compose", "version", "--short")
+	out, err := c.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("docker compose version: %s", firstNonEmpty(string(out), err.Error()))
+	}
+	return strings.TrimSpace(string(out)), nil
+}
 
 // NewDockerServices creates a DockerServices for one vaka invocation using
 // docker/cli target resolution semantics:
@@ -90,6 +121,7 @@ func NewDockerServices(inv *ComposeInvocation, pullPolicy PullPolicy) (DockerSer
 	}
 	return &dockerServices{
 		c:          apiClient,
+		legacy:     apiClient,
 		targetDesc: targetDesc,
 		cfg:        cfg,
 		pullPolicy: pullPolicy,
@@ -122,6 +154,32 @@ func dockerTargetDescription(cfg *configfile.ConfigFile) string {
 	return "default Docker context"
 }
 
+func (d *dockerServices) CheckRuntimeCompatibility(ctx context.Context) error {
+	server, err := d.c.ServerVersion(ctx)
+	if err != nil {
+		return fmt.Errorf("query Docker Engine version on %s: %w", d.targetDesc, err)
+	}
+	if err := checkDockerCompatibility(server.Version, server.APIVersion); err != nil {
+		return fmt.Errorf("Docker target %s: %w", d.targetDesc, err)
+	}
+	if err := checkDockerClientCompatibility(d.c.ClientVersion()); err != nil {
+		return fmt.Errorf("Docker target %s: %w", d.targetDesc, err)
+	}
+	composeVersion, err := queryComposeVersion(ctx)
+	if err != nil {
+		return err
+	}
+	if err := checkComposeCompatibility(composeVersion); err != nil {
+		return err
+	}
+	useCompactSource, err := resolveImageMountVersionCompatibility(server.Version, composeVersion)
+	if err != nil {
+		return fmt.Errorf("Docker target %s: %w", d.targetDesc, err)
+	}
+	d.useCompactImageMountSource = useCompactSource
+	return nil
+}
+
 // ImageExists returns true if ref is present in the local image store.
 func (d *dockerServices) ImageExists(ctx context.Context, ref string) (bool, error) {
 	_, err := d.c.ImageInspect(ctx, ref)
@@ -134,20 +192,80 @@ func (d *dockerServices) ImageExists(ctx context.Context, ref string) (bool, err
 	return false, fmt.Errorf("inspect %s on %s: %w", ref, d.targetDesc, err)
 }
 
-// EnsureImage inspects ref locally; pulls it if absent. Used for vaka's own
-// helper image, which is always ensured regardless of --vaka-pull.
-func (d *dockerServices) EnsureImage(ctx context.Context, ref string) error {
-	_, err := d.c.ImageInspect(ctx, ref)
-	if err == nil {
-		return nil
+// ResolveRuntimeImage resolves and validates Vaka's own runtime image. The
+// runtime tag is only a lookup key: callers receive the immutable local image
+// ID, and the image's bundle-version label must match exactly.
+func (d *dockerServices) ResolveRuntimeImage(ctx context.Context, ref, expectedVersion string, repair bool) (ResolvedImage, error) {
+	inspect, err := d.c.ImageInspect(ctx, ref)
+	if errdefs.IsNotFound(err) && repair {
+		if err := d.pullImage(ctx, ref); err != nil {
+			return ResolvedImage{}, fmt.Errorf("pull runtime image %s on %s: %w", ref, d.targetDesc, err)
+		}
+		inspect, err = d.c.ImageInspect(ctx, ref)
 	}
-	if !errdefs.IsNotFound(err) {
-		return fmt.Errorf("inspect %s on %s: %w", ref, d.targetDesc, err)
+	if err != nil {
+		if errdefs.IsNotFound(err) {
+			return ResolvedImage{}, fmt.Errorf("runtime image %s is not present on %s", ref, d.targetDesc)
+		}
+		return ResolvedImage{}, fmt.Errorf("inspect runtime image %s on %s: %w", ref, d.targetDesc, err)
 	}
+
+	resolved, validationErr := validateRuntimeImage(ref, expectedVersion, inspect)
+	if validationErr == nil {
+		resolved = d.selectRuntimeMountSource(resolved)
+	}
+	if validationErr == nil || !repair {
+		return resolved, validationErr
+	}
+
+	// A present but incompatible local tag can be repaired by refreshing the
+	// Vaka-owned immutable tag once. Service images never use this path.
 	if err := d.pullImage(ctx, ref); err != nil {
-		return fmt.Errorf("failed to pull %s on %s — check network connectivity or use --vaka-init-present if binaries are baked into the image: %w", ref, d.targetDesc, err)
+		return ResolvedImage{}, fmt.Errorf("refresh incompatible runtime image %s on %s: %w", ref, d.targetDesc, err)
 	}
-	return nil
+	inspect, err = d.c.ImageInspect(ctx, ref)
+	if err != nil {
+		return ResolvedImage{}, fmt.Errorf("inspect refreshed runtime image %s on %s: %w", ref, d.targetDesc, err)
+	}
+	resolved, validationErr = validateRuntimeImage(ref, expectedVersion, inspect)
+	if validationErr != nil {
+		return ResolvedImage{}, fmt.Errorf("runtime image %s remains incompatible after refresh: %w", ref, validationErr)
+	}
+	return d.selectRuntimeMountSource(resolved), nil
+}
+
+func (d *dockerServices) selectRuntimeMountSource(resolved ResolvedImage) ResolvedImage {
+	resolved.MountSource = resolved.ID
+	if d.useCompactImageMountSource {
+		resolved.MountSource = strings.TrimPrefix(resolved.ID, "sha256:")[:40]
+	}
+	return resolved
+}
+
+func validateRuntimeImage(ref, expectedVersion string, inspect dockerimage.InspectResponse) (ResolvedImage, error) {
+	if !validDockerImageID(inspect.ID) {
+		return ResolvedImage{}, fmt.Errorf("runtime image %s returned invalid image ID %q", ref, inspect.ID)
+	}
+	if inspect.Config == nil {
+		return ResolvedImage{}, fmt.Errorf("runtime image %s has no image configuration", ref)
+	}
+	actualVersion := strings.TrimSpace(inspect.Config.Labels[runtimebundle.VersionLabel])
+	if actualVersion != expectedVersion {
+		if actualVersion == "" {
+			actualVersion = "<missing>"
+		}
+		return ResolvedImage{}, fmt.Errorf("runtime image %s has bundle version %s, require %s", ref, actualVersion, expectedVersion)
+	}
+	return ResolvedImage{ID: inspect.ID}, nil
+}
+
+func validDockerImageID(id string) bool {
+	const prefix = "sha256:"
+	if !strings.HasPrefix(id, prefix) || len(id) != len(prefix)+64 {
+		return false
+	}
+	_, err := hex.DecodeString(strings.TrimPrefix(id, prefix))
+	return err == nil
 }
 
 // pullImage pulls ref and streams progress to stderr. The returned error is

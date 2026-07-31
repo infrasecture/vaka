@@ -13,6 +13,7 @@ import (
 
 	composetypes "github.com/compose-spec/compose-go/v2/types"
 	"gopkg.in/yaml.v3"
+	"vaka.dev/vaka/internal/runtimebundle"
 	"vaka.dev/vaka/pkg/compose"
 	"vaka.dev/vaka/pkg/policy"
 )
@@ -22,15 +23,19 @@ import (
 // does not depend on the __vaka-init volume helper container.
 const vakaInitLabel = "agent.vaka.init"
 
-// vakaInitBaseImage is the image repository for the __vaka-init helper
-// container. The full reference is built by appending ":" + version.
+// vakaInitBaseImage is the image repository for the container runtime bundle.
 const vakaInitBaseImage = "emsi/vaka-init"
 
 // Test hooks: overridden in unit tests to avoid real Docker side effects.
 var (
-	newDockerServices   = NewDockerServices
-	execDockerComposeFn = execDockerCompose
+	newDockerServices    = NewDockerServices
+	execDockerComposeFn  = execDockerCompose
+	runtimeBundleVersion = runtimebundle.Version()
 )
+
+func vakaInitImageReference() string {
+	return vakaInitBaseImage + ":" + runtimebundle.ImageTagPrefix + runtimeBundleVersion
+}
 
 // defaultDockerCaps is the set of capabilities present in a default Docker
 // container (no cap_drop, no cap_add). NET_ADMIN is notably absent.
@@ -46,20 +51,69 @@ var defaultDockerCaps = map[string]bool{
 type composeVerbClass int
 
 const (
-	verbRender    composeVerbClass = iota // up, run, create: full policy injection
-	verbReference                         // every other compose verb: minimal __vaka-init override
+	verbRender    composeVerbClass = iota // full policy injection
+	verbReference                         // metadata-only override
+	verbMetadata                          // direct proxy; no project or override required
 )
 
-// classifyComposeVerb maps a compose subcommand name to its execution class.
-// Unknown verbs default to reference forwarding so future docker compose
-// subcommands keep working (docker rejects truly bogus ones itself).
-func classifyComposeVerb(verb string) composeVerbClass {
-	switch verb {
-	case "up", "run", "create":
-		return verbRender
-	default:
-		return verbReference
+type composeCommandSpec struct {
+	class         composeVerbClass
+	ensureRuntime bool
+}
+
+// composeCommandSpecs is the security boundary for Compose dispatch. Commands
+// known not to create containers use the lightweight reference path. Commands
+// that can create or recreate containers require a full policy render.
+var composeCommandSpecs = map[string]composeCommandSpec{
+	"attach":  {class: verbReference},
+	"build":   {class: verbReference},
+	"commit":  {class: verbReference},
+	"config":  {class: verbReference},
+	"cp":      {class: verbReference},
+	"create":  {class: verbRender},
+	"down":    {class: verbReference},
+	"events":  {class: verbReference},
+	"exec":    {class: verbReference},
+	"export":  {class: verbReference},
+	"help":    {class: verbMetadata},
+	"images":  {class: verbReference},
+	"kill":    {class: verbReference},
+	"logs":    {class: verbReference},
+	"ls":      {class: verbMetadata},
+	"pause":   {class: verbReference},
+	"port":    {class: verbReference},
+	"ps":      {class: verbReference},
+	"publish": {class: verbReference},
+	"pull":    {class: verbReference, ensureRuntime: true},
+	"push":    {class: verbReference},
+	"restart": {class: verbReference},
+	"rm":      {class: verbReference},
+	"run":     {class: verbRender},
+	"scale":   {class: verbRender},
+	"start":   {class: verbReference},
+	"stats":   {class: verbReference},
+	"stop":    {class: verbReference},
+	"top":     {class: verbReference},
+	"unpause": {class: verbReference},
+	"up":      {class: verbRender},
+	"version": {class: verbMetadata},
+	"volumes": {class: verbReference},
+	"wait":    {class: verbReference},
+	"watch":   {class: verbRender},
+}
+
+// composeCommandSpecFor defaults unknown future verbs to full policy rendering.
+// This keeps forwarding extensible without allowing a newly introduced
+// container-creating command to bypass Vaka's entrypoint and firewall.
+func composeCommandSpecFor(verb string) composeCommandSpec {
+	if spec, ok := composeCommandSpecs[verb]; ok {
+		return spec
 	}
+	return composeCommandSpec{class: verbRender}
+}
+
+func classifyComposeVerb(verb string) composeVerbClass {
+	return composeCommandSpecFor(verb).class
 }
 
 // execDockerCompose executes docker compose with the given args.
@@ -128,27 +182,39 @@ func execDockerCompose(inv *ComposeInvocation, overrideYAML string, extraEnv []s
 	return nil
 }
 
-// runFull handles full-override commands: up, run, create, volumes.
-// It loads and validates vaka.yaml, ensures the __vaka-init image when needed,
-// builds the full compose override, and delegates to execDockerCompose.
+// runFull handles every full-render Compose command. It loads and validates
+// vaka.yaml, resolves the runtime image when needed, builds the full Compose
+// override, and delegates to execDockerCompose.
 func runFull(vakaFile string, inv *ComposeInvocation, vakaInitPresent bool, pullPolicy PullPolicy) error {
 	ctx := context.Background()
 	ds, err := newDockerServices(inv, pullPolicy)
 	if err != nil {
 		return err
 	}
+	if err := ds.CheckRuntimeCompatibility(ctx); err != nil {
+		return err
+	}
 	overrideYAML, extraEnv, err := buildInjectionOverride(ctx, ds, vakaFile, inv, vakaInitPresent)
 	if err != nil {
 		return err
 	}
-	return execDockerComposeFn(inv, overrideYAML, extraEnv)
+	legacyState, captureErr := captureLegacyRuntime(ctx, ds, inv.ResolvedProjectName)
+	if captureErr != nil {
+		fmt.Fprintf(os.Stderr, "vaka: warning: cannot inspect legacy runtime state: %v\n", captureErr)
+	}
+	if !legacyState.Empty() {
+		extraEnv = append(extraEnv, "COMPOSE_IGNORE_ORPHANS=true")
+	}
+	execErr := execDockerComposeFn(inv, overrideYAML, extraEnv)
+	cleanupLegacyRuntime(ctx, ds, legacyState)
+	return execErr
 }
 
 // buildInjectionOverride builds the compose override and per-service secret env
 // payload from the same shared path used by full injection commands.
 //
-// Side effects are intentional and shared with runFull: pre-build and
-// emsi/vaka-init image ensure happen here so show-compose cannot drift.
+// Side effects are intentional and shared with runFull: pre-build and exact
+// runtime-image resolution happen here so show-compose cannot drift.
 func buildInjectionOverride(
 	ctx context.Context,
 	ds DockerServices,
@@ -160,11 +226,11 @@ func buildInjectionOverride(
 	if err != nil {
 		return "", nil, err
 	}
-
-	p, project, err := loadAndValidate(vakaFile, composeInput.Files, composeInput.WorkingDir)
+	p, project, err := loadAndValidateResolved(vakaFile, composeInput)
 	if err != nil {
 		return "", nil, err
 	}
+	inv.ResolvedProjectName = project.Name
 
 	// Pre-build any service whose image must be inspected for ENTRYPOINT/CMD
 	// and/or USER fallback but isn't available locally and has a build: section.
@@ -217,12 +283,17 @@ func buildInjectionOverride(
 		if err != nil {
 			return "", nil, err
 		}
-		sliced.VakaVersion = version
+		sliced.GeneratedBy = "vaka/" + version
+		sliced.RequiredRuntimeVersion = runtimeBundleVersion
 		restoreUser := strings.TrimSpace(composeSvc.User)
 		if restoreUser == "" {
 			restoreUser = strings.TrimSpace(rt.ImageUser)
 		}
 		sliced.Services[svcName].User = restoreUser
+		policyRevision, err := policy.Revision(sliced)
+		if err != nil {
+			return "", nil, fmt.Errorf("compute policy revision for %s: %w", svcName, err)
+		}
 
 		raw, err := yaml.Marshal(sliced)
 		if err != nil {
@@ -233,16 +304,19 @@ func buildInjectionOverride(
 		extraEnv = append(extraEnv, envKey+"="+base64.StdEncoding.EncodeToString(raw))
 
 		entries = append(entries, compose.ServiceEntry{
-			Name:       svcName,
-			Entrypoint: rt.Entrypoint,
-			Command:    rt.Command,
-			CapDelta:   delta,
-			EnvVarName: envKey,
-			OptOut:     composeSvc.Labels[vakaInitLabel] == "present",
+			Name:           svcName,
+			Entrypoint:     rt.Entrypoint,
+			Command:        rt.Command,
+			CapDelta:       delta,
+			EnvVarName:     envKey,
+			PolicyRevision: policyRevision,
+			OptOut:         composeSvc.Labels[vakaInitLabel] == "present",
 		})
 	}
 
-	// Pull __vaka-init image only when injection is actually needed.
+	// Resolve the runtime image only when at least one service needs it. The
+	// mutable tag is used for lookup and repair; Compose receives the exact local
+	// image ID or its compatibility prefix, never that tag.
 	needsInjection := false
 	for _, e := range entries {
 		if !e.OptOut {
@@ -250,39 +324,73 @@ func buildInjectionOverride(
 			break
 		}
 	}
-	vakaInitImageRef := ""
+	runtimeMount := compose.RuntimeMount{Version: runtimeBundleVersion}
 	if !vakaInitPresent && needsInjection {
-		vakaInitImageRef = vakaInitBaseImage + ":" + version
-		if err := ds.EnsureImage(ctx, vakaInitImageRef); err != nil {
+		resolvedImage, err := ds.ResolveRuntimeImage(ctx, vakaInitImageReference(), runtimeBundleVersion, true)
+		if err != nil {
 			return "", nil, err
 		}
+		runtimeMount.ImageID = resolvedImage.ID
+		runtimeMount.Source = resolvedImage.MountSource
 	}
 
-	overrideYAML, err = compose.BuildOverride(entries, vakaInitImageRef)
+	overrideYAML, err = compose.BuildOverride(entries, runtimeMount)
 	if err != nil {
 		return "", nil, fmt.Errorf("build override: %w", err)
 	}
 	return overrideYAML, extraEnv, nil
 }
 
-// referenceOverrideYAML returns the minimal compose override YAML declaring the
-// __vaka-init container so reference commands can resolve __vaka-init service
-// names through compose. Returns "" when vakaInitPresent is true.
-func referenceOverrideYAML(vakaInitPresent bool, imageRef string) (string, error) {
-	if vakaInitPresent {
-		return "", nil
-	}
-	return compose.BuildVakaInitOnlyOverride(imageRef)
+// referenceOverrideYAML returns the metadata-only override used by Compose
+// commands that do not create containers.
+func referenceOverrideYAML() (string, error) {
+	return compose.BuildReferenceOverride(runtimeBundleVersion)
 }
 
-// runReference handles all reference commands by injecting only the minimal
-// __vaka-init compose service override.
-func runReference(inv *ComposeInvocation, vakaInitPresent bool) error {
-	overrideYAML, err := referenceOverrideYAML(vakaInitPresent, vakaInitBaseImage+":"+version)
+// runReference handles all reference commands with the same FD-injected
+// Compose path but without evaluating service policy.
+func runReference(inv *ComposeInvocation) error {
+	overrideYAML, err := referenceOverrideYAML()
 	if err != nil {
-		return fmt.Errorf("build vaka-init container override: %w", err)
+		return fmt.Errorf("build compose reference override: %w", err)
 	}
-	return execDockerComposeFn(inv, overrideYAML, nil)
+	if inv.Subcommand != "down" {
+		return execDockerComposeFn(inv, overrideYAML, nil)
+	}
+
+	ctx := context.Background()
+	projectName, projectErr := resolveComposeProjectName(ctx, inv)
+	ds, dockerErr := newDockerServices(inv, PullNever)
+	if projectErr != nil || dockerErr != nil {
+		return execDockerComposeFn(inv, overrideYAML, nil)
+	}
+	legacyState, captureErr := captureLegacyRuntime(ctx, ds, projectName)
+	if captureErr != nil {
+		fmt.Fprintf(os.Stderr, "vaka: warning: cannot inspect legacy runtime state: %v\n", captureErr)
+	}
+	extraEnv := []string(nil)
+	if !legacyState.Empty() {
+		extraEnv = append(extraEnv, "COMPOSE_IGNORE_ORPHANS=true")
+	}
+	execErr := execDockerComposeFn(inv, overrideYAML, extraEnv)
+	cleanupLegacyRuntime(ctx, ds, legacyState)
+	return execErr
+}
+
+// ensureReferenceRuntime preserves `vaka compose pull` as an offline-prefetch
+// workflow without loading policy or inspecting service images. The runtime is
+// resolved on the same Docker target as the subsequent Compose invocation.
+func ensureReferenceRuntime(inv *ComposeInvocation) error {
+	ctx := context.Background()
+	ds, err := newDockerServices(inv, PullNever)
+	if err != nil {
+		return err
+	}
+	if err := ds.CheckRuntimeCompatibility(ctx); err != nil {
+		return err
+	}
+	_, err = ds.ResolveRuntimeImage(ctx, vakaInitImageReference(), runtimeBundleVersion, true)
+	return err
 }
 
 // servicesNeedingPrebuild returns the sorted list of services whose image must

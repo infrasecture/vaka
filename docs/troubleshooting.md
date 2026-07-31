@@ -12,26 +12,91 @@ Then retry fixable checks:
 vaka doctor --fix
 ```
 
-## Helper Image Missing
+## Known Issues
 
-`vaka doctor --fix` pulls `emsi/vaka-init:<vaka-version>`.
+### Docker Engine 29.0/29.1 Image-Mount Path Length
 
-If you built a local development binary with version `dev`, there is no published `emsi/vaka-init:dev`. Build the helper image locally with `./build.sh` or use a stamped release binary.
+Docker Engine 29.0.x and 29.1.x contain an image-mount path-length bug. Without
+Vaka's compatibility handling, creating a managed container can fail with an
+error similar to:
 
-## Version Mismatch After Upgrade
-
-Existing containers may keep an older anonymous helper volume. Refresh it:
-
-```bash
-vaka down --volumes
-vaka up
+```text
+Error response from daemon: mkdir /var/lib/docker/image/overlay2/layerdb/mounts/<long-hex-name>: file name too long
 ```
 
-or renew anonymous volumes:
+Those Engine versions encode the container ID, image-mount source, and mount
+destination into one filesystem name. A complete `sha256:` image ID makes that
+name exceed the filesystem limit. The long value is hexadecimal encoding, not
+repeated or corrupted image data.
 
-```bash
-vaka up -V
+Vaka uses a 40-hex-character immutable image-ID prefix on the affected Engines.
+Docker resolves that prefix against the local image store and rejects it if it
+is ambiguous; Vaka retains the complete image ID in container labels and
+override metadata. Compose 5.1.0 and newer expand the prefix back to the complete
+ID, so they cannot be combined with the affected Engine versions.
+
+| Docker Engine | Docker Compose | Vaka behavior |
+| --- | --- | --- |
+| 28.0.0 through 28.x | 2.35.0 or newer | Supported; complete image ID |
+| 29.0.x or 29.1.x | 2.35.0 through 5.0.x | Supported; compact image-ID prefix |
+| 29.0.x or 29.1.x | 5.1.0 or newer | Rejected before Compose runs |
+| 29.2.0 or newer | 2.35.0 or newer | Supported; complete image ID |
+
+Prefer upgrading Docker Engine to 29.2.0 or newer. If that is not immediately
+possible, keep Docker Compose between 2.35.0 and 5.0.x while using Engine 29.0
+or 29.1. Run `vaka doctor` to verify the selected Engine and Compose pairing.
+
+The Engine-side path construction was corrected by
+[moby/moby#51827](https://github.com/moby/moby/pull/51827). The relevant Compose
+source expansion was introduced by
+[docker/compose#13549](https://github.com/docker/compose/pull/13549).
+
+## Runtime Image Missing Or Incompatible
+
+`vaka doctor --fix` pulls or refreshes the required
+`emsi/vaka-init:runtime-vX.Y.Z` image and validates its runtime-version label.
+
+The runtime version is independent of `vaka version`, so development CLI builds
+do not require a special `:dev` runtime image.
+
+## Docker API Is Pinned Too Old
+
+If `doctor` reports an old Docker client API while the Engine itself is current,
+check `DOCKER_API_VERSION`. Unset it, or set it to 1.48 or newer. Vaka checks the
+effective client API because Compose inherits the same override.
+
+## Baked Runtime Version Mismatch
+
+Services using `--vaka-init-present` or `agent.vaka.init: present` must contain
+the exact runtime bundle required by the current Vaka CLI. Before upgrading
+such a deployment, rebuild the service image from the versioned
+`emsi/vaka-init:runtime-vX.Y.Z` image shown by `vaka doctor`. A helper baked from
+an older CLI-versioned image fails closed before nftables or the application is
+started.
+
+## Legacy Helper Volume During Upgrade
+
+Vaka releases using image mounts automatically migrate anonymous `/opt/vaka`
+volumes created by older releases. Detection requires the historical helper
+service plus Docker's anonymous-volume marker; a lookalike named volume is left
+untouched. A partial `up <service>` can report:
+
+```text
+vaka: retained 1 legacy runtime volume(s) still used by existing containers
 ```
+
+This is expected. Recreate the remaining policy-managed services normally; Vaka
+removes the helper and anonymous volume after the final consumer moves. `vaka
+down` also captures and removes the old volume safely. Cleanup never uses force
+and never removes named volumes. It rechecks Docker's anonymous-volume marker
+immediately before deletion, so `--renew-anon-volumes`/`-V` is neither required
+nor recommended for this migration.
+
+## Compose Reports Image Mount Is Experimental
+
+Current Compose versions may print `Image mount is an experimental feature`
+while creating a service. This is a Compose status message; the mount remains
+read-only and is supported by Vaka's minimum Engine and Compose versions.
 
 ## `network_mode: host`
 

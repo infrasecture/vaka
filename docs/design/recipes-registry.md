@@ -415,7 +415,8 @@ leave the directory diverging from the published recipe — a skipped
 collision (a shipped file was not installed) and a kept-user-copy (an
 upstream-dropped file was retained) — are written to the lock's
 `deviations:` section. `vaka get` warns when they occur; the render verbs
-(`up`, `run`, `create`) print a one-line notice while deviations exist; and
+(`up`, `run`, `create`, `scale`, `watch`, and unclassified future Compose
+verbs) print a one-line notice while deviations exist; and
 the future `vaka recipes verify` reports "directory matches lock; lock
 records N deviations from <name>@<version>" instead of a clean pass.
 Resolving the underlying state and re-running `vaka get` drops the entry, so

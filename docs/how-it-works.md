@@ -9,32 +9,61 @@ flowchart LR
     vf["vaka.yaml"] --> cli["vaka up"]
     cf["docker-compose.yaml"] --> cli
     cli -- "override via /dev/fd/3" --> dc["docker compose"]
-    dc -- "secret + helper binaries" --> c["service container"]
+    dc -- "secret + read-only image mount" --> c["service container"]
     c --> init["vaka-init"]
     init --> app["original application"]
 ```
 
 ## Compose Override
 
-For `vaka compose up`, `vaka compose run`, and `vaka compose create`, vaka
-generates a Compose override in memory and streams it to `docker compose`
-through `/dev/fd/3`. `up` and `run` also have equivalent top-level shorthands.
+For `vaka compose up`, `run`, `create`, `scale`, and `watch`, Vaka generates a
+Compose override in memory and streams it to `docker compose` through
+`/dev/fd/3`. Unknown future Compose verbs use this full path until explicitly
+classified as non-creating. `up` and `run` also have equivalent top-level
+shorthands.
 
 The override:
 
-- adds or uses the `vaka-init` helper binaries,
+- mounts the exact resolved runtime image into each managed service,
 - mounts the per-service policy as a Docker secret,
 - runs `vaka-init` as the entrypoint,
 - preserves the original entrypoint and command,
-- adds the temporary capability needed to load nftables rules.
+- adds the temporary capability needed to load nftables rules,
+- labels the service with a semantic policy revision so Compose recreates it
+  when its effective `vaka.yaml` policy changes.
 
-## Helper Injection
+## Runtime Injection
 
-Normal mode creates a short-lived `__vaka-init` helper service from `emsi/vaka-init:<version>`. The helper exposes `/opt/vaka/sbin/vaka-init` and `/opt/vaka/sbin/nft` through a read-only shared volume mounted into policy-managed services.
+Normal mode locates `emsi/vaka-init:runtime-vX.Y.Z`, verifies its runtime-version
+label, and resolves it to an immutable local `sha256:` image ID. The generated
+Compose override mounts that local ID, never the mutable tag:
+
+```yaml
+volumes:
+  - type: image
+    source: sha256:<exact-local-image-id>
+    target: /opt/vaka
+    read_only: true
+    image:
+      subpath: opt/vaka
+```
+
+Docker Engine 29.0 and 29.1 need a special case: Vaka uses a 40-hex-character
+prefix of the same ID to stay below those versions' filesystem-name limit.
+Docker resolves the prefix only against its local image store and rejects an
+ambiguous prefix. Vaka still retains the complete image ID in override metadata
+and service labels. Engine 29.2 and newer fix the underlying issue. Compose 5.1
+and newer expand image-volume sources back to full IDs, so Vaka rejects that
+Compose version when it is paired with an affected Engine.
+
+Both `/opt/vaka/sbin/vaka-init` and `/opt/vaka/sbin/nft` are mode `0555` in the
+runtime image. A read-only image mount preserves their execute bits; it does not
+make non-executable files executable. There is no helper container or helper
+volume in the normal path.
 
 Your application images are not modified.
 
-Air-gapped mode skips this helper when binaries are already present in the image. Use:
+Air-gapped mode skips the image mount when binaries are already present in the service image. Use:
 
 ```bash
 vaka --vaka-init-present up
@@ -50,6 +79,11 @@ labels:
 ## Per-Service Policy Secret
 
 vaka generates one policy document per managed service. The service-specific document includes generated runtime metadata, such as the original service user when available.
+
+The generated document records `generatedBy` for diagnostics and an exact
+`requiredRuntimeVersion` for fail-closed compatibility. The service's
+`agent.vaka.policy-revision` label hashes the effective semantic policy but
+excludes `generatedBy`, so a host-CLI-only upgrade does not restart services.
 
 The policy is mounted inside the container at:
 
@@ -71,6 +105,27 @@ The policy is mounted inside the container at:
 8. `execve` the original application entrypoint.
 
 If any step fails, the container exits before the application starts.
+
+## Upgrade From Legacy Helper Volumes
+
+Older Vaka releases used a `__vaka-init` container and an anonymous
+`/opt/vaka` volume. Before any full-render Compose command, Vaka detects that
+exact legacy Compose service and records its Docker-labeled anonymous volume.
+After Compose has moved services to image mounts, Vaka removes the old helper
+and volume only when no non-helper container still references it.
+
+Partial service upgrades are safe: the volume remains until the final legacy
+consumer is recreated. `vaka down` captures the legacy volume before Compose
+removes the containers and then removes the unused volume. Cleanup never uses
+force, never removes named volumes, and revalidates Docker's anonymous-volume
+marker immediately before deletion.
+
+When that exact legacy state is present, Vaka sets
+`COMPOSE_IGNORE_ORPHANS=true` for the migration's Compose subprocess so Compose
+does not compete with Vaka for the historical `__vaka-init` helper. This also
+means `--remove-orphans` does not remove unrelated project orphans during that
+one invocation. After migration removes the helper, a subsequent command no
+longer sets the variable and normal orphan handling resumes.
 
 ## Ruleset Shape
 

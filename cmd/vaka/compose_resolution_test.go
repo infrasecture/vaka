@@ -1,10 +1,62 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+func TestComposeResolutionCarriesProjectProfilesAndEnvFiles(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	composeFile := filepath.Join(dir, "compose.yaml")
+	envFile := filepath.Join(dir, "runtime.env")
+	if err := os.WriteFile(composeFile, []byte(`
+services:
+  app:
+    image: ${APP_IMAGE}
+  tool:
+    image: alpine:3.20
+    profiles: [tools]
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(envFile, []byte("APP_IMAGE=busybox:1.36\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	inv, err := ParseComposeInvocation([]string{
+		"--project-name", "selected",
+		"--profile", "tools",
+		"--env-file", envFile,
+		"up",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, err := resolveComposeInput(inv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts, err := newComposeProjectOptions(input, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := opts.LoadProject(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if project.Name != "selected" {
+		t.Fatalf("project name = %q, want selected", project.Name)
+	}
+	if project.Services["app"].Image != "busybox:1.36" {
+		t.Fatalf("app image = %q, want env-file interpolation", project.Services["app"].Image)
+	}
+	if _, ok := project.Services["tool"]; !ok {
+		t.Fatal("profile-selected service tool is missing")
+	}
+}
 
 func TestResolveComposeInputDefaultsComposeYaml(t *testing.T) {
 	dir := t.TempDir()

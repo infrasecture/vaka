@@ -1,252 +1,215 @@
-// pkg/compose/override_test.go
 package compose_test
 
 import (
+	"encoding/hex"
 	"strings"
 	"testing"
 
+	composetypes "github.com/compose-spec/compose-go/v2/types"
 	"gopkg.in/yaml.v3"
 	"vaka.dev/vaka/pkg/compose"
 )
 
 type overrideDoc struct {
+	Metadata struct {
+		RuntimeVersion string `yaml:"runtime-version"`
+		RuntimeImage   string `yaml:"runtime-image"`
+	} `yaml:"x-vaka"`
 	Secrets map[string]struct {
 		Environment string `yaml:"environment"`
 	} `yaml:"secrets"`
 	Services map[string]struct {
-		Image       string   `yaml:"image"`
-		User        string   `yaml:"user"`
-		Entrypoint  []string `yaml:"entrypoint"`
-		Command     []string `yaml:"command"`
-		CapAdd      []string `yaml:"cap_add"`
-		Restart     string   `yaml:"restart"`
-		Attach      *bool    `yaml:"attach"`
-		VolumesFrom []string `yaml:"volumes_from"`
-		DependsOn   map[string]struct {
-			Condition string `yaml:"condition"`
-		} `yaml:"depends_on"`
-		Secrets []struct {
+		User        string                             `yaml:"user"`
+		Entrypoint  []string                           `yaml:"entrypoint"`
+		Command     []string                           `yaml:"command"`
+		CapAdd      []string                           `yaml:"cap_add"`
+		Labels      map[string]string                  `yaml:"labels"`
+		Volumes     []composetypes.ServiceVolumeConfig `yaml:"volumes"`
+		VolumesFrom []string                           `yaml:"volumes_from"`
+		DependsOn   map[string]any                     `yaml:"depends_on"`
+		Secrets     []struct {
 			Source string `yaml:"source"`
 			Target string `yaml:"target"`
 		} `yaml:"secrets"`
 	} `yaml:"services"`
 }
 
-func parseOverride(t *testing.T, yaml_str string) overrideDoc {
+func parseOverride(t *testing.T, raw string) overrideDoc {
 	t.Helper()
 	var doc overrideDoc
-	if err := yaml.Unmarshal([]byte(yaml_str), &doc); err != nil {
+	if err := yaml.Unmarshal([]byte(raw), &doc); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	return doc
 }
 
-const testImage = "emsi/vaka-init:v0.1.0"
+const testImageID = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+var testRuntime = compose.RuntimeMount{ImageID: testImageID, Version: "v0.1.0"}
 
 func singleEntry(name string) []compose.ServiceEntry {
 	return []compose.ServiceEntry{{
-		Name:       name,
-		Entrypoint: []string{"claude"},
-		Command:    []string{"--dangerously-skip-permissions"},
-		CapDelta:   []string{"NET_ADMIN"},
-		EnvVarName: "VAKA_CODEX_CONF",
+		Name:           name,
+		Entrypoint:     []string{"claude"},
+		Command:        []string{"--dangerously-skip-permissions"},
+		CapDelta:       []string{"NET_ADMIN"},
+		EnvVarName:     "VAKA_CODEX_CONF",
+		PolicyRevision: "sha256:policy",
 	}}
 }
 
-func TestOverrideSecretNameDerivedFromService(t *testing.T) {
-	out, err := compose.BuildOverride(singleEntry("codex"), testImage)
+func TestBuildOverrideInjectsPolicyRuntime(t *testing.T) {
+	out, err := compose.BuildOverride(singleEntry("codex"), testRuntime)
 	if err != nil {
 		t.Fatalf("BuildOverride: %v", err)
 	}
 	doc := parseOverride(t, out)
-	if _, ok := doc.Secrets["vaka_codex_conf"]; !ok {
-		t.Errorf("expected secret key 'vaka_codex_conf'; got secrets: %+v", doc.Secrets)
-	}
-	if doc.Secrets["vaka_codex_conf"].Environment != "VAKA_CODEX_CONF" {
-		t.Errorf("secret env = %q, want VAKA_CODEX_CONF", doc.Secrets["vaka_codex_conf"].Environment)
-	}
-}
-
-func TestOverrideEntrypointIsVakaInitAbsPath(t *testing.T) {
-	out, _ := compose.BuildOverride(singleEntry("codex"), testImage)
-	doc := parseOverride(t, out)
 	svc := doc.Services["codex"]
-	if len(svc.Entrypoint) < 2 || svc.Entrypoint[0] != "/opt/vaka/sbin/vaka-init" || svc.Entrypoint[1] != "--" {
+
+	if got := doc.Secrets["vaka_codex_conf"].Environment; got != "VAKA_CODEX_CONF" {
+		t.Errorf("secret env = %q, want VAKA_CODEX_CONF", got)
+	}
+	if len(svc.Entrypoint) != 2 || svc.Entrypoint[0] != "/opt/vaka/sbin/vaka-init" || svc.Entrypoint[1] != "--" {
 		t.Errorf("entrypoint = %v, want [/opt/vaka/sbin/vaka-init --]", svc.Entrypoint)
 	}
-}
-
-func TestOverrideForcesRootUserForBootstrap(t *testing.T) {
-	out, _ := compose.BuildOverride(singleEntry("codex"), testImage)
-	doc := parseOverride(t, out)
-	svc := doc.Services["codex"]
 	if svc.User != "0:0" {
 		t.Errorf("user = %q, want 0:0", svc.User)
 	}
-}
-
-func TestOverrideCommandIsOriginalEntrypoint(t *testing.T) {
-	out, _ := compose.BuildOverride(singleEntry("codex"), testImage)
-	doc := parseOverride(t, out)
-	svc := doc.Services["codex"]
-	if len(svc.Command) == 0 || svc.Command[0] != "claude" {
-		t.Errorf("command = %v, want [claude --dangerously-skip-permissions]", svc.Command)
+	if got := strings.Join(svc.Command, " "); got != "claude --dangerously-skip-permissions" {
+		t.Errorf("command = %q", got)
+	}
+	if len(svc.CapAdd) != 1 || svc.CapAdd[0] != "NET_ADMIN" {
+		t.Errorf("cap_add = %v, want [NET_ADMIN]", svc.CapAdd)
+	}
+	if len(svc.Secrets) != 1 || svc.Secrets[0].Target != "vaka.yaml" {
+		t.Errorf("secrets = %+v, want target vaka.yaml", svc.Secrets)
 	}
 }
 
-func TestOverrideCapAddContainsDelta(t *testing.T) {
-	out, _ := compose.BuildOverride(singleEntry("codex"), testImage)
+func TestBuildOverrideUsesReadOnlyExactIDImageMount(t *testing.T) {
+	out, err := compose.BuildOverride(singleEntry("codex"), testRuntime)
+	if err != nil {
+		t.Fatalf("BuildOverride: %v", err)
+	}
 	doc := parseOverride(t, out)
-	for _, cap := range doc.Services["codex"].CapAdd {
-		if cap == "NET_ADMIN" {
-			return
+	svc := doc.Services["codex"]
+	if len(svc.Volumes) != 1 {
+		t.Fatalf("volumes = %+v, want one image mount", svc.Volumes)
+	}
+	mount := svc.Volumes[0]
+	if mount.Type != composetypes.VolumeTypeImage || mount.Source != testImageID || mount.Target != "/opt/vaka" || !mount.ReadOnly {
+		t.Errorf("mount = %+v, want read-only image %s at /opt/vaka", mount, testImageID)
+	}
+	if mount.Image == nil || mount.Image.SubPath != "opt/vaka" {
+		t.Errorf("image options = %+v, want subpath opt/vaka", mount.Image)
+	}
+	if len(svc.VolumesFrom) != 0 || len(svc.DependsOn) != 0 {
+		t.Errorf("legacy helper references remain: volumes_from=%v depends_on=%v", svc.VolumesFrom, svc.DependsOn)
+	}
+	if _, exists := doc.Services["__vaka-init"]; exists {
+		t.Fatal("override must not define a __vaka-init helper service")
+	}
+	if strings.Contains(out, "emsi/vaka-init") {
+		t.Fatalf("override contains mutable runtime tag:\n%s", out)
+	}
+}
+
+func TestBuildOverrideMountSourceFitsEngine29LegacyLayerName(t *testing.T) {
+	compactRuntime := testRuntime
+	compactRuntime.Source = strings.Repeat("a", 40)
+	out, err := compose.BuildOverride(singleEntry("codex"), compactRuntime)
+	if err != nil {
+		t.Fatalf("BuildOverride: %v", err)
+	}
+	mount := parseOverride(t, out).Services["codex"].Volumes[0]
+	legacyLayerIdentity := strings.Repeat("c", 64) + ",src=" + mount.Source + ",dst=" + mount.Target
+	if got := hex.EncodedLen(len(legacyLayerIdentity)); got > 255 {
+		t.Fatalf("Engine 29.0/29.1 layer name length = %d, exceeds NAME_MAX", got)
+	}
+}
+
+func TestBuildOverrideLabelsPolicyAndRuntimeIdentity(t *testing.T) {
+	out, _ := compose.BuildOverride(singleEntry("codex"), testRuntime)
+	doc := parseOverride(t, out)
+	labels := doc.Services["codex"].Labels
+	want := map[string]string{
+		compose.ManagedLabel:        "true",
+		compose.PolicyRevisionLabel: "sha256:policy",
+		compose.RuntimeImageLabel:   testImageID,
+		compose.RuntimeVersionLabel: "v0.1.0",
+	}
+	for key, value := range want {
+		if labels[key] != value {
+			t.Errorf("label %s = %q, want %q", key, labels[key], value)
 		}
 	}
-	t.Errorf("cap_add does not contain NET_ADMIN; got %v", doc.Services["codex"].CapAdd)
-}
-
-func TestOverrideSecretMountTargetIsVakaYaml(t *testing.T) {
-	out, _ := compose.BuildOverride(singleEntry("codex"), testImage)
-	doc := parseOverride(t, out)
-	secrets := doc.Services["codex"].Secrets
-	if len(secrets) == 0 {
-		t.Fatal("no secrets in service override")
-	}
-	if secrets[0].Target != "vaka.yaml" {
-		t.Errorf("secret target = %q, want vaka.yaml", secrets[0].Target)
+	if doc.Metadata.RuntimeVersion != testRuntime.Version || doc.Metadata.RuntimeImage != testImageID {
+		t.Errorf("x-vaka = %+v, want runtime identity", doc.Metadata)
 	}
 }
 
-func TestOverrideHyphensInServiceNameBecomesUnderscores(t *testing.T) {
-	entries := []compose.ServiceEntry{{
-		Name:       "llm-gateway",
-		Entrypoint: []string{"/usr/local/bin/litellm"},
-		EnvVarName: "VAKA_LLM_GATEWAY_CONF",
-	}}
-	out, _ := compose.BuildOverride(entries, testImage)
-	if !strings.Contains(out, "vaka_llm_gateway_conf") {
-		t.Errorf("expected secret key with underscores; got:\n%s", out)
-	}
-}
-
-func TestOverrideVakaInitContainerEmitted(t *testing.T) {
-	out, err := compose.BuildOverride(singleEntry("codex"), testImage)
+func TestBuildOverrideOptOutSkipsOnlyImageMount(t *testing.T) {
+	entries := singleEntry("codex")
+	entries[0].OptOut = true
+	out, err := compose.BuildOverride(entries, testRuntime)
 	if err != nil {
 		t.Fatalf("BuildOverride: %v", err)
 	}
-	doc := parseOverride(t, out)
-	container, ok := doc.Services["__vaka-init"]
-	if !ok {
-		t.Fatalf("__vaka-init service not in override:\n%s", out)
+	svc := parseOverride(t, out).Services["codex"]
+	if len(svc.Volumes) != 0 {
+		t.Errorf("opted-out service volumes = %+v, want none", svc.Volumes)
 	}
-	if container.Image != testImage {
-		t.Errorf("__vaka-init image = %q, want %q", container.Image, testImage)
+	if svc.Labels[compose.PolicyRevisionLabel] == "" || svc.Labels[compose.RuntimeVersionLabel] == "" {
+		t.Errorf("opted-out service lost policy/runtime labels: %+v", svc.Labels)
 	}
-	if len(container.Entrypoint) != 1 || container.Entrypoint[0] != "/opt/vaka/sbin/vaka-init" {
-		t.Errorf("__vaka-init entrypoint = %v, want [/opt/vaka/sbin/vaka-init]", container.Entrypoint)
-	}
-	if container.Restart != "no" {
-		t.Errorf("__vaka-init restart = %q, want no", container.Restart)
-	}
-	// attach: false — compose must not stream __vaka-init's logs or wait on it
-	// for foreground exit. Without this, `vaka up` returns as soon as the
-	// short-lived helper completes, breaking the prior pass-through UX.
-	if container.Attach == nil || *container.Attach != false {
-		t.Errorf("__vaka-init attach = %v, want &false", container.Attach)
+	if _, exists := svc.Labels[compose.RuntimeImageLabel]; exists {
+		t.Errorf("opted-out service must not claim a mounted runtime image: %+v", svc.Labels)
 	}
 }
 
-func TestOverrideServiceGetsVolumesFromAndDependsOn(t *testing.T) {
-	out, _ := compose.BuildOverride(singleEntry("codex"), testImage)
-	doc := parseOverride(t, out)
-	svc := doc.Services["codex"]
-	if len(svc.VolumesFrom) != 1 || svc.VolumesFrom[0] != "__vaka-init:ro" {
-		t.Errorf("volumes_from = %v, want [__vaka-init:ro]", svc.VolumesFrom)
-	}
-	dep, ok := svc.DependsOn["__vaka-init"]
-	if !ok {
-		t.Errorf("depends_on missing __vaka-init; got %+v", svc.DependsOn)
-	}
-	if dep.Condition != "service_completed_successfully" {
-		t.Errorf("depends_on condition = %q, want service_completed_successfully", dep.Condition)
-	}
-}
-
-func TestOverrideNoVakaInitContainerWhenImageEmpty(t *testing.T) {
-	out, err := compose.BuildOverride(singleEntry("codex"), "")
+func TestBuildOverrideSupportsGloballyBakedRuntime(t *testing.T) {
+	runtime := testRuntime
+	runtime.ImageID = ""
+	out, err := compose.BuildOverride(singleEntry("codex"), runtime)
 	if err != nil {
 		t.Fatalf("BuildOverride: %v", err)
 	}
-	doc := parseOverride(t, out)
-	if _, ok := doc.Services["__vaka-init"]; ok {
-		t.Errorf("__vaka-init must not be emitted when imageRef is empty:\n%s", out)
-	}
-	svc := doc.Services["codex"]
-	if len(svc.VolumesFrom) != 0 {
-		t.Errorf("volumes_from must be empty when imageRef is empty, got %v", svc.VolumesFrom)
+	if got := parseOverride(t, out).Services["codex"].Volumes; len(got) != 0 {
+		t.Errorf("globally baked runtime volumes = %+v, want none", got)
 	}
 }
 
-func TestOverridePerServiceOptOut(t *testing.T) {
-	entries := []compose.ServiceEntry{
-		{Name: "svc-a", Entrypoint: []string{"a"}, EnvVarName: "VAKA_SVC_A_CONF", OptOut: false},
-		{Name: "svc-b", Entrypoint: []string{"b"}, EnvVarName: "VAKA_SVC_B_CONF", OptOut: true},
+func TestBuildOverrideRejectsMissingIdentity(t *testing.T) {
+	entries := singleEntry("codex")
+	entries[0].PolicyRevision = ""
+	if _, err := compose.BuildOverride(entries, testRuntime); err == nil || !strings.Contains(err.Error(), "policy revision") {
+		t.Fatalf("missing policy revision error = %v", err)
 	}
-	out, err := compose.BuildOverride(entries, testImage)
-	if err != nil {
-		t.Fatalf("BuildOverride: %v", err)
+	if _, err := compose.BuildOverride(singleEntry("codex"), compose.RuntimeMount{}); err == nil || !strings.Contains(err.Error(), "runtime version") {
+		t.Fatalf("missing runtime version error = %v", err)
 	}
-	doc := parseOverride(t, out)
-	// __vaka-init container still emitted because svc-a needs it.
-	if _, ok := doc.Services["__vaka-init"]; !ok {
-		t.Errorf("__vaka-init must be emitted when at least one service needs injection:\n%s", out)
+	invalidRuntime := testRuntime
+	invalidRuntime.ImageID = "sha256:short"
+	if _, err := compose.BuildOverride(singleEntry("codex"), invalidRuntime); err == nil || !strings.Contains(err.Error(), "sha256:<64 hex>") {
+		t.Fatalf("invalid runtime image ID error = %v", err)
 	}
-	// svc-a gets volumes_from.
-	if len(doc.Services["svc-a"].VolumesFrom) == 0 {
-		t.Errorf("svc-a must have volumes_from")
-	}
-	// svc-b does NOT get volumes_from.
-	if len(doc.Services["svc-b"].VolumesFrom) != 0 {
-		t.Errorf("svc-b must not have volumes_from when OptOut=true, got %v", doc.Services["svc-b"].VolumesFrom)
+	invalidRuntime = testRuntime
+	invalidRuntime.Source = strings.Repeat("b", 40)
+	if _, err := compose.BuildOverride(singleEntry("codex"), invalidRuntime); err == nil || !strings.Contains(err.Error(), "does not identify image") {
+		t.Fatalf("unrelated runtime mount source error = %v", err)
 	}
 }
 
-func TestOverrideAllOptOutNoVakaInitContainer(t *testing.T) {
-	entries := []compose.ServiceEntry{
-		{Name: "svc-a", Entrypoint: []string{"a"}, EnvVarName: "VAKA_SVC_A_CONF", OptOut: true},
-		{Name: "svc-b", Entrypoint: []string{"b"}, EnvVarName: "VAKA_SVC_B_CONF", OptOut: true},
-	}
-	out, err := compose.BuildOverride(entries, testImage)
+func TestBuildReferenceOverrideContainsOnlyRuntimeMetadata(t *testing.T) {
+	out, err := compose.BuildReferenceOverride("v0.1.0")
 	if err != nil {
-		t.Fatalf("BuildOverride: %v", err)
+		t.Fatalf("BuildReferenceOverride: %v", err)
 	}
 	doc := parseOverride(t, out)
-	if _, ok := doc.Services["__vaka-init"]; ok {
-		t.Errorf("__vaka-init must not be emitted when all services opt out:\n%s", out)
+	if doc.Metadata.RuntimeVersion != "v0.1.0" {
+		t.Errorf("runtime version = %q, want v0.1.0", doc.Metadata.RuntimeVersion)
 	}
-}
-
-func TestBuildVakaInitOnlyOverride(t *testing.T) {
-	out, err := compose.BuildVakaInitOnlyOverride(testImage)
-	if err != nil {
-		t.Fatalf("BuildVakaInitOnlyOverride: %v", err)
-	}
-	doc := parseOverride(t, out)
-	container, ok := doc.Services["__vaka-init"]
-	if !ok {
-		t.Fatalf("__vaka-init not in vaka-init-only override:\n%s", out)
-	}
-	if container.Image != testImage {
-		t.Errorf("image = %q, want %q", container.Image, testImage)
-	}
-	if container.Attach == nil || *container.Attach != false {
-		t.Errorf("__vaka-init attach = %v, want &false", container.Attach)
-	}
-	// Must not contain any other services or secrets.
-	if len(doc.Secrets) != 0 {
-		t.Errorf("vaka-init-only override must have no secrets, got %+v", doc.Secrets)
-	}
-	if len(doc.Services) != 1 {
-		t.Errorf("vaka-init-only override must have exactly 1 service, got %d", len(doc.Services))
+	if len(doc.Services) != 0 || len(doc.Secrets) != 0 {
+		t.Errorf("reference override has services/secrets: %+v", doc)
 	}
 }

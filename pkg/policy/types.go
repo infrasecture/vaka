@@ -11,10 +11,11 @@ import (
 
 // ServicePolicy is the top-level config document (vaka.yaml).
 type ServicePolicy struct {
-	APIVersion  string                    `yaml:"apiVersion"`
-	Kind        string                    `yaml:"kind"`
-	VakaVersion string                    `yaml:"vakaVersion,omitempty"`
-	Services    map[string]*ServiceConfig `yaml:"services"`
+	APIVersion             string                    `yaml:"apiVersion"`
+	Kind                   string                    `yaml:"kind"`
+	GeneratedBy            string                    `yaml:"generatedBy,omitempty"`
+	RequiredRuntimeVersion string                    `yaml:"requiredRuntimeVersion,omitempty"`
+	Services               map[string]*ServiceConfig `yaml:"services"`
 }
 
 // ServiceConfig holds per-service network and runtime policy.

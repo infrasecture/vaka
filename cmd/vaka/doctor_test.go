@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -10,22 +11,23 @@ import (
 	composetypes "github.com/compose-spec/compose-go/v2/types"
 )
 
-func TestParseComposeMajorVersion(t *testing.T) {
+func TestCheckComposeCompatibility(t *testing.T) {
 	tests := []struct {
 		in      string
-		want    int
 		wantErr bool
 	}{
-		{in: "v2.27.0", want: 2},
-		{in: "2.23.3", want: 2},
-		{in: "1.29.0", want: 1},
+		{in: "v2.35.0"},
+		{in: "2.35.1"},
+		{in: "5.3.1"},
+		{in: "2.34.0", wantErr: true},
+		{in: "1.29.0", wantErr: true},
 		{in: "", wantErr: true},
 		{in: "abc", wantErr: true},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.in, func(t *testing.T) {
-			got, err := parseComposeMajorVersion(tc.in)
+			err := checkComposeCompatibility(tc.in)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("expected error, got nil")
@@ -35,10 +37,120 @@ func TestParseComposeMajorVersion(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if got != tc.want {
-				t.Fatalf("got %d, want %d", got, tc.want)
+		})
+	}
+}
+
+func TestCheckDockerCompatibility(t *testing.T) {
+	tests := []struct {
+		name    string
+		engine  string
+		api     string
+		wantErr bool
+	}{
+		{name: "minimum", engine: "28.0.0", api: "1.48"},
+		{name: "current", engine: "29.6.2", api: "1.55"},
+		{name: "old engine", engine: "27.5.1", api: "1.48", wantErr: true},
+		{name: "old API", engine: "28.0.0", api: "1.47", wantErr: true},
+		{name: "prerelease", engine: "28.0.0-rc.1", api: "1.48", wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := checkDockerCompatibility(tc.engine, tc.api)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("checkDockerCompatibility(%q, %q) error = %v, wantErr=%v", tc.engine, tc.api, err, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestCheckDockerClientCompatibility(t *testing.T) {
+	if err := checkDockerClientCompatibility("1.48"); err != nil {
+		t.Fatalf("minimum client API rejected: %v", err)
+	}
+	err := checkDockerClientCompatibility("1.47")
+	if err == nil || !strings.Contains(err.Error(), "Docker client API") {
+		t.Fatalf("old client API error = %v", err)
+	}
+}
+
+func TestCheckImageMountVersionCompatibility(t *testing.T) {
+	tests := []struct {
+		name        string
+		engine      string
+		compose     string
+		wantCompact bool
+		wantErr     bool
+	}{
+		{name: "minimum pair", engine: "28.0.0", compose: "2.35.0"},
+		{name: "engine 28 current compose", engine: "28.5.2", compose: "5.3.1"},
+		{name: "engine 29.0 old compose", engine: "29.0.4", compose: "5.0.1", wantCompact: true},
+		{name: "engine 29.0 expanding compose", engine: "29.0.4", compose: "5.1.0", wantErr: true},
+		{name: "engine 29.1 expanding compose", engine: "29.1.5", compose: "5.3.1", wantErr: true},
+		{name: "fixed engine", engine: "29.2.0", compose: "5.3.1"},
+		{name: "current pair", engine: "29.6.2", compose: "5.3.1"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			compact, err := resolveImageMountVersionCompatibility(tc.engine, tc.compose)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("resolveImageMountVersionCompatibility(%q, %q) error = %v, wantErr=%v", tc.engine, tc.compose, err, tc.wantErr)
+			}
+			if tc.wantErr && !strings.Contains(err.Error(), imageMountPathBugEngineFix) {
+				t.Fatalf("error = %v, want Engine upgrade remediation", err)
+			}
+			if err == nil && compact != tc.wantCompact {
+				t.Fatalf("compact source = %v, want %v", compact, tc.wantCompact)
+			}
+		})
+	}
+}
+
+func TestDoctorDockerCompatibilityRejectsPinnedOldClientAPI(t *testing.T) {
+	originalProbe := doctorDockerProbe
+	t.Cleanup(func() { doctorDockerProbe = originalProbe })
+	doctorDockerProbe = func(_ context.Context, args []string) (string, string, error) {
+		if !strings.Contains(strings.Join(args, " "), ".Client.APIVersion") {
+			t.Fatalf("docker version probe does not request client API: %v", args)
+		}
+		return "28.0.0 1.48 1.47", "", nil
+	}
+
+	check := mustDoctorCheckByName(t, defaultDoctorChecks(), "docker engine compatible")
+	_, err := check.run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "Docker client API") {
+		t.Fatalf("pinned old client API error = %v", err)
+	}
+}
+
+func TestDoctorReportsImageMountVersionPairIncompatibility(t *testing.T) {
+	originalProbe := doctorDockerProbe
+	t.Cleanup(func() { doctorDockerProbe = originalProbe })
+	doctorDockerProbe = func(_ context.Context, args []string) (string, string, error) {
+		joined := strings.Join(args, " ")
+		switch {
+		case strings.HasPrefix(joined, "version "):
+			return "29.1.3 1.52 1.52", "", nil
+		case joined == "compose version --short":
+			return "5.1.0", "", nil
+		default:
+			return "", "", fmt.Errorf("unexpected probe: %v", args)
+		}
+	}
+
+	checks := defaultDoctorChecks()
+	engineCheck := mustDoctorCheckByName(t, checks, "docker engine compatible")
+	composeCheck := mustDoctorCheckByName(t, checks, "docker compose compatible")
+	imageMountCheck := mustDoctorCheckByName(t, checks, "docker image mounts supported")
+	if _, err := engineCheck.run(context.Background()); err != nil {
+		t.Fatalf("engine check: %v", err)
+	}
+	if _, err := composeCheck.run(context.Background()); err != nil {
+		t.Fatalf("compose check: %v", err)
+	}
+	_, err := imageMountCheck.run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), imageMountPathBugEngineFix) {
+		t.Fatalf("image mount compatibility error = %v", err)
 	}
 }
 
@@ -254,13 +366,27 @@ type fakeDoctorDockerServices struct {
 	lastEnsureRef     string
 }
 
-func (f *fakeDoctorDockerServices) EnsureImage(_ context.Context, ref string) error {
-	f.ensureCalled++
-	f.lastEnsureRef = ref
-	if f.ensureErr == nil {
+func (f *fakeDoctorDockerServices) CheckRuntimeCompatibility(context.Context) error { return nil }
+
+func (f *fakeDoctorDockerServices) ResolveRuntimeImage(_ context.Context, ref, _ string, repair bool) (ResolvedImage, error) {
+	if repair {
+		f.ensureCalled++
+		f.lastEnsureRef = ref
+		if f.ensureErr != nil {
+			return ResolvedImage{}, f.ensureErr
+		}
 		f.imageExists = true
+		return ResolvedImage{ID: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, nil
 	}
-	return f.ensureErr
+	f.imageExistsCalled++
+	f.lastExistsRef = ref
+	if f.imageExistsErr != nil {
+		return ResolvedImage{}, f.imageExistsErr
+	}
+	if !f.imageExists {
+		return ResolvedImage{}, fmt.Errorf("runtime image %s is missing", ref)
+	}
+	return ResolvedImage{ID: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, nil
 }
 
 func (f *fakeDoctorDockerServices) ImageExists(_ context.Context, ref string) (bool, error) {
@@ -304,7 +430,7 @@ func TestDoctorCheckRequiredVakaInitImageMissing(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected missing-image error, got nil")
 	}
-	expectedRef := vakaInitBaseImage + ":" + version
+	expectedRef := vakaInitImageReference()
 	if !strings.Contains(err.Error(), expectedRef) {
 		t.Fatalf("error %q does not contain image ref %q", err.Error(), expectedRef)
 	}
@@ -336,7 +462,7 @@ func TestDoctorCheckRequiredVakaInitImagePresent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	expectedRef := vakaInitBaseImage + ":" + version
+	expectedRef := vakaInitImageReference()
 	if gotDetail != expectedRef {
 		t.Fatalf("detail = %q, want %q", gotDetail, expectedRef)
 	}
@@ -368,7 +494,7 @@ func TestDoctorFixPullsRequiredVakaInitImage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	expectedRef := vakaInitBaseImage + ":" + version
+	expectedRef := vakaInitImageReference()
 	wantFixDetail := "pulled " + expectedRef
 	if gotDetail != wantFixDetail {
 		t.Fatalf("detail = %q, want %q", gotDetail, wantFixDetail)
@@ -384,40 +510,39 @@ func TestDoctorFixPullsRequiredVakaInitImage(t *testing.T) {
 	}
 }
 
-func TestDoctorRequiredVakaInitImageDevBuildNonFixable(t *testing.T) {
+func TestDoctorDevBuildUsesFixableRuntimeBundleImage(t *testing.T) {
 	origNewDoctorDockerServices := newDoctorDockerServices
 	defer func() { newDoctorDockerServices = origNewDoctorDockerServices }()
 	origVersion := version
 	version = "dev"
 	defer func() { version = origVersion }()
 
-	ctorCount := 0
+	fake := &fakeDoctorDockerServices{imageExists: false}
 	newDoctorDockerServices = func(inv *ComposeInvocation, _ PullPolicy) (DockerServices, error) {
-		ctorCount++
-		return &fakeDoctorDockerServices{}, nil
+		return fake, nil
 	}
 
 	check := mustDoctorCheckByName(t, defaultDoctorChecks(), "required vaka-init image present")
-	if check.fix != nil {
-		t.Fatal("dev build check should be non-fixable (fix must be nil)")
+	if check.fix == nil {
+		t.Fatal("dev build runtime image check should be fixable")
 	}
 	_, err := check.run(context.Background())
 	if err == nil {
-		t.Fatal("expected dev non-fixable error, got nil")
+		t.Fatal("expected missing-image error, got nil")
 	}
-	if !strings.Contains(err.Error(), "not auto-fixable") {
-		t.Fatalf("error = %q, want contains %q", err.Error(), "not auto-fixable")
+	if !strings.Contains(err.Error(), vakaInitImageReference()) {
+		t.Fatalf("error = %q, want runtime image %q", err.Error(), vakaInitImageReference())
 	}
-	if ctorCount != 0 {
-		t.Fatalf("docker services constructor called %d times, want 0", ctorCount)
+	if strings.Contains(vakaInitImageReference(), version) {
+		t.Fatalf("runtime image %q must not depend on CLI version %q", vakaInitImageReference(), version)
 	}
 
 	results := runDoctorChecks(context.Background(), []doctorCheck{check}, true)
 	if len(results) != 1 {
 		t.Fatalf("results len = %d, want 1", len(results))
 	}
-	if results[0].fixAttempted {
-		t.Fatal("fixAttempted=true, want false for non-fixable dev check")
+	if !results[0].fixAttempted || !results[0].fixApplied {
+		t.Fatalf("fixAttempted=%v fixApplied=%v, want successful repair", results[0].fixAttempted, results[0].fixApplied)
 	}
 }
 

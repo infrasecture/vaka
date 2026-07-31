@@ -2,6 +2,19 @@
 
 This page covers installing the `vaka` CLI. The CLI runs on the host. The helper runtime (`vaka-init` plus `nft`) runs inside Linux containers and is pulled automatically on first use unless you use the baked-in helper mode.
 
+Vaka requires Docker Engine 28.0.0 or newer, an effective Docker client API of
+1.48 or newer, and Docker Compose 2.35.0 or newer. These versions provide the
+read-only Compose image mounts used to deliver the runtime on both rootful and
+rootless Docker. If `DOCKER_API_VERSION` is set, it must not pin the client
+below 1.48.
+
+Docker Engine 29.0.x and 29.1.x have an upstream image-mount path-length bug.
+With those Engine versions, use Docker Compose 2.35.0 through 5.0.x, or
+preferably upgrade the Engine to 29.2.0 or newer. Compose 5.1.0 and newer expand
+compact image-ID prefixes before container creation and therefore cannot avoid
+the affected Engine behavior. `vaka doctor` detects and rejects this specific
+combination before running Compose.
+
 ## Linux Packages
 
 Linux release assets are distributed as Debian, RPM, and Arch Linux packages from the [GitHub releases page](https://github.com/infrasecture/vaka/releases).
@@ -20,13 +33,9 @@ curl -fLO https://github.com/infrasecture/vaka/releases/download/v0.0.2/vaka-0.0
 sudo pacman -U vaka-0.0.2-1-x86_64.pkg.tar.zst
 ```
 
-Package installs place files at:
-
-- `/usr/local/bin/vaka`
-- `/opt/vaka/sbin/vaka-init`
-- `/opt/vaka/sbin/nft`
-
-The host CLI is `/usr/local/bin/vaka`. The `/opt/vaka/sbin` binaries are helper binaries used for baked-in or package-managed environments.
+Packages install the host CLI at `/usr/local/bin/vaka`. They do not install
+`vaka-init` or `nft` on the host; those are delivered together by the
+independently versioned runtime image.
 
 ## Linux Build From Source
 
@@ -80,7 +89,8 @@ brew tap infrasecture/tap
 brew install vaka-nightly
 ```
 
-The Homebrew formula installs both `vaka` and the local `vaka-init` helper binary used by the CLI package.
+The Homebrew formula installs only `vaka`. The Linux helper runtime is pulled
+as an image by Vaka and never executes on the macOS host.
 
 `vaka` and `vaka-nightly` install the same command names, so only one channel should be linked at a time.
 
@@ -123,32 +133,39 @@ sudo mv vaka /usr/local/bin/vaka
 
 Replace `v0.0.2` with the release you want if you are not installing the latest release.
 
-## First-Run Helper Image
+## First-Run Runtime Image
 
-Normal use pulls `emsi/vaka-init:<vaka-version>` when needed. Run:
+Normal use pulls `emsi/vaka-init:runtime-vX.Y.Z` when needed. The runtime
+bundle has its own version and does not change for every Vaka CLI release. Run:
 
 ```bash
 vaka doctor
 ```
 
-To let vaka pull the helper image automatically when missing:
+To let vaka pull or repair the runtime image automatically:
 
 ```bash
 vaka doctor --fix
 ```
 
-Unstamped development builds report `version=dev`; those cannot auto-pull a published `emsi/vaka-init:dev` image.
+Development CLI builds use the same committed runtime bundle version and can
+therefore use `vaka doctor --fix` normally.
 
 ## Air-Gapped Or Baked-In Helper Mode
 
-If containers cannot pull the helper image, copy helper binaries into your service image:
+If containers cannot use the runtime image, copy its binaries into your service image:
 
 ```dockerfile
-FROM emsi/vaka-init:v0.0.2 AS vaka
+ARG VAKA_RUNTIME_VERSION=v0.1.0
+FROM emsi/vaka-init:runtime-${VAKA_RUNTIME_VERSION} AS vaka
 FROM ubuntu:24.04
-COPY --from=vaka /opt/vaka/sbin/vaka-init /opt/vaka/sbin/vaka-init
-COPY --from=vaka /opt/vaka/sbin/nft       /opt/vaka/sbin/nft
+COPY --from=vaka --chmod=0555 /opt/vaka/sbin/vaka-init /opt/vaka/sbin/vaka-init
+COPY --from=vaka --chmod=0555 /opt/vaka/sbin/nft       /opt/vaka/sbin/nft
 ```
+
+Use the runtime version required by your Vaka build; `vaka doctor` reports the
+corresponding image tag. The injected policy requires an exact runtime-version
+match and fails closed if a baked-in helper is stale.
 
 Then pass `--vaka-init-present` before the subcommand:
 
@@ -166,4 +183,6 @@ services:
       agent.vaka.init: present
 ```
 
-Services with that label use the baked-in `/opt/vaka/sbin/vaka-init` and `/opt/vaka/sbin/nft`; other services use the injected helper container.
+Services with that label use the baked-in `/opt/vaka/sbin/vaka-init` and
+`/opt/vaka/sbin/nft`; other services receive the runtime through a read-only
+image mount.
