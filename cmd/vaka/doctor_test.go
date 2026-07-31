@@ -64,6 +64,33 @@ func TestCheckDockerCompatibility(t *testing.T) {
 	}
 }
 
+func TestCheckDockerClientCompatibility(t *testing.T) {
+	if err := checkDockerClientCompatibility("1.48"); err != nil {
+		t.Fatalf("minimum client API rejected: %v", err)
+	}
+	err := checkDockerClientCompatibility("1.47")
+	if err == nil || !strings.Contains(err.Error(), "Docker client API") {
+		t.Fatalf("old client API error = %v", err)
+	}
+}
+
+func TestDoctorDockerCompatibilityRejectsPinnedOldClientAPI(t *testing.T) {
+	originalProbe := doctorDockerProbe
+	t.Cleanup(func() { doctorDockerProbe = originalProbe })
+	doctorDockerProbe = func(_ context.Context, args []string) (string, string, error) {
+		if !strings.Contains(strings.Join(args, " "), ".Client.APIVersion") {
+			t.Fatalf("docker version probe does not request client API: %v", args)
+		}
+		return "28.0.0 1.48 1.47", "", nil
+	}
+
+	check := mustDoctorCheckByName(t, defaultDoctorChecks(), "docker engine compatible")
+	_, err := check.run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "Docker client API") {
+		t.Fatalf("pinned old client API error = %v", err)
+	}
+}
+
 func TestRunDoctorChecksTimeout(t *testing.T) {
 	results := runDoctorChecks(context.Background(), []doctorCheck{
 		{

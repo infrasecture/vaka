@@ -42,6 +42,11 @@ func checkDockerCompatibility(engineVersion, apiVersion string) error {
 	return nil
 }
 
+func checkDockerClientCompatibility(apiVersion string) error {
+	_, err := requireMinimumVersion("Docker client API", apiVersion, minimumDockerAPIVersion)
+	return err
+}
+
 func checkComposeCompatibility(composeVersion string) error {
 	_, err := requireMinimumVersion("Docker Compose", composeVersion, minimumComposeVersion)
 	return err

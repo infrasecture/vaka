@@ -77,6 +77,8 @@ func (f *pullFake) ServerVersion(context.Context) (dockertypes.Version, error) {
 	return dockertypes.Version{Version: minimumDockerEngineVersion, APIVersion: minimumDockerAPIVersion}, nil
 }
 
+func (f *pullFake) ClientVersion() string { return minimumDockerAPIVersion }
+
 func (f *pullFake) ImageInspect(context.Context, string, ...client.ImageInspectOption) (dockerimage.InspectResponse, error) {
 	f.inspects++
 	if !f.present {

@@ -67,6 +67,7 @@ type ResolvedRuntime struct {
 // dockerServices. *client.Client satisfies it; tests inject a stub.
 type dockerClient interface {
 	ServerVersion(ctx context.Context) (dockertypes.Version, error)
+	ClientVersion() string
 	ImageInspect(ctx context.Context, ref string, opts ...client.ImageInspectOption) (dockerimage.InspectResponse, error)
 	ImagePull(ctx context.Context, ref string, opts dockerimage.PullOptions) (io.ReadCloser, error)
 }
@@ -155,6 +156,9 @@ func (d *dockerServices) CheckRuntimeCompatibility(ctx context.Context) error {
 		return fmt.Errorf("query Docker Engine version on %s: %w", d.targetDesc, err)
 	}
 	if err := checkDockerCompatibility(server.Version, server.APIVersion); err != nil {
+		return fmt.Errorf("Docker target %s: %w", d.targetDesc, err)
+	}
+	if err := checkDockerClientCompatibility(d.c.ClientVersion()); err != nil {
 		return fmt.Errorf("Docker target %s: %w", d.targetDesc, err)
 	}
 	composeVersion, err := queryComposeVersion(ctx)

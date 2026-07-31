@@ -293,20 +293,23 @@ func defaultDoctorChecks() []doctorCheck {
 			name:        "docker engine compatible",
 			required:    true,
 			timeout:     doctorProbeTimeout,
-			remediation: fmt.Sprintf("Start Docker and use Docker Engine %s or newer (API %s+).", minimumDockerEngineVersion, strings.TrimSuffix(minimumDockerAPIVersion, ".0")),
+			remediation: fmt.Sprintf("Start Docker and use Docker Engine %s or newer (API %s+). Unset or raise DOCKER_API_VERSION if it pins an older client API.", minimumDockerEngineVersion, strings.TrimSuffix(minimumDockerAPIVersion, ".0")),
 			run: func(ctx context.Context) (string, error) {
-				stdout, stderr, err := doctorDockerProbe(ctx, []string{"version", "--format", "{{.Server.Version}} {{.Server.APIVersion}}"})
+				stdout, stderr, err := doctorDockerProbe(ctx, []string{"version", "--format", "{{.Server.Version}} {{.Server.APIVersion}} {{.Client.APIVersion}}"})
 				if err != nil {
 					return "", fmt.Errorf("%s", firstNonEmpty(stderr, stdout, err.Error()))
 				}
 				fields := strings.Fields(stdout)
-				if len(fields) != 2 {
+				if len(fields) != 3 {
 					return "", fmt.Errorf("unexpected docker server version output %q", stdout)
 				}
 				if err := checkDockerCompatibility(fields[0], fields[1]); err != nil {
 					return "", err
 				}
-				return fmt.Sprintf("server %s / API %s", fields[0], fields[1]), nil
+				if err := checkDockerClientCompatibility(fields[2]); err != nil {
+					return "", err
+				}
+				return fmt.Sprintf("server %s / API %s; client API %s", fields[0], fields[1], fields[2]), nil
 			},
 		},
 		{

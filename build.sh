@@ -182,6 +182,36 @@ mkdir -p dist
 echo "==> vaka ${VERSION}; runtime bundle ${RUNTIME_VERSION} (runtime archs: ${ARCHS}; CLI targets: ${CLI_TARGETS})"
 echo ""
 
+# Publish the immutable versioned runtime manifest at most once. Subsequent CLI
+# releases may rebuild and verify the same runtime architecture images, but they
+# must not rewrite runtime-vX.Y.Z. The mutable :latest convenience tag remains
+# independently updateable for stable releases.
+publish_runtime_manifests() {
+    local version_tag="${INIT_IMAGE}:${RUNTIME_TAG}"
+    local inspect_output
+    local sources=("$@")
+
+    printf '    %s  ' "${version_tag}"
+    if inspect_output="$(docker buildx imagetools inspect "${version_tag}" 2>&1)"; then
+        echo "exists (immutable; unchanged)"
+    elif grep -Eqi 'not found|manifest unknown' <<<"${inspect_output}"; then
+        docker buildx imagetools create \
+            --tag "${version_tag}" \
+            "${sources[@]}"
+        echo "created"
+    else
+        printf 'ERROR: cannot check existing runtime manifest %s:\n%s\n' "${version_tag}" "${inspect_output}" >&2
+        exit 1
+    fi
+
+    if [[ "${PUBLISH_LATEST}" == "true" ]]; then
+        printf '    %s\n' "${INIT_IMAGE}:latest"
+        docker buildx imagetools create \
+            --tag "${INIT_IMAGE}:latest" \
+            "${sources[@]}"
+    fi
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # --manifest only: assemble manifest lists from already-pushed arch images.
 # Run this after pushing from separate native hosts (no build performed).
@@ -197,10 +227,8 @@ if [[ "${DO_MANIFEST_ONLY}" == "true" ]]; then
     done
 
     nft_tags=(--tag "${NFT_IMAGE}:${NFTABLES_VERSION}")
-    init_tags=(--tag "${INIT_IMAGE}:${RUNTIME_TAG}")
     if [[ "${PUBLISH_LATEST}" == "true" ]]; then
         nft_tags+=(--tag "${NFT_IMAGE}:latest")
-        init_tags+=(--tag "${INIT_IMAGE}:latest")
     fi
 
     printf '    %s\n' "${NFT_IMAGE}:${NFTABLES_VERSION}"
@@ -208,10 +236,7 @@ if [[ "${DO_MANIFEST_ONLY}" == "true" ]]; then
         "${nft_tags[@]}" \
         "${nft_sources[@]}"
 
-    printf '    %s\n' "${INIT_IMAGE}:${RUNTIME_TAG}"
-    docker buildx imagetools create \
-        "${init_tags[@]}" \
-        "${init_sources[@]}"
+    publish_runtime_manifests "${init_sources[@]}"
 
     echo ""
     echo "Manifest lists created in registry:"
@@ -716,10 +741,8 @@ if [[ "${DO_PUSH}" == "true" ]]; then
 
     echo "==> Creating manifest lists..."
     nft_tags=(--tag "${NFT_IMAGE}:${NFTABLES_VERSION}")
-    init_tags=(--tag "${INIT_IMAGE}:${RUNTIME_TAG}")
     if [[ "${PUBLISH_LATEST}" == "true" ]]; then
         nft_tags+=(--tag "${NFT_IMAGE}:latest")
-        init_tags+=(--tag "${INIT_IMAGE}:latest")
     fi
 
     printf '    %s\n' "${NFT_IMAGE}:${NFTABLES_VERSION}"
@@ -727,10 +750,7 @@ if [[ "${DO_PUSH}" == "true" ]]; then
         "${nft_tags[@]}" \
         "${nft_sources[@]}"
 
-    printf '    %s\n' "${INIT_IMAGE}:${RUNTIME_TAG}"
-    docker buildx imagetools create \
-        "${init_tags[@]}" \
-        "${init_sources[@]}"
+    publish_runtime_manifests "${init_sources[@]}"
 
     echo ""
 fi

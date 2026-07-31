@@ -27,12 +27,20 @@ import (
 // fakeDockerClient implements dockerClient for unit tests without a live daemon.
 type fakeDockerClient struct {
 	serverVersion dockertypes.Version
+	clientVersion string
 	serverErr     error
 	notFound      bool                        // ImageInspect returns NotFound when true
 	inspectResult dockerimage.InspectResponse // returned when notFound == false
 	inspectCalled int                         // number of ImageInspect invocations
 	pullErr       error                       // error to return from ImagePull; nil = success
 	pullCalled    bool
+}
+
+func (f *fakeDockerClient) ClientVersion() string {
+	if f.clientVersion != "" {
+		return f.clientVersion
+	}
+	return minimumDockerAPIVersion
 }
 
 func (f *fakeDockerClient) ServerVersion(context.Context) (dockertypes.Version, error) {
@@ -156,6 +164,7 @@ func TestCheckRuntimeCompatibility(t *testing.T) {
 	tests := []struct {
 		name           string
 		server         dockertypes.Version
+		clientVersion  string
 		composeVersion string
 		wantErr        string
 	}{
@@ -171,6 +180,13 @@ func TestCheckRuntimeCompatibility(t *testing.T) {
 			wantErr:        "Docker Engine",
 		},
 		{
+			name:           "client API override too old",
+			server:         dockertypes.Version{Version: "28.0.0", APIVersion: "1.48"},
+			clientVersion:  "1.47",
+			composeVersion: "2.35.0",
+			wantErr:        "Docker client API",
+		},
+		{
 			name:           "compose too old",
 			server:         dockertypes.Version{Version: "28.0.0", APIVersion: "1.48"},
 			composeVersion: "2.34.0",
@@ -184,7 +200,7 @@ func TestCheckRuntimeCompatibility(t *testing.T) {
 				return tc.composeVersion, nil
 			}
 			ds := &dockerServices{
-				c:          &fakeDockerClient{serverVersion: tc.server},
+				c:          &fakeDockerClient{serverVersion: tc.server, clientVersion: tc.clientVersion},
 				targetDesc: "test-context",
 			}
 			err := ds.CheckRuntimeCompatibility(context.Background())
