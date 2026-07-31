@@ -12,6 +12,45 @@ Then retry fixable checks:
 vaka doctor --fix
 ```
 
+## Known Issues
+
+### Docker Engine 29.0/29.1 Image-Mount Path Length
+
+Docker Engine 29.0.x and 29.1.x contain an image-mount path-length bug. Without
+Vaka's compatibility handling, creating a managed container can fail with an
+error similar to:
+
+```text
+Error response from daemon: mkdir /var/lib/docker/image/overlay2/layerdb/mounts/<long-hex-name>: file name too long
+```
+
+Those Engine versions encode the container ID, image-mount source, and mount
+destination into one filesystem name. A complete `sha256:` image ID makes that
+name exceed the filesystem limit. The long value is hexadecimal encoding, not
+repeated or corrupted image data.
+
+Vaka uses a 40-hex-character immutable image-ID prefix on the affected Engines.
+Docker resolves that prefix against the local image store and rejects it if it
+is ambiguous; Vaka retains the complete image ID in container labels and
+override metadata. Compose 5.1.0 and newer expand the prefix back to the complete
+ID, so they cannot be combined with the affected Engine versions.
+
+| Docker Engine | Docker Compose | Vaka behavior |
+| --- | --- | --- |
+| 28.0.0 through 28.x | 2.35.0 or newer | Supported; complete image ID |
+| 29.0.x or 29.1.x | 2.35.0 through 5.0.x | Supported; compact image-ID prefix |
+| 29.0.x or 29.1.x | 5.1.0 or newer | Rejected before Compose runs |
+| 29.2.0 or newer | 2.35.0 or newer | Supported; complete image ID |
+
+Prefer upgrading Docker Engine to 29.2.0 or newer. If that is not immediately
+possible, keep Docker Compose between 2.35.0 and 5.0.x while using Engine 29.0
+or 29.1. Run `vaka doctor` to verify the selected Engine and Compose pairing.
+
+The Engine-side path construction was corrected by
+[moby/moby#51827](https://github.com/moby/moby/pull/51827). The relevant Compose
+source expansion was introduced by
+[docker/compose#13549](https://github.com/docker/compose/pull/13549).
+
 ## Runtime Image Missing Or Incompatible
 
 `vaka doctor --fix` pulls or refreshes the required
