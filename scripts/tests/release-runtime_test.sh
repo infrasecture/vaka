@@ -120,7 +120,13 @@ if [[ "$1 $2 $3" == "buildx imagetools inspect" ]]; then
         case "${format}" in
             '') printf 'Name: %s\n' "${ref}" ;;
             '{{.Manifest.Digest}}') [[ "${arch}" == amd64 ]] && printf '%s\n' "${amd_digest}" || printf '%s\n' "${arm_digest}" ;;
-            '{{.Manifest.MediaType}}') printf 'application/vnd.oci.image.manifest.v1+json\n' ;;
+            '{{.Manifest.MediaType}}')
+                if [[ "${FAKE_INDEX_ARCH:-}" == "${arch}" ]]; then
+                    printf 'application/vnd.oci.image.index.v1+json\n'
+                else
+                    printf 'application/vnd.oci.image.manifest.v1+json\n'
+                fi
+                ;;
             *) printf 'unexpected arch manifest format: %s\n' "${format}" >&2; exit 92 ;;
         esac
         exit 0
@@ -134,6 +140,8 @@ if [[ "$1 $2 $3" == "buildx imagetools inspect" ]]; then
         printf 'Name: %s\n' "${ref}"
     elif [[ "${FAKE_BAD_MANIFEST:-}" == 1 ]]; then
         printf 'linux/amd64 %s\nlinux/arm64 sha256:%064d\n' "${amd_digest}" 9
+    elif [[ "${FAKE_EXTRA_MANIFEST:-}" == 1 ]]; then
+        printf 'linux/amd64 %s\nlinux/arm64 %s\nunknown/unknown sha256:%064d\n' "${amd_digest}" "${arm_digest}" 8
     else
         printf 'linux/amd64 %s\nlinux/arm64 %s\n' "${amd_digest}" "${arm_digest}"
     fi
@@ -231,5 +239,16 @@ if FAKE_BAD_MANIFEST=1 "${REPO_ROOT}/scripts/release-runtime.sh" preflight "${st
     fail "mismatched immutable manifest was accepted"
 fi
 assert_contains "${tmp}/manifest.out" "does not exactly match its architecture tags"
+
+if FAKE_EXTRA_MANIFEST=1 "${REPO_ROOT}/scripts/release-runtime.sh" preflight "${state}" >"${tmp}/extra.out" 2>&1; then
+    fail "immutable manifest with an extra child was accepted"
+fi
+assert_contains "${tmp}/extra.out" "does not exactly match its architecture tags"
+
+rm -f -- "${tmp}/registry/version"
+if FAKE_INDEX_ARCH=arm64 "${REPO_ROOT}/scripts/release-runtime.sh" preflight "${state}" >"${tmp}/index.out" 2>&1; then
+    fail "multi-platform architecture staging tag was accepted"
+fi
+assert_contains "${tmp}/index.out" "is not a single-image manifest"
 
 echo "PASS: runtime release preflight and publication"

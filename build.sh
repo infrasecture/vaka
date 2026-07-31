@@ -518,7 +518,7 @@ docker run --rm \
         ok=true
 
         # Linux binaries must be statically linked ELF.
-        for f in /check/vaka-linux-* /check/vaka-init-linux-*; do
+        for f in /check/vaka-linux-* /check/vaka-init-linux-* /check/nft-linux-*; do
             [ -f "$f" ] || continue
             name="${f##*/}"
             result=$(file "$f")
