@@ -245,3 +245,40 @@ docker run --rm \
   golang:1.25-alpine \
   go test ./...
 ```
+
+### Runtime Image-Mount Smoke Test
+
+The unit tests verify the generated Compose override, but the image-mount
+contract also requires an end-to-end test against a real Docker Engine. Build
+the native CLI and runtime image, then run the smoke test against the currently
+selected Docker target:
+
+```bash
+./build.sh --rebuild-go
+./scripts/smoke-image-mount.sh
+```
+
+The script runs `vaka doctor`, starts a real service through `vaka compose up`,
+and verifies that `/opt/vaka` is an `image` mount sourced from the exact local
+`sha256:` runtime image ID. It also verifies that the mount is read-only, both
+runtime binaries are executable, and `vaka-init` reports the required runtime
+version. It inherits `DOCKER_HOST`, `DOCKER_CONTEXT`, TLS variables, and
+`DOCKER_CONFIG`, so the Vaka and inspection commands use the same target.
+
+Before a release that changes the runtime mount or compatibility checks, run
+the same test against the lower-bound matrix: an Engine 28 target and Docker
+Compose 2.35.0. Select or provision that target, install Compose 2.35.0 in an
+isolated `DOCKER_CONFIG`, load the freshly built runtime image into it, and make
+the versions part of the assertion:
+
+```bash
+DOCKER_HOST=<engine-28-endpoint> \
+DOCKER_CONFIG=<compose-2.35-config-directory> \
+VAKA_SMOKE_EXPECT_ENGINE_VERSION=<selected-engine-28-version> \
+VAKA_SMOKE_EXPECT_COMPOSE_VERSION=2.35.0 \
+./scripts/smoke-image-mount.sh
+```
+
+The exact-version variables are optional during ordinary development. They are
+required for the lower-bound release check so a newer local daemon or Compose
+plugin cannot accidentally be reported as minimum-version coverage.
