@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -9,8 +10,27 @@ import (
 
 // composeResolution is the resolved compose input set for one vaka invocation.
 type composeResolution struct {
-	Files      []string
-	WorkingDir string
+	Files       []string
+	WorkingDir  string
+	ProjectName string
+	Profiles    []string
+	EnvFiles    []string
+}
+
+func resolveComposeProjectName(ctx context.Context, inv *ComposeInvocation) (string, error) {
+	input, err := resolveComposeInput(inv)
+	if err != nil {
+		return "", err
+	}
+	opts, err := newComposeProjectOptions(input, false)
+	if err != nil {
+		return "", fmt.Errorf("compose project options: %w", err)
+	}
+	project, err := opts.LoadProject(ctx)
+	if err != nil {
+		return "", fmt.Errorf("load compose project: %w", err)
+	}
+	return project.Name, nil
 }
 
 // resolveComposeInput resolves the compose files vaka must use for policy
@@ -25,12 +45,21 @@ func resolveComposeInput(inv *ComposeInvocation) (*composeResolution, error) {
 	workingDir := inv.ProjectDirectory
 	if len(explicitFiles) > 0 {
 		return &composeResolution{
-			Files:      append([]string{}, explicitFiles...),
-			WorkingDir: workingDir,
+			Files:       append([]string{}, explicitFiles...),
+			WorkingDir:  workingDir,
+			ProjectName: inv.ProjectName,
+			Profiles:    append([]string{}, inv.Profiles...),
+			EnvFiles:    append([]string{}, inv.EnvFiles...),
 		}, nil
 	}
 
-	opts, err := newComposeProjectOptions(nil, workingDir, true)
+	input := &composeResolution{
+		WorkingDir:  workingDir,
+		ProjectName: inv.ProjectName,
+		Profiles:    append([]string{}, inv.Profiles...),
+		EnvFiles:    append([]string{}, inv.EnvFiles...),
+	}
+	opts, err := newComposeProjectOptions(input, true)
 	if err != nil {
 		return nil, fmt.Errorf("compose project options: %w", err)
 	}
@@ -43,29 +72,43 @@ func resolveComposeInput(inv *ComposeInvocation) (*composeResolution, error) {
 	}
 
 	return &composeResolution{
-		Files:      append([]string{}, opts.ConfigPaths...),
-		WorkingDir: workingDir,
+		Files:       append([]string{}, opts.ConfigPaths...),
+		WorkingDir:  workingDir,
+		ProjectName: inv.ProjectName,
+		Profiles:    append([]string{}, inv.Profiles...),
+		EnvFiles:    append([]string{}, inv.EnvFiles...),
 	}, nil
 }
 
 // newComposeProjectOptions builds compose-go project options for validation and
-// project loading. When autoDiscover is true and composeFiles is empty, compose
+// project loading. When autoDiscover is true and input.Files is empty, Compose
 // defaults are enabled (COMPOSE_FILE + default file search).
-func newComposeProjectOptions(composeFiles []string, workingDir string, autoDiscover bool) (*composecli.ProjectOptions, error) {
-	opts := []composecli.ProjectOptionsFn{}
-	if strings.TrimSpace(workingDir) != "" {
-		opts = append(opts, composecli.WithWorkingDirectory(workingDir))
+func newComposeProjectOptions(input *composeResolution, autoDiscover bool) (*composecli.ProjectOptions, error) {
+	if input == nil {
+		input = &composeResolution{}
 	}
-	opts = append(opts,
-		composecli.WithOsEnv,
-		composecli.WithEnvFiles(),
-		composecli.WithDotEnv,
-	)
-	if autoDiscover && len(composeFiles) == 0 {
+	opts := []composecli.ProjectOptionsFn{}
+	if strings.TrimSpace(input.WorkingDir) != "" {
+		opts = append(opts, composecli.WithWorkingDirectory(input.WorkingDir))
+	}
+	if strings.TrimSpace(input.ProjectName) != "" {
+		opts = append(opts, composecli.WithName(input.ProjectName))
+	}
+	if len(input.Profiles) > 0 {
+		opts = append(opts, composecli.WithProfiles(input.Profiles))
+	}
+	opts = append(opts, composecli.WithOsEnv)
+	if len(input.EnvFiles) > 0 {
+		opts = append(opts, composecli.WithEnvFiles(input.EnvFiles...))
+	} else {
+		opts = append(opts, composecli.WithEnvFiles())
+	}
+	opts = append(opts, composecli.WithDotEnv)
+	if autoDiscover && len(input.Files) == 0 {
 		opts = append(opts,
 			composecli.WithConfigFileEnv,
 			composecli.WithDefaultConfigPath,
 		)
 	}
-	return composecli.NewProjectOptions(composeFiles, opts...)
+	return composecli.NewProjectOptions(input.Files, opts...)
 }

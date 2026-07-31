@@ -37,26 +37,16 @@ func TestClassifyComposeVerb(t *testing.T) {
 	}
 }
 
-func TestReferenceOverrideYAMLPassthrough(t *testing.T) {
-	yaml, err := referenceOverrideYAML(true, "emsi/vaka-init:v0.1.0")
+func TestReferenceOverrideYAMLInjectsMetadataOnly(t *testing.T) {
+	yaml, err := referenceOverrideYAML()
 	if err != nil {
-		t.Fatalf("passthrough: unexpected error: %v", err)
+		t.Fatalf("reference override: unexpected error: %v", err)
 	}
-	if yaml != "" {
-		t.Errorf("passthrough: expected empty string, got:\n%s", yaml)
+	if !strings.Contains(yaml, "x-vaka:") || !strings.Contains(yaml, runtimeBundleVersion) {
+		t.Errorf("reference override missing runtime metadata:\n%s", yaml)
 	}
-}
-
-func TestReferenceOverrideYAMLInjectsContainer(t *testing.T) {
-	yaml, err := referenceOverrideYAML(false, "emsi/vaka-init:v0.1.0")
-	if err != nil {
-		t.Fatalf("injection: unexpected error: %v", err)
-	}
-	if !strings.Contains(yaml, "__vaka-init") {
-		t.Errorf("injection: expected __vaka-init in YAML, got:\n%s", yaml)
-	}
-	if !strings.Contains(yaml, "emsi/vaka-init:v0.1.0") {
-		t.Errorf("injection: expected image ref in YAML, got:\n%s", yaml)
+	if strings.Contains(yaml, "__vaka-init") || strings.Contains(yaml, "services:") {
+		t.Errorf("reference override must not define helper/services:\n%s", yaml)
 	}
 }
 
@@ -91,7 +81,10 @@ type fakeDS struct {
 	exists map[string]bool // ref -> present locally
 }
 
-func (f *fakeDS) EnsureImage(context.Context, string) error { return nil }
+func (f *fakeDS) CheckRuntimeCompatibility(context.Context) error { return nil }
+func (f *fakeDS) ResolveRuntimeImage(context.Context, string, string, bool) (ResolvedImage, error) {
+	return ResolvedImage{ID: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, nil
+}
 func (f *fakeDS) ImageExists(_ context.Context, ref string) (bool, error) {
 	return f.exists[ref], nil
 }

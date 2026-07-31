@@ -79,6 +79,9 @@ func runShowCompose(vakaFile string, inv *ComposeInvocation, vakaInitPresent boo
 	if err != nil {
 		return err
 	}
+	if err := ds.CheckRuntimeCompatibility(ctx); err != nil {
+		return err
+	}
 
 	overrideYAML, _, err := buildInjectionOverride(ctx, ds, vakaFile, inv, vakaInitPresent)
 	if err != nil {

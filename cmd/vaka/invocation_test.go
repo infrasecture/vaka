@@ -73,6 +73,25 @@ func TestParseComposeInvocationMetadata(t *testing.T) {
 		}
 	})
 
+	t.Run("captures project-affecting compose globals", func(t *testing.T) {
+		inv, err := ParseComposeInvocation([]string{
+			"--project-name", "demo",
+			"--profile=tools",
+			"--profile", "debug",
+			"--env-file", "base.env",
+			"--env-file=local.env",
+			"up",
+		})
+		if err != nil {
+			t.Fatalf("ParseComposeInvocation: %v", err)
+		}
+		if inv.ProjectName != "demo" {
+			t.Fatalf("ProjectName = %q, want demo", inv.ProjectName)
+		}
+		assertArgv(t, []string{"tools", "debug"}, inv.Profiles)
+		assertArgv(t, []string{"base.env", "local.env"}, inv.EnvFiles)
+	})
+
 	t.Run("build detection follows subcommand flags until --", func(t *testing.T) {
 		inv, err := ParseComposeInvocation([]string{"run", "svc", "mycmd", "--build"})
 		if err != nil {

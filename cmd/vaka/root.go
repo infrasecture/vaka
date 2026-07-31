@@ -31,7 +31,7 @@ var composeVerbBaseline = map[string]bool{
 	"port": true, "ps": true, "publish": true, "pull": true, "push": true,
 	"restart": true, "rm": true, "run": true, "scale": true, "start": true,
 	"stats": true, "stop": true, "top": true, "unpause": true, "up": true,
-	"version": true, "wait": true, "watch": true,
+	"version": true, "volumes": true, "wait": true, "watch": true,
 }
 
 // newRootCmd builds the vaka command tree. root.Rest is consulted to shape

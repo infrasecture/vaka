@@ -2,38 +2,39 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"strings"
 	"testing"
 )
 
-func TestBuildInjectionOverrideEnsureImageAndInitService(t *testing.T) {
+func TestBuildInjectionOverrideResolvesAndMountsRuntimeImage(t *testing.T) {
 	tests := []struct {
 		name             string
 		optOut           bool
 		vakaInitPresent  bool
 		wantEnsureCalls  int
-		wantInitInOutput bool
+		wantRuntimeMount bool
 	}{
 		{
 			name:             "injection enabled and service not opted out",
 			optOut:           false,
 			vakaInitPresent:  false,
 			wantEnsureCalls:  1,
-			wantInitInOutput: true,
+			wantRuntimeMount: true,
 		},
 		{
 			name:             "all services opted out with vaka-init absent",
 			optOut:           true,
 			vakaInitPresent:  false,
 			wantEnsureCalls:  0,
-			wantInitInOutput: false,
+			wantRuntimeMount: false,
 		},
 		{
 			name:             "vaka-init present skips image ensure",
 			optOut:           false,
 			vakaInitPresent:  true,
 			wantEnsureCalls:  0,
-			wantInitInOutput: false,
+			wantRuntimeMount: false,
 		},
 	}
 
@@ -83,11 +84,64 @@ services:
 				t.Fatalf("ensure calls = %d, want %d", len(ds.ensureRefs), tc.wantEnsureCalls)
 			}
 
-			hasInit := strings.Contains(gotYAML, "__vaka-init:")
-			if hasInit != tc.wantInitInOutput {
-				t.Fatalf("has __vaka-init service = %v, want %v\nYAML:\n%s", hasInit, tc.wantInitInOutput, gotYAML)
+			hasRuntimeMount := strings.Contains(gotYAML, "type: image") &&
+				strings.Contains(gotYAML, "source: sha256:aaaaaaaa")
+			if hasRuntimeMount != tc.wantRuntimeMount {
+				t.Fatalf("has runtime image mount = %v, want %v\nYAML:\n%s", hasRuntimeMount, tc.wantRuntimeMount, gotYAML)
+			}
+			if strings.Contains(gotYAML, "__vaka-init") || strings.Contains(gotYAML, "volumes_from") {
+				t.Fatalf("legacy helper service reference in override:\n%s", gotYAML)
 			}
 		})
+	}
+}
+
+func TestBuildInjectionOverrideSeparatesGeneratorAndRuntimeIdentity(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	writeFixtureFiles(t, dir, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+`, `
+services:
+  app:
+    image: alpine:3.20
+    user: "1000:1000"
+    entrypoint: ["sleep"]
+    command: ["infinity"]
+`)
+
+	ds := &fakeBuilderDockerServices{}
+	inv, err := ParseComposeInvocation([]string{"show-compose"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	override, extraEnv, err := buildInjectionOverride(context.Background(), ds, "vaka.yaml", inv, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(extraEnv) != 1 {
+		t.Fatalf("extraEnv = %v, want one policy secret", extraEnv)
+	}
+	encoded := strings.TrimPrefix(extraEnv[0], "VAKA_APP_CONF=")
+	raw, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		t.Fatalf("decode policy: %v", err)
+	}
+	policyYAML := string(raw)
+	if !strings.Contains(policyYAML, "generatedBy: vaka/"+version) {
+		t.Errorf("generated policy missing CLI diagnostic:\n%s", policyYAML)
+	}
+	if !strings.Contains(policyYAML, "requiredRuntimeVersion: "+runtimeBundleVersion) {
+		t.Errorf("generated policy missing runtime requirement:\n%s", policyYAML)
+	}
+	if !strings.Contains(override, "agent.vaka.policy-revision:") {
+		t.Errorf("override missing policy revision label:\n%s", override)
 	}
 }
 

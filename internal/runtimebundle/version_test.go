@@ -17,3 +17,9 @@ func TestVersionIsCanonicalSemVer(t *testing.T) {
 		t.Fatalf("Version() = %q, want canonical v-prefixed SemVer", got)
 	}
 }
+
+func TestImageTagHasDedicatedNamespace(t *testing.T) {
+	if got, want := ImageTag(), "runtime-"+Version(); got != want {
+		t.Fatalf("ImageTag() = %q, want %q", got, want)
+	}
+}

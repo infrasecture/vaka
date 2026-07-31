@@ -17,9 +17,11 @@ type fakeBuilderDockerServices struct {
 	ensureRefs  []string
 }
 
-func (f *fakeBuilderDockerServices) EnsureImage(_ context.Context, ref string) error {
+func (f *fakeBuilderDockerServices) CheckRuntimeCompatibility(context.Context) error { return nil }
+
+func (f *fakeBuilderDockerServices) ResolveRuntimeImage(_ context.Context, ref, _ string, _ bool) (ResolvedImage, error) {
 	f.ensureRefs = append(f.ensureRefs, ref)
-	return nil
+	return ResolvedImage{ID: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, nil
 }
 
 func (f *fakeBuilderDockerServices) ImageExists(_ context.Context, ref string) (bool, error) {

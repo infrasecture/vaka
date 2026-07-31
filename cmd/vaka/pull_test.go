@@ -10,6 +10,7 @@ import (
 	composetypes "github.com/compose-spec/compose-go/v2/types"
 	"github.com/docker/cli/cli/config/configfile"
 	clitypes "github.com/docker/cli/cli/config/types"
+	dockertypes "github.com/docker/docker/api/types"
 	dockerimage "github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/errdefs"
@@ -70,6 +71,10 @@ type pullFake struct {
 	pullErr  error
 	pulls    int
 	inspects int
+}
+
+func (f *pullFake) ServerVersion(context.Context) (dockertypes.Version, error) {
+	return dockertypes.Version{Version: minimumDockerEngineVersion, APIVersion: minimumDockerAPIVersion}, nil
 }
 
 func (f *pullFake) ImageInspect(context.Context, string, ...client.ImageInspectOption) (dockerimage.InspectResponse, error) {

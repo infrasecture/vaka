@@ -30,8 +30,12 @@ type ComposeInvocation struct {
 	DockerGlobals  []string
 	GlobalFiles    []string
 
-	ProjectDirectory string
-	BuildRequested   bool
+	ProjectDirectory    string
+	ProjectName         string
+	Profiles            []string
+	EnvFiles            []string
+	BuildRequested      bool
+	ResolvedProjectName string
 
 	lastFileTokenIdx int // index in Args for the last pre-subcommand -f/--file value token
 }
@@ -229,6 +233,15 @@ func (inv *ComposeInvocation) scanComposeArgs() error {
 			}
 			if matchedFlag == "--project-directory" {
 				inv.ProjectDirectory = strings.TrimSpace(value)
+			}
+			if matchedFlag == "-p" || matchedFlag == "--project-name" {
+				inv.ProjectName = strings.TrimSpace(value)
+			}
+			if matchedFlag == "--profile" {
+				inv.Profiles = append(inv.Profiles, value)
+			}
+			if matchedFlag == "--env-file" {
+				inv.EnvFiles = append(inv.EnvFiles, value)
 			}
 			i += consumed - 1
 			continue

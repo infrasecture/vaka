@@ -59,6 +59,10 @@ func newValidateCmd() *cobra.Command {
 // Returns the parsed policy and the loaded compose project (nil when no
 // compose files are given).
 func loadAndValidate(vakaFile string, composeFiles []string, workingDir string) (*policy.ServicePolicy, *composetypes.Project, error) {
+	return loadAndValidateResolved(vakaFile, &composeResolution{Files: composeFiles, WorkingDir: workingDir})
+}
+
+func loadAndValidateResolved(vakaFile string, input *composeResolution) (*policy.ServicePolicy, *composetypes.Project, error) {
 	f, err := os.Open(vakaFile)
 	if err != nil {
 		return nil, nil, err
@@ -75,8 +79,8 @@ func loadAndValidate(vakaFile string, composeFiles []string, workingDir string) 
 	// When composeFiles is non-empty any loading error is surfaced immediately.
 	var project *composetypes.Project
 	var networkModes map[string]string
-	if len(composeFiles) > 0 {
-		opts, err := newComposeProjectOptions(composeFiles, workingDir, false)
+	if input != nil && len(input.Files) > 0 {
+		opts, err := newComposeProjectOptions(input, false)
 		if err != nil {
 			return nil, nil, fmt.Errorf("compose project options: %w", err)
 		}

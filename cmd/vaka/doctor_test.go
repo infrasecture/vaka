@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -275,13 +276,27 @@ type fakeDoctorDockerServices struct {
 	lastEnsureRef     string
 }
 
-func (f *fakeDoctorDockerServices) EnsureImage(_ context.Context, ref string) error {
-	f.ensureCalled++
-	f.lastEnsureRef = ref
-	if f.ensureErr == nil {
+func (f *fakeDoctorDockerServices) CheckRuntimeCompatibility(context.Context) error { return nil }
+
+func (f *fakeDoctorDockerServices) ResolveRuntimeImage(_ context.Context, ref, _ string, repair bool) (ResolvedImage, error) {
+	if repair {
+		f.ensureCalled++
+		f.lastEnsureRef = ref
+		if f.ensureErr != nil {
+			return ResolvedImage{}, f.ensureErr
+		}
 		f.imageExists = true
+		return ResolvedImage{ID: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, nil
 	}
-	return f.ensureErr
+	f.imageExistsCalled++
+	f.lastExistsRef = ref
+	if f.imageExistsErr != nil {
+		return ResolvedImage{}, f.imageExistsErr
+	}
+	if !f.imageExists {
+		return ResolvedImage{}, fmt.Errorf("runtime image %s is missing", ref)
+	}
+	return ResolvedImage{ID: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, nil
 }
 
 func (f *fakeDoctorDockerServices) ImageExists(_ context.Context, ref string) (bool, error) {

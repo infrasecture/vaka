@@ -8,6 +8,14 @@ import (
 	"strings"
 )
 
+const (
+	// ImageTagPrefix keeps runtime bundle tags disjoint from historical helper
+	// images that were tagged with the Vaka CLI release version.
+	ImageTagPrefix = "runtime-"
+	// VersionLabel is stamped on the runtime image and verified after pull.
+	VersionLabel = "agent.vaka.runtime.version"
+)
+
 //go:embed VERSION
 var versionFile string
 
@@ -15,4 +23,9 @@ var versionFile string
 // vaka-init. VERSION is also the source used by build.sh for image tags.
 func Version() string {
 	return strings.TrimSpace(versionFile)
+}
+
+// ImageTag returns the immutable registry tag for this runtime bundle.
+func ImageTag() string {
+	return ImageTagPrefix + Version()
 }

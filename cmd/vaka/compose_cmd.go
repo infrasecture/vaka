@@ -64,7 +64,7 @@ func runComposeCLI(root *RootInvocation, argv []string) error {
 		printDeviationNotice(os.Stderr, inv.ProjectDirectory)
 		return runFull(root.VakaFile, inv, root.VakaInitPresent, root.PullPolicy)
 	default:
-		return runReference(inv, root.VakaInitPresent)
+		return runReference(inv)
 	}
 }
 

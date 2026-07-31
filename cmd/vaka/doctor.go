@@ -270,7 +270,7 @@ func defaultDoctorChecks() []doctorCheck {
 		if err != nil {
 			return "", err
 		}
-		if err := ds.EnsureImage(ctx, vakaInitImageRef); err != nil {
+		if _, err := ds.ResolveRuntimeImage(ctx, vakaInitImageRef, runtimeBundleVersion, true); err != nil {
 			return "", err
 		}
 		return "pulled " + vakaInitImageRef, nil
@@ -379,12 +379,8 @@ func defaultDoctorChecks() []doctorCheck {
 				if err != nil {
 					return "", err
 				}
-				ok, err := ds.ImageExists(ctx, vakaInitImageRef)
-				if err != nil {
+				if _, err := ds.ResolveRuntimeImage(ctx, vakaInitImageRef, runtimeBundleVersion, false); err != nil {
 					return "", err
-				}
-				if !ok {
-					return "", fmt.Errorf("%s is missing in the selected Docker target", vakaInitImageRef)
 				}
 				return vakaInitImageRef, nil
 			},
