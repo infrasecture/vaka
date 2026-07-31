@@ -144,6 +144,20 @@ func (d *dockerServices) CleanupLegacyRuntime(ctx context.Context, state legacyR
 			continue
 		}
 
+		volume, err := d.legacy.VolumeInspect(ctx, volumeName)
+		if err != nil {
+			if errdefs.IsNotFound(err) {
+				result.RemovedVolumes++
+				continue
+			}
+			cleanupErrs = append(cleanupErrs, fmt.Errorf("re-inspect legacy runtime volume %s before removal: %w", volumeName, err))
+			continue
+		}
+		if _, anonymous := volume.Labels[dockerAnonymousVolumeLabel]; !anonymous {
+			cleanupErrs = append(cleanupErrs, fmt.Errorf("refuse to remove legacy runtime volume %s: Docker anonymous-volume marker changed", volumeName))
+			continue
+		}
+
 		if err := d.legacy.VolumeRemove(ctx, volumeName, false); err != nil {
 			if errdefs.IsNotFound(err) {
 				result.RemovedVolumes++

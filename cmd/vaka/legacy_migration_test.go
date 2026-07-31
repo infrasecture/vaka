@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	containertypes "github.com/docker/docker/api/types/container"
@@ -137,6 +138,26 @@ func TestCleanupLegacyRuntimeRemovesHelperThenVolumeWithoutForce(t *testing.T) {
 	}
 	if fake.forceValues[0] {
 		t.Fatal("legacy volume removal must never use force")
+	}
+}
+
+func TestCleanupLegacyRuntimeRevalidatesAnonymousMarkerBeforeRemoval(t *testing.T) {
+	fake := &fakeLegacyRuntimeClient{
+		volumeLabels: map[string]string{"owner": "user"},
+		listFn: func(containertypes.ListOptions) ([]containertypes.Summary, error) {
+			return []containertypes.Summary{{ID: "helper"}}, nil
+		},
+	}
+	ds := &dockerServices{legacy: fake}
+	state := legacyRuntimeState{Volumes: map[string]map[string]bool{
+		testLegacyVolume: {"helper": true},
+	}}
+	_, err := ds.CleanupLegacyRuntime(context.Background(), state)
+	if err == nil || !strings.Contains(err.Error(), "anonymous-volume marker changed") {
+		t.Fatalf("identity-change error = %v", err)
+	}
+	if len(fake.removedVolumes) != 0 {
+		t.Fatalf("changed volume identity was removed: %v", fake.removedVolumes)
 	}
 }
 
