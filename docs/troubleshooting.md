@@ -20,6 +20,21 @@ vaka doctor --fix
 The runtime version is independent of `vaka version`, so development CLI builds
 do not require a special `:dev` runtime image.
 
+## Docker API Is Pinned Too Old
+
+If `doctor` reports an old Docker client API while the Engine itself is current,
+check `DOCKER_API_VERSION`. Unset it, or set it to 1.48 or newer. Vaka checks the
+effective client API because Compose inherits the same override.
+
+## Baked Runtime Version Mismatch
+
+Services using `--vaka-init-present` or `agent.vaka.init: present` must contain
+the exact runtime bundle required by the current Vaka CLI. Before upgrading
+such a deployment, rebuild the service image from the versioned
+`emsi/vaka-init:runtime-vX.Y.Z` image shown by `vaka doctor`. A helper baked from
+an older CLI-versioned image fails closed before nftables or the application is
+started.
+
 ## Legacy Helper Volume During Upgrade
 
 Vaka releases using image mounts automatically migrate anonymous `/opt/vaka`
@@ -34,8 +49,9 @@ vaka: retained 1 legacy runtime volume(s) still used by existing containers
 This is expected. Recreate the remaining policy-managed services normally; Vaka
 removes the helper and anonymous volume after the final consumer moves. `vaka
 down` also captures and removes the old volume safely. Cleanup never uses force
-and never removes named volumes, so `--renew-anon-volumes`/`-V` is neither
-required nor recommended for this migration.
+and never removes named volumes. It rechecks Docker's anonymous-volume marker
+immediately before deletion, so `--renew-anon-volumes`/`-V` is neither required
+nor recommended for this migration.
 
 ## Compose Reports Image Mount Is Experimental
 

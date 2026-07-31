@@ -59,6 +59,11 @@ volumes, and Docker-managed metadata. Vaka's current delivery path does not
 create a helper container or helper volume; conservative cleanup exists only
 for volumes left by older releases.
 
+Compose verbs are classified explicitly. Verbs known to create containers use
+the full policy override; unknown future verbs also use that path until
+reviewed. This prevents Compose feature growth from silently introducing an
+unprotected container-creation path.
+
 ## Kernel And nftables Compatibility
 
 `vaka-init` uses the Linux kernel nftables subsystem through the `nft` binary. Very old kernels may not support all nftables features used by vaka, such as `inet` family tables or `icmpx`.

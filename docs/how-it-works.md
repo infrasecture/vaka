@@ -16,9 +16,11 @@ flowchart LR
 
 ## Compose Override
 
-For `vaka compose up`, `vaka compose run`, and `vaka compose create`, vaka
-generates a Compose override in memory and streams it to `docker compose`
-through `/dev/fd/3`. `up` and `run` also have equivalent top-level shorthands.
+For `vaka compose up`, `run`, `create`, `scale`, and `watch`, Vaka generates a
+Compose override in memory and streams it to `docker compose` through
+`/dev/fd/3`. Unknown future Compose verbs use this full path until explicitly
+classified as non-creating. `up` and `run` also have equivalent top-level
+shorthands.
 
 The override:
 
@@ -99,16 +101,16 @@ If any step fails, the container exits before the application starts.
 ## Upgrade From Legacy Helper Volumes
 
 Older Vaka releases used a `__vaka-init` container and an anonymous
-`/opt/vaka` volume. During `up`, `run`, or `create`, Vaka detects that exact
-legacy Compose service and records its Docker-labeled anonymous volume before
-invoking Compose. After Compose has moved services to image mounts, Vaka
-removes the old helper and volume only when no non-helper container still
-references it.
+`/opt/vaka` volume. Before any full-render Compose command, Vaka detects that
+exact legacy Compose service and records its Docker-labeled anonymous volume.
+After Compose has moved services to image mounts, Vaka removes the old helper
+and volume only when no non-helper container still references it.
 
 Partial service upgrades are safe: the volume remains until the final legacy
 consumer is recreated. `vaka down` captures the legacy volume before Compose
 removes the containers and then removes the unused volume. Cleanup never uses
-force and never removes named volumes.
+force, never removes named volumes, and revalidates Docker's anonymous-volume
+marker immediately before deletion.
 
 ## Ruleset Shape
 

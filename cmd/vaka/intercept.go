@@ -182,9 +182,9 @@ func execDockerCompose(inv *ComposeInvocation, overrideYAML string, extraEnv []s
 	return nil
 }
 
-// runFull handles full-override commands: up, run, and create. It loads and
-// validates vaka.yaml, resolves the runtime image when needed, builds the full
-// compose override, and delegates to execDockerCompose.
+// runFull handles every full-render Compose command. It loads and validates
+// vaka.yaml, resolves the runtime image when needed, builds the full Compose
+// override, and delegates to execDockerCompose.
 func runFull(vakaFile string, inv *ComposeInvocation, vakaInitPresent bool, pullPolicy PullPolicy) error {
 	ctx := context.Background()
 	ds, err := newDockerServices(inv, pullPolicy)

@@ -14,9 +14,9 @@ vaka [--vaka-file=<path>] [--vaka-init-present] compose [compose-global-flags...
 |------|----------|----------|
 | Native | `validate`, `show-nft`, `doctor`, `show-compose`, `version`, `help`, `completion` | Handled by vaka itself. |
 | Recipes | `get`, `search`, `recipes`, `registry` | Registry consumption: fetch and update recipes, browse catalogs. Never runs docker. |
-| Compose full render | `vaka compose up`, `vaka compose run`, `vaka compose create` | Validate policy, generate the full Compose override, inject secrets and entrypoint changes, then call Compose. |
-| Compose reference | Other `vaka compose` commands such as `logs`, `exec`, `ps`, `pull`, `down`, `stop`, `kill`, `rm`, `volumes` | Call Compose through the same FD-injected path with metadata only; no policy evaluation or helper service. |
-| Compose metadata | `vaka compose version`, `vaka compose ls` | Proxied to Compose without any overlay; they work outside project directories. |
+| Compose full render | `up`, `run`, `create`, `scale`, `watch`, and unclassified future verbs | Validate policy, generate the full Compose override, inject secrets and entrypoint changes, then call Compose. |
+| Compose reference | Known non-creating commands such as `logs`, `exec`, `ps`, `pull`, `down`, `stop`, `kill`, `rm`, `volumes` | Call Compose through the same FD-injected path with metadata only; no policy evaluation or helper service. `pull` first ensures the Vaka runtime image. |
+| Compose metadata | `vaka compose version`, `vaka compose ls`, and help forms | Proxied to Compose without any overlay; they work outside project directories. |
 | Shorthands | `up`, `down`, `start`, `stop`, `run`, `exec`, `logs`, `ps` | Permanent top-level aliases: `vaka up ...` executes exactly like `vaka compose up ...`. |
 
 The shorthand set is intentionally small and fixed. Every other Compose
@@ -45,10 +45,12 @@ vaka compose --profile dev up
 vaka compose --project-directory srv logs -f app
 ```
 
-Compose commands vaka does not know about are forwarded with a metadata-only
-reference overlay, so new docker compose subcommands keep working. All
-container-creating policy paths require Docker Engine 28.0.0+ and Docker
-Compose 2.35.0+ for read-only image mounts.
+Compose commands Vaka does not yet know are forwarded through the full policy
+path. This fail-closed default keeps new Docker Compose subcommands working
+without allowing a newly introduced container-creating verb to bypass policy.
+Known non-creating commands use the lighter reference path. All
+container-creating policy paths require Docker Engine 28.0.0+ with an effective
+API of 1.48+ and Docker Compose 2.35.0+ for read-only image mounts.
 
 ## Compose Help
 
@@ -110,7 +112,8 @@ vaka compose rm
 Reference commands do not load `vaka.yaml`. They inject only `x-vaka` runtime
 metadata. `down` additionally performs conservative one-time cleanup if it
 finds an anonymous helper volume created by an older Vaka release; named and
-in-use volumes are never removed.
+in-use volumes are never removed. `pull` resolves and validates the versioned
+Vaka runtime image before Docker Compose pulls the project service images.
 
 ## `vaka validate`
 
@@ -126,9 +129,9 @@ Parses and validates `vaka.yaml`. Repeat `--compose` for multiple compose files.
 vaka doctor [--fix]
 ```
 
-Checks Docker CLI availability, Docker Engine 28.0.0+/API 1.48+, Docker Compose
-2.35.0+, Linux-container backend, rootful/rootless mode, image-mount support,
-runtime image identity, and Docker context information.
+Checks Docker CLI availability, Docker Engine 28.0.0+, effective client API
+1.48+, Docker Compose 2.35.0+, Linux-container backend, rootful/rootless mode,
+image-mount support, runtime image identity, and Docker context information.
 
 `--fix` pulls or repairs the required
 `emsi/vaka-init:runtime-<runtime-version>` image. The runtime version is
@@ -152,8 +155,8 @@ Current behavior: hostnames in `to:` lists are printed as comments instead of be
 vaka [--vaka-file=<path>] [--vaka-init-present] show-compose [-f compose.yml ...] [--project-directory <dir>] [-p <name>] [--profile <name> ...] [--env-file <path> ...] [--build] [-o override.yaml]
 ```
 
-Prints the generated Compose override used by `vaka compose up`, `run`, and
-`create`, including the exact runtime image ID mount and policy revision labels.
+Prints the generated Compose override used by full-render Compose commands,
+including the exact runtime image ID mount and policy revision labels.
 
 Notes:
 

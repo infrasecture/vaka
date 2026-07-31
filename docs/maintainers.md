@@ -205,7 +205,7 @@ For a release:
    source version file to edit; `release.sh` passes that Git tag into the build.
 4. Run the normal release command. It republishes identical runtime tags only
    after verifying their exact image identity and refuses changed bytes under
-   an existing tag.
+   an existing architecture tag.
 
 `build.sh` reads the same VERSION file embedded in both host and runtime code,
 tags the image as `emsi/vaka-init:runtime-vX.Y.Z`, stamps the OCI/runtime label,
@@ -221,12 +221,14 @@ Runtime tags are immutable. Never publish changed image content under an
 existing `runtime-vX.Y.Z` tag; bump the runtime version first. Before pushing,
 `build.sh` compares every existing architecture tag with the local image ID and
 refuses replacement when they differ. Identical-content retries remain
-possible. After a version is first published, this exact comparison is
-authoritative: even a source or toolchain change believed to be semantically
-neutral needs a version bump if it changes the image ID. `:latest` is a
-convenience tag for humans and Dockerfiles only. The Vaka CLI always resolves
-the versioned tag, validates its label, and passes the exact local image ID to
-Compose.
+possible. The multi-platform `runtime-vX.Y.Z` manifest is created only when
+absent and is never rewritten; an incomplete published manifest requires a new
+runtime version rather than in-place repair. After a version is first
+published, the exact image comparison is authoritative: even a source or
+toolchain change believed to be semantically neutral needs a version bump if it
+changes the image ID. `:latest` is a convenience tag for humans and Dockerfiles
+only. The Vaka CLI always resolves the versioned tag, validates its label, and
+passes the exact local image ID to Compose.
 
 ## Tests
 

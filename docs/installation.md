@@ -2,9 +2,11 @@
 
 This page covers installing the `vaka` CLI. The CLI runs on the host. The helper runtime (`vaka-init` plus `nft`) runs inside Linux containers and is pulled automatically on first use unless you use the baked-in helper mode.
 
-Vaka requires Docker Engine 28.0.0 or newer (API 1.48+) and Docker Compose
-2.35.0 or newer. These versions provide the read-only Compose image mounts
-used to deliver the runtime on both rootful and rootless Docker.
+Vaka requires Docker Engine 28.0.0 or newer, an effective Docker client API of
+1.48 or newer, and Docker Compose 2.35.0 or newer. These versions provide the
+read-only Compose image mounts used to deliver the runtime on both rootful and
+rootless Docker. If `DOCKER_API_VERSION` is set, it must not pin the client
+below 1.48.
 
 ## Linux Packages
 
