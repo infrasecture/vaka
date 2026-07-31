@@ -152,10 +152,32 @@ registry_inspect() {
 remote_manifest_digest() {
     local ref="$1"
     local digest
-    digest="$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "${ref}")" || \
-        die "cannot read registry digest for ${ref}"
+    digest="$(buildx_manifest_field "${ref}" Digest)"
     [[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]] || die "registry returned an invalid digest for ${ref}: ${digest}"
     printf '%s\n' "${digest}"
+}
+
+# Buildx versions affected by docker/buildx#1175 silently ignore ordinary Go
+# templates and print the human-readable report. The json function consistently
+# selects template output on those versions. Accept only the simple JSON strings
+# used by registry media types and digests; these fields never require escapes.
+buildx_manifest_field() {
+    local ref="$1"
+    local field="$2"
+    local raw value
+
+    case "${field}" in
+        Digest|MediaType) ;;
+        *) die "unsupported Buildx manifest field: ${field}" ;;
+    esac
+    raw="$(docker buildx imagetools inspect --format "{{json .Manifest.${field}}}" "${ref}")" || \
+        die "cannot read registry ${field} for ${ref}"
+    if [[ ! "${raw}" =~ ^\"[A-Za-z0-9._+:/-]+\"$ ]]; then
+        die "docker buildx returned invalid JSON-formatted ${field} for ${ref}: ${raw}"
+    fi
+    value="${raw#\"}"
+    value="${value%\"}"
+    printf '%s\n' "${value}"
 }
 
 verify_remote_arch_image() {
@@ -164,8 +186,7 @@ verify_remote_arch_image() {
     local local_id="${local_ids[${arch}]}"
     local remote_id remote_platform media_type
 
-    media_type="$(docker buildx imagetools inspect --format '{{.Manifest.MediaType}}' "${ref}")" || \
-        die "cannot read manifest type for ${ref}"
+    media_type="$(buildx_manifest_field "${ref}" MediaType)"
     case "${media_type}" in
         application/vnd.oci.image.manifest.v1+json|application/vnd.docker.distribution.manifest.v2+json) ;;
         *) die "immutable architecture tag ${ref} is not a single-image manifest (${media_type})" ;;
@@ -193,9 +214,42 @@ verify_remote_arch_image() {
 
 manifest_children() {
     local ref="$1"
-    docker buildx imagetools inspect --format \
-        '{{range .Manifest.Manifests}}{{.Platform.OS}}/{{.Platform.Architecture}} {{.Digest}}{{println}}{{end}}' \
-        "${ref}"
+    local raw line os_json arch_json digest_json extra os arch digest
+
+    raw="$(docker buildx imagetools inspect --format \
+        '{{range .Manifest.Manifests}}{{json .Platform.OS}} {{json .Platform.Architecture}} {{json .Digest}}{{println}}{{end}}' \
+        "${ref}")" || return 1
+    [[ -n "${raw}" ]] || {
+        printf 'ERROR: registry manifest %s has no child manifests\n' "${ref}" >&2
+        return 1
+    }
+
+    while IFS= read -r line; do
+        read -r os_json arch_json digest_json extra <<<"${line}"
+        if [[ -n "${extra:-}" ]] ||
+           ! os="$(decode_buildx_json_token "${os_json:-}")" ||
+           ! arch="$(decode_buildx_json_token "${arch_json:-}")" ||
+           ! digest="$(decode_buildx_json_token "${digest_json:-}")"; then
+            printf 'ERROR: docker buildx returned an invalid manifest child for %s: %s\n' "${ref}" "${line}" >&2
+            return 1
+        fi
+        [[ "${os}" =~ ^[a-z0-9][a-z0-9._-]*$ &&
+           "${arch}" =~ ^[a-z0-9][a-z0-9._-]*$ &&
+           "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            printf 'ERROR: docker buildx returned an invalid manifest child for %s: %s\n' "${ref}" "${line}" >&2
+            return 1
+        }
+        printf '%s/%s %s\n' "${os}" "${arch}" "${digest}"
+    done <<<"${raw}"
+}
+
+decode_buildx_json_token() {
+    local raw="$1"
+    local value
+    [[ "${raw}" =~ ^\"[A-Za-z0-9._+:/-]+\"$ ]] || return 1
+    value="${raw#\"}"
+    value="${value%\"}"
+    printf '%s\n' "${value}"
 }
 
 preflight_registry() {
