@@ -36,7 +36,7 @@
 #     emsi/nft-static:1.1.6    → points at the native-arch image only
 #     emsi/vaka-init:runtime-v0.1.0 → points at the native-arch image only
 #   The alias makes the unsuffixed ref resolvable locally without a registry
-#   round-trip. vaka's CLI constructs emsi/vaka-init:<runtime-version> from
+#   round-trip. vaka's CLI constructs emsi/vaka-init:runtime-<runtime-version> from
 #   internal/runtimebundle/VERSION; CLI and runtime releases are independent.
 #
 #   Manifest lists (registry only, created by --push or --manifest):
@@ -114,6 +114,9 @@ if [[ ! "${RUNTIME_VERSION}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9
     exit 1
 fi
 RUNTIME_TAG="runtime-${RUNTIME_VERSION}"
+# Keep runtime image identity stable across release hosts and CLI-only commits.
+# 1980-01-01 is accepted by tar implementations used throughout the build.
+RUNTIME_SOURCE_DATE_EPOCH=315532800
 
 if [[ "${DO_PUSH}" == "true" || "${DO_MANIFEST_ONLY}" == "true" ]] && \
    [[ "${VERSION}" == *"-dirty" ]]; then
@@ -267,6 +270,40 @@ require_qemu_for_arch() {
     exit 1
 }
 
+# Runtime arch tags are immutable. Re-publishing an existing tag is allowed
+# only when the registry resolves it to the exact same image config ID. This
+# turns a forgotten runtime VERSION bump into a release-time failure instead of
+# silently replacing the bytes mounted into user containers.
+assert_runtime_tag_immutable() {
+    local tag="$1"
+    local arch="$2"
+    local inspect_output local_id remote_id
+
+    local_id="$(docker image inspect "${tag}" --format '{{.Id}}')"
+    if ! inspect_output="$(docker buildx imagetools inspect "${tag}" 2>&1)"; then
+        if grep -Eqi 'not found|manifest unknown' <<<"${inspect_output}"; then
+            return 0
+        fi
+        printf 'ERROR: cannot check existing runtime tag %s:\n%s\n' "${tag}" "${inspect_output}" >&2
+        exit 1
+    fi
+
+    if ! docker pull --platform "linux/${arch}" "${tag}" >/dev/null; then
+        docker tag "${local_id}" "${tag}"
+        printf 'ERROR: cannot pull existing runtime tag %s for immutability check\n' "${tag}" >&2
+        exit 1
+    fi
+    remote_id="$(docker image inspect "${tag}" --format '{{.Id}}')"
+    docker tag "${local_id}" "${tag}"
+    if [[ "${remote_id}" != "${local_id}" ]]; then
+        printf 'ERROR: refusing to replace immutable runtime tag %s\n' "${tag}" >&2
+        printf '       registry: %s\n       local:    %s\n' "${remote_id}" "${local_id}" >&2
+        printf '       Bump internal/runtimebundle/VERSION before publishing changed runtime bytes.\n' >&2
+        exit 1
+    fi
+    echo "    Immutable runtime tag already exists with identical content: ${tag}"
+}
+
 # ── Phase 1: nft images — one per arch ───────────────────────────────────────
 # Uses docker buildx build --platform to set correct OCI platform metadata.
 # C compilation for a foreign arch (e.g. arm64 on amd64) requires QEMU binfmt.
@@ -411,6 +448,7 @@ else
             --env GOWORK=off \
             "${GOLANG_IMAGE}" \
             go build \
+                -buildvcs=false \
                 -trimpath \
                 -tags "netgo,osusergo" \
                 -ldflags="-s -w -extldflags=-static" \
@@ -492,15 +530,20 @@ for ARCH in $ARCHS; do
     ctx="$(mktemp -d)"
     cleanup_ctx() { rm -rf -- "${ctx}"; }
     trap cleanup_ctx EXIT
-    cp "dist/vaka-init-linux-${ARCH}" "${ctx}/vaka-init"
-    cp "dist/nft-linux-${ARCH}"       "${ctx}/nft"
+    runtime_root="${ctx}/rootfs"
+    mkdir -p "${runtime_root}/opt/vaka/sbin"
+    cp "dist/vaka-init-linux-${ARCH}" "${runtime_root}/opt/vaka/sbin/vaka-init"
+    cp "dist/nft-linux-${ARCH}"       "${runtime_root}/opt/vaka/sbin/nft"
+    find "${runtime_root}" -exec env TZ=UTC touch -t 198001010000 {} +
 
     docker buildx build \
+        --no-cache \
         --platform "linux/${ARCH}" \
-        --load \
+        --output "type=docker,rewrite-timestamp=true" \
         --file docker/init/Dockerfile \
         --build-arg "RUNTIME_VERSION=${RUNTIME_VERSION}" \
         --build-arg "NFTABLES_VERSION=${NFTABLES_VERSION}" \
+        --build-arg "SOURCE_DATE_EPOCH=${RUNTIME_SOURCE_DATE_EPOCH}" \
         --tag "${arch_init_tag}" \
         "${ctx}"
 
@@ -536,12 +579,20 @@ if [[ -n "${verify_arch}" ]]; then
     cleanup_cid() { docker rm -f -- "${cid}" >/dev/null 2>&1 || true; }
     trap cleanup_cid EXIT
 
+    image_listing="$(docker export "${cid}" | tar -tv 2>/dev/null)"
     for expected in opt/vaka/sbin/nft opt/vaka/sbin/vaka-init; do
         printf '    /%-39s' "${expected}"
         # docker export produces tar entries with an optional './' prefix; strip it
         # before matching so both './opt/...' and 'opt/...' formats are handled.
-        if docker export "${cid}" | tar -t 2>/dev/null | sed 's|^\./||' | grep -q "^${expected}$"; then
-            echo "OK"
+        entry="$(printf '%s\n' "${image_listing}" | awk -v path="${expected}" '$NF == path || $NF == "./" path { print; exit }')"
+        if [[ -n "${entry}" ]]; then
+            permissions="${entry%% *}"
+            if [[ "${permissions}" != "-r-xr-xr-x" ]]; then
+                echo "BAD MODE (${permissions})"
+                echo "ERROR: /${expected} must have mode 0555" >&2
+                exit 1
+            fi
+            echo "OK (0555)"
         else
             echo "MISSING"
             echo "ERROR: ${expected} not found in image" >&2
@@ -550,6 +601,33 @@ if [[ -n "${verify_arch}" ]]; then
             exit 1
         fi
     done
+
+    printf '    %-40s' "runtime version label"
+    image_runtime_version="$(docker image inspect "${verify_tag}" --format '{{index .Config.Labels "agent.vaka.runtime.version"}}')"
+    if [[ "${image_runtime_version}" != "${RUNTIME_VERSION}" ]]; then
+        echo "MISMATCH (${image_runtime_version})"
+        exit 1
+    fi
+    echo "OK (${RUNTIME_VERSION})"
+
+    printf '    %-40s' "legacy image volume"
+    image_volumes="$(docker image inspect "${verify_tag}" --format '{{json .Config.Volumes}}')"
+    if [[ "${image_volumes}" != "null" && "${image_volumes}" != "{}" ]]; then
+        echo "PRESENT (${image_volumes})"
+        echo "ERROR: runtime image must not declare VOLUME /opt/vaka" >&2
+        exit 1
+    fi
+    echo "absent"
+
+    if [[ "${verify_arch}" == "${NATIVE_ARCH}" ]]; then
+        printf '    %-40s' "vaka-init --version"
+        reported_runtime_version="$(docker run --rm --platform "linux/${verify_arch}" "${verify_tag}" /opt/vaka/sbin/vaka-init --version)"
+        if [[ "${reported_runtime_version}" != "${RUNTIME_VERSION}" ]]; then
+            echo "MISMATCH (${reported_runtime_version})"
+            exit 1
+        fi
+        echo "OK (${reported_runtime_version})"
+    fi
 
     docker rm -f -- "${cid}" >/dev/null 2>&1 || true
     trap - EXIT
@@ -626,6 +704,7 @@ if [[ "${DO_PUSH}" == "true" ]]; then
         docker push "${arch_nft_tag}"
         echo "OK"
 
+        assert_runtime_tag_immutable "${arch_init_tag}" "${ARCH}"
         printf '    %s  ' "${arch_init_tag}"
         docker push "${arch_init_tag}"
         echo "OK"

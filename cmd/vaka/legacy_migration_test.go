@@ -7,6 +7,7 @@ import (
 
 	containertypes "github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/mount"
+	volumetypes "github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/errdefs"
 )
 
@@ -19,6 +20,7 @@ type fakeLegacyRuntimeClient struct {
 	containerErr   error
 	volumeErr      error
 	forceValues    []bool
+	volumeLabels   map[string]string
 }
 
 func (f *fakeLegacyRuntimeClient) ContainerList(_ context.Context, options containertypes.ListOptions) ([]containertypes.Summary, error) {
@@ -30,10 +32,37 @@ func (f *fakeLegacyRuntimeClient) ContainerRemove(_ context.Context, id string, 
 	return f.containerErr
 }
 
+func (f *fakeLegacyRuntimeClient) VolumeInspect(_ context.Context, name string) (volumetypes.Volume, error) {
+	labels := f.volumeLabels
+	if labels == nil {
+		labels = map[string]string{dockerAnonymousVolumeLabel: ""}
+	}
+	return volumetypes.Volume{Name: name, Labels: labels}, nil
+}
+
 func (f *fakeLegacyRuntimeClient) VolumeRemove(_ context.Context, name string, force bool) error {
 	f.removedVolumes = append(f.removedVolumes, name)
 	f.forceValues = append(f.forceValues, force)
 	return f.volumeErr
+}
+
+func TestCaptureLegacyRuntimeRejectsNamedHexVolume(t *testing.T) {
+	fake := &fakeLegacyRuntimeClient{
+		volumeLabels: map[string]string{"owner": "user"},
+		listFn: func(containertypes.ListOptions) ([]containertypes.Summary, error) {
+			return []containertypes.Summary{
+				legacyHelper("helper", "emsi/vaka-init:v0.1.2", testLegacyVolume, legacyRuntimePath),
+			}, nil
+		},
+	}
+	ds := &dockerServices{legacy: fake, targetDesc: "test-context"}
+	state, err := ds.CaptureLegacyRuntime(context.Background(), "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !state.Empty() {
+		t.Fatalf("named 64-character volume was captured: %+v", state)
+	}
 }
 
 func legacyHelper(id, image, volumeName, destination string) containertypes.Summary {

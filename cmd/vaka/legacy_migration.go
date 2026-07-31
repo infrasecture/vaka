@@ -12,14 +12,16 @@ import (
 	containertypes "github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/mount"
+	volumetypes "github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/errdefs"
 )
 
 const (
-	composeProjectLabel = "com.docker.compose.project"
-	composeServiceLabel = "com.docker.compose.service"
-	legacyHelperService = "__vaka-init"
-	legacyRuntimePath   = "/opt/vaka"
+	composeProjectLabel        = "com.docker.compose.project"
+	composeServiceLabel        = "com.docker.compose.service"
+	legacyHelperService        = "__vaka-init"
+	legacyRuntimePath          = "/opt/vaka"
+	dockerAnonymousVolumeLabel = "com.docker.volume.anonymous"
 )
 
 var anonymousVolumeName = regexp.MustCompile(`^[a-f0-9]{64}$`)
@@ -27,6 +29,7 @@ var anonymousVolumeName = regexp.MustCompile(`^[a-f0-9]{64}$`)
 type legacyRuntimeClient interface {
 	ContainerList(ctx context.Context, options containertypes.ListOptions) ([]containertypes.Summary, error)
 	ContainerRemove(ctx context.Context, containerID string, options containertypes.RemoveOptions) error
+	VolumeInspect(ctx context.Context, volumeID string) (volumetypes.Volume, error)
 	VolumeRemove(ctx context.Context, volumeID string, force bool) error
 }
 
@@ -73,6 +76,16 @@ func (d *dockerServices) CaptureLegacyRuntime(ctx context.Context, project strin
 		}
 		for _, mounted := range ctr.Mounts {
 			if mounted.Type != mount.TypeVolume || mounted.Destination != legacyRuntimePath || !anonymousVolumeName.MatchString(mounted.Name) {
+				continue
+			}
+			volume, err := d.legacy.VolumeInspect(ctx, mounted.Name)
+			if err != nil {
+				if errdefs.IsNotFound(err) {
+					continue
+				}
+				return state, fmt.Errorf("inspect candidate legacy volume %s on %s: %w", mounted.Name, d.targetDesc, err)
+			}
+			if _, anonymous := volume.Labels[dockerAnonymousVolumeLabel]; !anonymous {
 				continue
 			}
 			if state.Volumes[mounted.Name] == nil {

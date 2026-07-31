@@ -1,11 +1,11 @@
 # docker/init/Dockerfile
 # Assembles the emsi/vaka-init scratch image from two pre-built static binaries.
-# The build context must contain exactly two files:
-#   vaka-init   — static vaka-init binary (native arch, built by build.sh)
-#   nft         — static nft binary (native arch, extracted from emsi/nft-static)
+# The build context contains a normalized rootfs/ tree assembled by build.sh:
+#   rootfs/opt/vaka/sbin/vaka-init — static vaka-init binary
+#   rootfs/opt/vaka/sbin/nft       — static nft binary
 #
 # Usage when baking into a harness image:
-#   FROM emsi/vaka-init:latest AS vaka
+#   FROM emsi/vaka-init:runtime-v0.1.0 AS vaka
 #   FROM ubuntu:24.04
 #   COPY --from=vaka /opt/vaka/sbin/vaka-init /opt/vaka/sbin/vaka-init
 #   COPY --from=vaka /opt/vaka/sbin/nft       /opt/vaka/sbin/nft
@@ -21,5 +21,4 @@ LABEL org.opencontainers.image.title="emsi/vaka-init" \
       agent.vaka.runtime.version="${RUNTIME_VERSION}" \
       org.opencontainers.image.source="https://github.com/infrasecture/vaka"
 
-COPY --chmod=0555 vaka-init /opt/vaka/sbin/vaka-init
-COPY --chmod=0555 nft       /opt/vaka/sbin/nft
+COPY --chmod=0555 rootfs/ /

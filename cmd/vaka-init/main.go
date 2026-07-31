@@ -42,10 +42,9 @@ func main() {
 		return
 	}
 
-	// No arguments: __vaka-init helper-container "standalone" mode. The helper
-	// exists only so managed services can source /opt/vaka/sbin/ via
-	// volumes_from; exiting 0 cleanly (and quietly) is what satisfies their
-	// depends_on: service_completed_successfully condition.
+	// Retain the historical no-argument no-op for compatibility with tooling
+	// that probes the runtime image directly. Current service injection always
+	// passes "--" and uses a read-only image mount, not a helper container.
 	if len(os.Args) < 2 {
 		os.Exit(0)
 	}
