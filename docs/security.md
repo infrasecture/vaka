@@ -48,7 +48,16 @@ vaka never writes the generated per-service policy to disk on the host. The poli
 
 The Compose override is streamed through an inherited `/dev/fd/3` pipe instead of being written to `/tmp` or the project directory.
 
-Normal Docker state still exists where Docker keeps it: containers, images, volumes, and Docker-managed metadata.
+The runtime image is validated by its exact bundle-version label, resolved on
+the selected Docker target, and mounted by immutable local image ID. The mount
+is read-only. `vaka-init` also requires the generated policy's exact runtime
+bundle version before loading nftables, so an incorrectly tagged or stale
+runtime fails closed.
+
+Normal Docker state still exists where Docker keeps it: containers, images,
+volumes, and Docker-managed metadata. Vaka's current delivery path does not
+create a helper container or helper volume; conservative cleanup exists only
+for volumes left by older releases.
 
 ## Kernel And nftables Compatibility
 

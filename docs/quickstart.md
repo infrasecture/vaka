@@ -43,7 +43,7 @@ This checks the policy schema, service names, and unsupported `network_mode: hos
 vaka doctor
 ```
 
-If the helper image is missing, let vaka pull it:
+If the runtime image is missing or incompatible, let vaka repair it:
 
 ```bash
 vaka doctor --fix
@@ -78,7 +78,8 @@ vaka exec agent sh
 vaka down
 ```
 
-Reference commands are proxied through Docker Compose with a minimal vaka overlay so the helper resources stay visible.
+Reference commands are proxied through Docker Compose with a metadata-only
+Vaka overlay; they do not evaluate policy or create helper resources.
 
 ## Preview Generated Output
 

@@ -12,26 +12,36 @@ Then retry fixable checks:
 vaka doctor --fix
 ```
 
-## Helper Image Missing
+## Runtime Image Missing Or Incompatible
 
-`vaka doctor --fix` pulls `emsi/vaka-init:<vaka-version>`.
+`vaka doctor --fix` pulls or refreshes the required
+`emsi/vaka-init:runtime-vX.Y.Z` image and validates its runtime-version label.
 
-If you built a local development binary with version `dev`, there is no published `emsi/vaka-init:dev`. Build the helper image locally with `./build.sh` or use a stamped release binary.
+The runtime version is independent of `vaka version`, so development CLI builds
+do not require a special `:dev` runtime image.
 
-## Version Mismatch After Upgrade
+## Legacy Helper Volume During Upgrade
 
-Existing containers may keep an older anonymous helper volume. Refresh it:
+Vaka releases using image mounts automatically migrate anonymous `/opt/vaka`
+volumes created by older releases. Detection requires the historical helper
+service plus Docker's anonymous-volume marker; a lookalike named volume is left
+untouched. A partial `up <service>` can report:
 
-```bash
-vaka down --volumes
-vaka up
+```text
+vaka: retained 1 legacy runtime volume(s) still used by existing containers
 ```
 
-or renew anonymous volumes:
+This is expected. Recreate the remaining policy-managed services normally; Vaka
+removes the helper and anonymous volume after the final consumer moves. `vaka
+down` also captures and removes the old volume safely. Cleanup never uses force
+and never removes named volumes, so `--renew-anon-volumes`/`-V` is neither
+required nor recommended for this migration.
 
-```bash
-vaka up -V
-```
+## Compose Reports Image Mount Is Experimental
+
+Current Compose versions may print `Image mount is an experimental feature`
+while creating a service. This is a Compose status message; the mount remains
+read-only and is supported by Vaka's minimum Engine and Compose versions.
 
 ## `network_mode: host`
 

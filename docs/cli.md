@@ -15,7 +15,7 @@ vaka [--vaka-file=<path>] [--vaka-init-present] compose [compose-global-flags...
 | Native | `validate`, `show-nft`, `doctor`, `show-compose`, `version`, `help`, `completion` | Handled by vaka itself. |
 | Recipes | `get`, `search`, `recipes`, `registry` | Registry consumption: fetch and update recipes, browse catalogs. Never runs docker. |
 | Compose full render | `vaka compose up`, `vaka compose run`, `vaka compose create` | Validate policy, generate the full Compose override, inject secrets and entrypoint changes, then call Compose. |
-| Compose reference | Other `vaka compose` commands such as `logs`, `exec`, `ps`, `pull`, `down`, `stop`, `kill`, `rm` | Call Compose with a minimal `__vaka-init` overlay so helper resources remain visible. |
+| Compose reference | Other `vaka compose` commands such as `logs`, `exec`, `ps`, `pull`, `down`, `stop`, `kill`, `rm`, `volumes` | Call Compose through the same FD-injected path with metadata only; no policy evaluation or helper service. |
 | Compose metadata | `vaka compose version`, `vaka compose ls` | Proxied to Compose without any overlay; they work outside project directories. |
 | Shorthands | `up`, `down`, `start`, `stop`, `run`, `exec`, `logs`, `ps` | Permanent top-level aliases: `vaka up ...` executes exactly like `vaka compose up ...`. |
 
@@ -45,8 +45,10 @@ vaka compose --profile dev up
 vaka compose --project-directory srv logs -f app
 ```
 
-Compose commands vaka does not know about are forwarded with the reference
-overlay, so new docker compose subcommands keep working.
+Compose commands vaka does not know about are forwarded with a metadata-only
+reference overlay, so new docker compose subcommands keep working. All
+container-creating policy paths require Docker Engine 28.0.0+ and Docker
+Compose 2.35.0+ for read-only image mounts.
 
 ## Compose Help
 
@@ -105,10 +107,10 @@ vaka compose kill
 vaka compose rm
 ```
 
-Reference commands include the `__vaka-init` helper unless you pass
-`--vaka-init-present` before the command.
-
-Use `vaka down --volumes` or `vaka up -V` after upgrading to refresh anonymous helper volumes and avoid `vakaVersion` mismatches.
+Reference commands do not load `vaka.yaml`. They inject only `x-vaka` runtime
+metadata. `down` additionally performs conservative one-time cleanup if it
+finds an anonymous helper volume created by an older Vaka release; named and
+in-use volumes are never removed.
 
 ## `vaka validate`
 
@@ -124,9 +126,13 @@ Parses and validates `vaka.yaml`. Repeat `--compose` for multiple compose files.
 vaka doctor [--fix]
 ```
 
-Checks Docker CLI availability, daemon reachability, Compose v2 availability, Linux-container backend, helper image availability, and Docker context information.
+Checks Docker CLI availability, Docker Engine 28.0.0+/API 1.48+, Docker Compose
+2.35.0+, Linux-container backend, rootful/rootless mode, image-mount support,
+runtime image identity, and Docker context information.
 
-`--fix` currently pulls the required `emsi/vaka-init:<vaka-version>` helper image when missing. Development builds with `version=dev` cannot be fixed this way.
+`--fix` pulls or repairs the required
+`emsi/vaka-init:runtime-<runtime-version>` image. The runtime version is
+independent of the CLI version, so this also works for CLI development builds.
 
 ## `vaka show-nft <service>`
 
@@ -147,7 +153,7 @@ vaka [--vaka-file=<path>] [--vaka-init-present] show-compose [-f compose.yml ...
 ```
 
 Prints the generated Compose override used by `vaka compose up`, `run`, and
-`create`.
+`create`, including the exact runtime image ID mount and policy revision labels.
 
 Notes:
 
@@ -305,7 +311,7 @@ arguments.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--vaka-file=<path>` | `vaka.yaml` | Policy file for injection/proxy paths. |
-| `--vaka-init-present` | off | Skip automatic helper injection; assume helper binaries already exist at `/opt/vaka/sbin/` in service images. |
+| `--vaka-init-present` | off | Skip the runtime image mount; assume compatible helper binaries already exist at `/opt/vaka/sbin/` in service images. |
 
 Vaka wrapper flags must appear before the command. Value-taking vaka flags require `=` form.
 
