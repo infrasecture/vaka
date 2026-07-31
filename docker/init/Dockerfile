@@ -12,13 +12,21 @@
 
 ARG RUNTIME_VERSION=dev
 ARG NFTABLES_VERSION=unknown
+ARG RUNTIME_INPUTS_SHA256=unknown
+ARG NFT_INPUTS_SHA256=unknown
 
 FROM scratch
 ARG RUNTIME_VERSION=dev
+ARG NFTABLES_VERSION=unknown
+ARG RUNTIME_INPUTS_SHA256=unknown
+ARG NFT_INPUTS_SHA256=unknown
 LABEL org.opencontainers.image.title="emsi/vaka-init" \
       org.opencontainers.image.description="vaka-init + nft static binaries for the vaka secure container layer" \
       org.opencontainers.image.version="${RUNTIME_VERSION}" \
       agent.vaka.runtime.version="${RUNTIME_VERSION}" \
+      agent.vaka.runtime.inputs-sha256="${RUNTIME_INPUTS_SHA256}" \
+      agent.vaka.nftables.version="${NFTABLES_VERSION}" \
+      agent.vaka.nftables.inputs-sha256="${NFT_INPUTS_SHA256}" \
       org.opencontainers.image.source="https://github.com/infrasecture/vaka"
 
 COPY --chmod=0555 rootfs/ /

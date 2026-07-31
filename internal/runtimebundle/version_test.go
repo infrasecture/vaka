@@ -23,3 +23,13 @@ func TestImageTagHasDedicatedNamespace(t *testing.T) {
 		t.Fatalf("ImageTag() = %q, want %q", got, want)
 	}
 }
+
+func TestBuildVersionOverridesEmbeddedVersion(t *testing.T) {
+	original := buildVersion
+	t.Cleanup(func() { buildVersion = original })
+
+	buildVersion = "v0.1.0-nightly.0123456789ab"
+	if got := Version(); got != buildVersion {
+		t.Fatalf("Version() = %q, want build override %q", got, buildVersion)
+	}
+}
