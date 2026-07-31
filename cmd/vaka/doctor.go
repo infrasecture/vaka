@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -300,38 +299,38 @@ func defaultDoctorChecks() []doctorCheck {
 			},
 		},
 		{
-			name:        "docker daemon reachable",
+			name:        "docker engine compatible",
 			required:    true,
 			timeout:     doctorProbeTimeout,
-			remediation: "Start Docker and verify your current Docker context/daemon is reachable.",
+			remediation: fmt.Sprintf("Start Docker and use Docker Engine %s or newer (API %s+).", minimumDockerEngineVersion, strings.TrimSuffix(minimumDockerAPIVersion, ".0")),
 			run: func(ctx context.Context) (string, error) {
-				stdout, stderr, err := doctorDockerProbe(ctx, []string{"version", "--format", "{{.Server.Version}}"})
+				stdout, stderr, err := doctorDockerProbe(ctx, []string{"version", "--format", "{{.Server.Version}} {{.Server.APIVersion}}"})
 				if err != nil {
 					return "", fmt.Errorf("%s", firstNonEmpty(stderr, stdout, err.Error()))
 				}
-				if strings.TrimSpace(stdout) == "" {
-					return "", fmt.Errorf("docker server version output is empty")
+				fields := strings.Fields(stdout)
+				if len(fields) != 2 {
+					return "", fmt.Errorf("unexpected docker server version output %q", stdout)
 				}
-				return "server " + strings.TrimSpace(stdout), nil
+				if err := checkDockerCompatibility(fields[0], fields[1]); err != nil {
+					return "", err
+				}
+				return fmt.Sprintf("server %s / API %s", fields[0], fields[1]), nil
 			},
 		},
 		{
-			name:        "docker compose v2 available",
+			name:        "docker compose compatible",
 			required:    true,
 			timeout:     doctorProbeTimeout,
-			remediation: "Install/enable Docker Compose v2 (`docker compose`).",
+			remediation: fmt.Sprintf("Install or upgrade Docker Compose to %s or newer (`docker compose`).", minimumComposeVersion),
 			run: func(ctx context.Context) (string, error) {
 				stdout, stderr, err := doctorDockerProbe(ctx, []string{"compose", "version", "--short"})
 				if err != nil {
 					return "", fmt.Errorf("%s", firstNonEmpty(stderr, stdout, err.Error()))
 				}
 				v := strings.TrimSpace(stdout)
-				major, err := parseComposeMajorVersion(v)
-				if err != nil {
+				if err := checkComposeCompatibility(v); err != nil {
 					return "", err
-				}
-				if major < 2 {
-					return "", fmt.Errorf("docker compose version %q is unsupported; need v2+", v)
 				}
 				return v, nil
 			},
@@ -354,11 +353,35 @@ func defaultDoctorChecks() []doctorCheck {
 			},
 		},
 		{
+			name:      "docker operating mode",
+			required:  false,
+			timeout:   doctorProbeTimeout,
+			dependsOn: []string{"docker engine compatible"},
+			run: func(ctx context.Context) (string, error) {
+				stdout, stderr, err := doctorDockerProbe(ctx, []string{"info", "--format", "{{json .SecurityOptions}}"})
+				if err != nil {
+					return "", fmt.Errorf("%s", firstNonEmpty(stderr, stdout, err.Error()))
+				}
+				if strings.Contains(stdout, "name=rootless") {
+					return "rootless", nil
+				}
+				return "rootful", nil
+			},
+		},
+		{
+			name:      "docker image mounts supported",
+			required:  true,
+			dependsOn: []string{"docker engine compatible", "docker compose compatible", "linux container backend"},
+			run: func(context.Context) (string, error) {
+				return fmt.Sprintf("Engine %s+ / Compose %s+", minimumDockerEngineVersion, minimumComposeVersion), nil
+			},
+		},
+		{
 			name:        "required vaka-init image present",
 			required:    true,
 			timeout:     doctorProbeTimeout,
 			fixTimeout:  doctorDefaultFixTimeout,
-			dependsOn:   []string{"docker daemon reachable"},
+			dependsOn:   []string{"docker engine compatible", "docker compose compatible"},
 			remediation: imageRemediation,
 			run: func(ctx context.Context) (string, error) {
 				if isDevBuild {
@@ -409,20 +432,6 @@ func runDoctorDockerCommand(ctx context.Context, args []string) (stdout string, 
 	c.Stderr = &errBuf
 	err = c.Run()
 	return strings.TrimSpace(outBuf.String()), strings.TrimSpace(errBuf.String()), err
-}
-
-func parseComposeMajorVersion(version string) (int, error) {
-	v := strings.TrimSpace(version)
-	v = strings.TrimPrefix(v, "v")
-	if v == "" {
-		return 0, fmt.Errorf("docker compose version output is empty")
-	}
-	majorPart := strings.SplitN(v, ".", 2)[0]
-	major, err := strconv.Atoi(majorPart)
-	if err != nil {
-		return 0, fmt.Errorf("cannot parse docker compose version %q", version)
-	}
-	return major, nil
 }
 
 func firstNonEmpty(parts ...string) string {

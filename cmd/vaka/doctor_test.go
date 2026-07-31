@@ -10,22 +10,23 @@ import (
 	composetypes "github.com/compose-spec/compose-go/v2/types"
 )
 
-func TestParseComposeMajorVersion(t *testing.T) {
+func TestCheckComposeCompatibility(t *testing.T) {
 	tests := []struct {
 		in      string
-		want    int
 		wantErr bool
 	}{
-		{in: "v2.27.0", want: 2},
-		{in: "2.23.3", want: 2},
-		{in: "1.29.0", want: 1},
+		{in: "v2.35.0"},
+		{in: "2.35.1"},
+		{in: "5.3.1"},
+		{in: "2.34.0", wantErr: true},
+		{in: "1.29.0", wantErr: true},
 		{in: "", wantErr: true},
 		{in: "abc", wantErr: true},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.in, func(t *testing.T) {
-			got, err := parseComposeMajorVersion(tc.in)
+			err := checkComposeCompatibility(tc.in)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("expected error, got nil")
@@ -35,8 +36,28 @@ func TestParseComposeMajorVersion(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if got != tc.want {
-				t.Fatalf("got %d, want %d", got, tc.want)
+		})
+	}
+}
+
+func TestCheckDockerCompatibility(t *testing.T) {
+	tests := []struct {
+		name    string
+		engine  string
+		api     string
+		wantErr bool
+	}{
+		{name: "minimum", engine: "28.0.0", api: "1.48"},
+		{name: "current", engine: "29.6.2", api: "1.55"},
+		{name: "old engine", engine: "27.5.1", api: "1.48", wantErr: true},
+		{name: "old API", engine: "28.0.0", api: "1.47", wantErr: true},
+		{name: "prerelease", engine: "28.0.0-rc.1", api: "1.48", wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := checkDockerCompatibility(tc.engine, tc.api)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("checkDockerCompatibility(%q, %q) error = %v, wantErr=%v", tc.engine, tc.api, err, tc.wantErr)
 			}
 		})
 	}
