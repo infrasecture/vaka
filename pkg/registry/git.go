@@ -1,8 +1,6 @@
 package registry
 
 import (
-	"archive/tar"
-	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -29,6 +27,14 @@ const (
 	maxGitRecipeEntries   = 2000
 	maxGitRecipeFileBytes = 20 << 20
 	maxGitRecipeBytes     = 50 << 20
+)
+
+// These are aggregate limits, in addition to the per-recipe extraction limits.
+// Vars let focused tests exercise the failure paths without large fixtures.
+var (
+	maxGitObjectStoreBytes   int64 = 512 << 20
+	maxGitArtifactCacheBytes int64 = 512 << 20
+	gitArtifactGracePeriod         = 24 * time.Hour
 )
 
 var gitCommitRE = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
@@ -232,11 +238,23 @@ func fetchGitCommit(ctx context.Context, source *GitSource) (repoDir, commit, co
 	if _, err = runGit(ctx, "", "init", "--quiet", "--bare", "--template=", repoDir); err != nil {
 		return "", "", "", fmt.Errorf("initialize temporary Git object store: %w", err)
 	}
+	if _, err = runGit(ctx, repoDir, "remote", "add", "origin", source.URL); err != nil {
+		return "", "", "", fmt.Errorf("configure Git preview remote: %w", err)
+	}
+	// Persist promisor configuration so later cat-file reads can fetch only the
+	// selected recipe blobs on demand. Servers that ignore filtering remain
+	// bounded by the aggregate temporary object-store limit.
+	if _, err = runGit(ctx, repoDir, "config", "remote.origin.promisor", "true"); err != nil {
+		return "", "", "", fmt.Errorf("configure Git promisor remote: %w", err)
+	}
+	if _, err = runGit(ctx, repoDir, "config", "remote.origin.partialclonefilter", "blob:none"); err != nil {
+		return "", "", "", fmt.Errorf("configure Git partial-clone filter: %w", err)
+	}
 	fetchRef := source.Ref
 	if !strings.HasPrefix(fetchRef, "refs/") && !gitCommitRE.MatchString(fetchRef) {
 		fetchRef = "refs/heads/" + fetchRef
 	}
-	if _, err = runGit(ctx, repoDir, "fetch", "--quiet", "--no-tags", "--depth=1", source.URL, fetchRef); err != nil {
+	if _, err = runGitWithStoreLimit(ctx, repoDir, "fetch", "--quiet", "--no-tags", "--depth=1", "--filter=blob:none", "origin", fetchRef); err != nil {
 		return "", "", "", fmt.Errorf("fetch ref %q: %w", source.Ref, err)
 	}
 	rawCommit, err := runGit(ctx, repoDir, "rev-parse", "--verify", "FETCH_HEAD^{commit}")
@@ -275,7 +293,11 @@ func discoverGitRecipes(ctx context.Context, repoDir, commit string) ([]string, 
 		if !ok || len(fields) != 3 || fields[1] != "tree" || !nameRE.MatchString(name) {
 			continue
 		}
-		if _, err := runGit(ctx, repoDir, "cat-file", "-e", commit+":"+name+"/recipe.yaml"); err != nil {
+		direct, err := runGit(ctx, repoDir, "ls-tree", "-z", commit+":"+name, "--", "recipe.yaml")
+		if err != nil {
+			return nil, fmt.Errorf("inspect recipe tree %q: %w", name, err)
+		}
+		if !gitTreeContainsPath(direct, "recipe.yaml") {
 			continue
 		}
 		names = append(names, name)
@@ -285,133 +307,6 @@ func discoverGitRecipes(ctx context.Context, repoDir, commit string) ([]string, 
 	}
 	sort.Strings(names)
 	return names, nil
-}
-
-func packageGitRecipe(ctx context.Context, repoDir, commit, name, regDir string) (path, digest string, err error) {
-	tmp, err := os.CreateTemp(regDir, ".git-artifact-*.tar.gz")
-	if err != nil {
-		return "", "", err
-	}
-	path = tmp.Name()
-	ok := false
-	defer func() {
-		if !ok {
-			os.Remove(path)
-		}
-	}()
-
-	h := sha256.New()
-	limited := &maxWriter{w: io.MultiWriter(tmp, h), remaining: maxTarballBytes}
-	gz := gzip.NewWriter(limited)
-	tw := tar.NewWriter(gz)
-	cmd := gitCommand(ctx, repoDir, "archive", "--format=tar", commit, "--", name)
-	var stderr cappedBuffer
-	cmd.Stderr = &stderr
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		tmp.Close()
-		return "", "", err
-	}
-	if err := cmd.Start(); err != nil {
-		tmp.Close()
-		return "", "", gitError(err, stderr.String())
-	}
-	archiveErr := rewriteGitArchive(tar.NewReader(stdout), tw)
-	if archiveErr != nil {
-		_ = stdout.Close()
-		_ = cmd.Process.Kill()
-	}
-	runErr := cmd.Wait()
-	closeTarErr := tw.Close()
-	closeGzipErr := gz.Close()
-	closeFileErr := tmp.Close()
-	if limited.err != nil {
-		return "", "", limited.err
-	}
-	if archiveErr != nil {
-		return "", "", archiveErr
-	}
-	if runErr != nil {
-		return "", "", gitError(runErr, stderr.String())
-	}
-	if closeTarErr != nil {
-		return "", "", closeTarErr
-	}
-	if closeGzipErr != nil {
-		return "", "", closeGzipErr
-	}
-	if closeFileErr != nil {
-		return "", "", closeFileErr
-	}
-	digest = "sha256:" + hex.EncodeToString(h.Sum(nil))
-	ok = true
-	return path, digest, nil
-}
-
-// rewriteGitArchive removes Git's commit-ID PAX header and normalizes metadata
-// that is irrelevant to recipe behavior. Therefore an unrelated commit does
-// not change an existing recipe's digest, while content, executable bits, and
-// symlink targets remain digest-bound.
-func rewriteGitArchive(tr *tar.Reader, tw *tar.Writer) error {
-	entries := 0
-	var total int64
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			return nil
-		}
-		if err != nil {
-			return fmt.Errorf("read Git archive: %w", err)
-		}
-		if hdr.Typeflag == tar.TypeXGlobalHeader {
-			continue
-		}
-		entries++
-		if entries > maxGitRecipeEntries {
-			return fmt.Errorf("Git recipe contains more than %d archive entries", maxGitRecipeEntries)
-		}
-
-		mode := int64(0o644)
-		switch hdr.Typeflag {
-		case tar.TypeDir:
-			mode = 0o755
-		case tar.TypeReg:
-			if hdr.Size > maxGitRecipeFileBytes {
-				return fmt.Errorf("Git recipe file %q exceeds the %d byte limit", hdr.Name, maxGitRecipeFileBytes)
-			}
-			total += hdr.Size
-			if total > maxGitRecipeBytes {
-				return fmt.Errorf("Git recipe exceeds the %d byte unpacked limit", maxGitRecipeBytes)
-			}
-			if hdr.Mode&0o111 != 0 {
-				mode = 0o755
-			}
-		case tar.TypeSymlink:
-			mode = 0o777
-		default:
-			return fmt.Errorf("Git recipe entry %q has unsupported archive type %d", hdr.Name, hdr.Typeflag)
-		}
-
-		normalized := &tar.Header{
-			Name:       hdr.Name,
-			Linkname:   hdr.Linkname,
-			Size:       hdr.Size,
-			Mode:       mode,
-			Typeflag:   hdr.Typeflag,
-			ModTime:    time.Unix(0, 0).UTC(),
-			AccessTime: time.Time{},
-			ChangeTime: time.Time{},
-			Format:     tar.FormatPAX,
-		}
-		if err := tw.WriteHeader(normalized); err != nil {
-			return fmt.Errorf("write normalized recipe archive: %w", err)
-		}
-		if hdr.Typeflag == tar.TypeReg {
-			if _, err := io.CopyN(tw, tr, hdr.Size); err != nil {
-				return fmt.Errorf("copy Git recipe file %q: %w", hdr.Name, err)
-			}
-		}
-	}
 }
 
 func validateGitRecipeArtifact(ctx context.Context, artifact, name string) (*recipe.Manifest, *recipe.LocalPolicySummary, error) {
@@ -637,22 +532,3 @@ func (b *cappedBuffer) Write(p []byte) (int, error) {
 
 func (b *cappedBuffer) Bytes() []byte  { return b.data }
 func (b *cappedBuffer) String() string { return string(b.data) }
-
-type maxWriter struct {
-	w         io.Writer
-	remaining int64
-	err       error
-}
-
-func (w *maxWriter) Write(p []byte) (int, error) {
-	if int64(len(p)) > w.remaining {
-		w.err = fmt.Errorf("generated artifact exceeds the %d byte limit", maxTarballBytes)
-		return 0, w.err
-	}
-	n, err := w.w.Write(p)
-	w.remaining -= int64(n)
-	if err != nil {
-		w.err = err
-	}
-	return n, err
-}

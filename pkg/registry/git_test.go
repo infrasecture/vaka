@@ -40,6 +40,7 @@ func newGitRegistryFixture(t *testing.T) *gitRegistryFixture {
 	}
 	dir := t.TempDir()
 	runFixtureGit(t, dir, "init", "--quiet", "--initial-branch=preview")
+	runFixtureGit(t, dir, "config", "uploadpack.allowFilter", "true")
 	f := &gitRegistryFixture{t: t, dir: dir, ref: "preview"}
 	f.reg = Registry{
 		Name: "preview",
@@ -64,6 +65,7 @@ env:
 	f.write("demo/vaka.yaml", gitFixturePolicy)
 	f.write("demo/README.md", "# demo\n")
 	f.write("demo/run.sh", "#!/bin/sh\nexec true\n")
+	f.write("demo/literal.txt", "$Format:%H$\n")
 	if err := os.Chmod(filepath.Join(dir, "demo", "run.sh"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -71,6 +73,8 @@ env:
 		t.Fatal(err)
 	}
 	f.write(".gitignore", "/demo/.secrets/\n")
+	// Git archive attributes must not affect direct tree/blob packaging.
+	f.write(".gitattributes", "demo/run.sh export-ignore\ndemo/literal.txt export-subst\n")
 	// A nested manifest is not a top-level recipe and must never be discovered.
 	f.write("nested/inner/recipe.yaml", "not a top-level recipe\n")
 	f.write("docs/note.txt", "registry documentation\n")
@@ -107,8 +111,27 @@ func runFixtureGit(t *testing.T, dir string, args ...string) string {
 	return string(output)
 }
 
+func gitObjectMissing(t *testing.T, repoDir, oid string) bool {
+	t.Helper()
+	cmd := exec.Command("git", "-C", repoDir, "cat-file", "-e", oid)
+	cmd.Env = append(os.Environ(), "GIT_NO_LAZY_FETCH=1")
+	err := cmd.Run()
+	if err == nil {
+		return false
+	}
+	if _, ok := err.(*exec.ExitError); !ok {
+		t.Fatalf("inspect Git object %s: %v", oid, err)
+	}
+	return true
+}
+
 func TestGitPreviewRefreshUsesOnlyTrackedTopLevelRecipeContent(t *testing.T) {
 	f := newGitRegistryFixture(t)
+	globalConfig := filepath.Join(t.TempDir(), "gitconfig")
+	if err := os.WriteFile(globalConfig, []byte("[tar]\n\tumask = 0777\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", globalConfig)
 	client := &Client{CacheDir: t.TempDir()}
 
 	if _, err := client.FetchIndex(f.reg); err == nil || !strings.Contains(err.Error(), "registry refresh") {
@@ -169,6 +192,9 @@ func TestGitPreviewRefreshUsesOnlyTrackedTopLevelRecipeContent(t *testing.T) {
 	if info, err := os.Stat(filepath.Join(extracted, "run.sh")); err != nil || info.Mode().Perm()&0o111 == 0 {
 		t.Fatalf("executable mode was not preserved: info=%v err=%v", info, err)
 	}
+	if got, err := os.ReadFile(filepath.Join(extracted, "literal.txt")); err != nil || string(got) != "$Format:%H$\n" {
+		t.Fatalf("Git archive attributes changed tracked content: %q, %v", got, err)
+	}
 	if target, err := os.Readlink(filepath.Join(extracted, "docker-compose.yaml")); err != nil || target != "compose.yaml" {
 		t.Fatalf("symlink = %q, %v", target, err)
 	}
@@ -212,6 +238,40 @@ func TestGitPreviewRefreshUsesOnlyTrackedTopLevelRecipeContent(t *testing.T) {
 	}
 	if changed.Revision != changedCommit || changed.Index.Recipes["demo"][0].Digest == entry.Digest {
 		t.Fatalf("changed refresh revision/digest = %s/%s", changed.Revision, changed.Index.Recipes["demo"][0].Digest)
+	}
+}
+
+func TestGitPreviewBloblessFetchDoesNotMaterializeUnrelatedBlob(t *testing.T) {
+	f := newGitRegistryFixture(t)
+	unrelatedOID := f.git("rev-parse", "HEAD:docs/note.txt")
+	repoDir, commit, _, err := fetchGitCommit(context.Background(), f.reg.Git)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(repoDir)
+	if !gitObjectMissing(t, repoDir, unrelatedOID) {
+		t.Fatal("blobless fetch materialized an unrelated repository blob")
+	}
+
+	artifact, _, err := packageGitRecipe(context.Background(), repoDir, commit, "demo", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(artifact)
+	if !gitObjectMissing(t, repoDir, unrelatedOID) {
+		t.Fatal("packaging one recipe materialized an unrelated repository blob")
+	}
+}
+
+func TestGitPreviewObjectStoreLimitFailsClosed(t *testing.T) {
+	f := newGitRegistryFixture(t)
+	old := maxGitObjectStoreBytes
+	maxGitObjectStoreBytes = 1
+	t.Cleanup(func() { maxGitObjectStoreBytes = old })
+
+	_, err := (&Client{CacheDir: t.TempDir()}).RefreshIndex(context.Background(), f.reg)
+	if err == nil || !strings.Contains(err.Error(), "aggregate limit") {
+		t.Fatalf("object-store limit err = %v", err)
 	}
 }
 
