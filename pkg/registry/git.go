@@ -109,18 +109,22 @@ func (c *Client) refreshGitIndex(ctx context.Context, reg Registry) (*IndexResul
 }
 
 func (c *Client) buildGitIndex(ctx context.Context, reg Registry, regDir string) (*IndexResult, error) {
+	c.gitProgressf(reg, "preparing local cache")
 	oldDigests := c.cachedArtifactDigests(reg)
 	pruneGitArtifacts(regDir, oldDigests, time.Now().Add(-gitArtifactGracePeriod))
 	if err := checkGitArtifactCache(regDir); err != nil {
 		return nil, err
 	}
 
+	c.gitProgressf(reg, "fetching %s#%s", reg.Git.URL, reg.Git.Ref)
 	repoDir, commit, commitTime, err := fetchGitCommit(ctx, reg.Git)
 	if err != nil {
 		return nil, err
 	}
 	defer os.RemoveAll(repoDir)
+	c.gitProgressf(reg, "resolved ref to commit %s", shortRevision(commit))
 
+	c.gitProgressf(reg, "discovering top-level recipes")
 	names, err := discoverGitRecipes(ctx, repoDir, commit)
 	if err != nil {
 		return nil, err
@@ -128,6 +132,7 @@ func (c *Client) buildGitIndex(ctx context.Context, reg Registry, regDir string)
 	if len(names) == 0 {
 		return nil, fmt.Errorf("commit %s contains no top-level recipe directories", shortRevision(commit))
 	}
+	c.gitProgressf(reg, "found %d top-level recipe(s)", len(names))
 
 	newDigests := make(map[string]bool, len(names))
 	createdDigests := make(map[string]bool, len(names))
@@ -147,11 +152,13 @@ func (c *Client) buildGitIndex(ctx context.Context, reg Registry, regDir string)
 		Recipes:    make(map[string][]IndexEntry, len(names)),
 	}
 
-	for _, name := range names {
+	for i, name := range names {
+		c.gitProgressf(reg, "packaging recipe %q (%d/%d)", name, i+1, len(names))
 		artifact, digest, err := packageGitRecipe(ctx, repoDir, commit, name, regDir)
 		if err != nil {
 			return nil, fmt.Errorf("recipe %s: %w", name, err)
 		}
+		c.gitProgressf(reg, "validating recipe %q (%d/%d)", name, i+1, len(names))
 		manifest, summary, err := validateGitRecipeArtifact(ctx, artifact, name)
 		if err != nil {
 			os.Remove(artifact)
@@ -191,6 +198,7 @@ func (c *Client) buildGitIndex(ctx context.Context, reg Registry, regDir string)
 		}}
 	}
 
+	c.gitProgressf(reg, "writing local snapshot")
 	data, err := yaml.Marshal(idx)
 	if err != nil {
 		return nil, fmt.Errorf("encode generated preview index: %w", err)
@@ -220,6 +228,13 @@ func (c *Client) buildGitIndex(ctx context.Context, reg Registry, regDir string)
 	// allowing future refreshes to reclaim storage.
 	pruneGitArtifacts(regDir, newDigests, time.Now().Add(-gitArtifactGracePeriod))
 	return &IndexResult{Index: idx, Revision: commit}, nil
+}
+
+func (c *Client) gitProgressf(reg Registry, format string, args ...any) {
+	if c.Progress == nil {
+		return
+	}
+	fmt.Fprintf(c.Progress, "vaka: Git preview %q: %s\n", reg.Name, fmt.Sprintf(format, args...))
 }
 
 func acquireGitRefreshLock(regDir string) (func(), error) {

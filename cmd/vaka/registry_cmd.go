@@ -53,6 +53,7 @@ for a tag or other ref.`,
 				return err
 			}
 			client := newRegistryClient(0)
+			client.Progress = cmd.ErrOrStderr()
 			res, err := client.RefreshIndex(cmd.Context(), reg)
 			if err != nil {
 				return err
@@ -153,6 +154,7 @@ and atomically replace the generated local catalog.`,
 				}
 			}
 			client := newRegistryClient(0) // maxAge 0 → always revalidate
+			client.Progress = cmd.ErrOrStderr()
 			out := cmd.OutOrStdout()
 			fail := false
 			for _, reg := range cfg.Registries {

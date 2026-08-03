@@ -103,13 +103,14 @@ recipes:
 	}
 	t.Cleanup(func() { newRegistryClient = oldClient })
 
-	stdout, _, err := runRecipeCmd(t, "registry", "add-git", "preview", fixture.url, "--ref", "preview")
+	stdout, stderr, err := runRecipeCmd(t, "registry", "add-git", "preview", fixture.url, "--ref", "preview")
 	if err != nil {
 		t.Fatalf("add-git: %v", err)
 	}
 	if !strings.Contains(stdout, "Added Git preview registry") || *saved == nil {
 		t.Fatalf("add-git stdout/config = %q / %+v", stdout, *saved)
 	}
+	assertGitPreviewProgress(t, stderr, fixture.url)
 	reg, ok := (*saved).Lookup("preview")
 	if !ok || reg.Git == nil || reg.Git.Ref != "preview" {
 		t.Fatalf("saved Git registry = %+v, %v", reg, ok)
@@ -158,10 +159,11 @@ recipes:
 		t.Fatalf("get advanced branch without refresh: %q", got)
 	}
 
-	stdout, _, err = runRecipeCmd(t, "registry", "refresh", "preview")
+	stdout, stderr, err = runRecipeCmd(t, "registry", "refresh", "preview")
 	if err != nil || !strings.Contains(stdout, shortCommit(changedCommit)) {
 		t.Fatalf("refresh = %q, %v", stdout, err)
 	}
+	assertGitPreviewProgress(t, stderr, fixture.url)
 	stdout, _, err = runRecipeCmd(t, "get", "preview/demo", target)
 	if err != nil || !strings.Contains(stdout, "updated in") {
 		t.Fatalf("get after refresh = %q, %v", stdout, err)
@@ -188,6 +190,28 @@ recipes:
 	}
 	if got := commandFixtureLock(t, target).SourceRevision; got != changedCommit {
 		t.Fatalf("failed refresh changed installed provenance to %s, want %s", got, changedCommit)
+	}
+}
+
+func assertGitPreviewProgress(t *testing.T, stderr, sourceURL string) {
+	t.Helper()
+	want := []string{
+		`vaka: Git preview "preview": preparing local cache`,
+		`vaka: Git preview "preview": fetching ` + sourceURL + `#preview`,
+		`vaka: Git preview "preview": resolved ref to commit `,
+		`vaka: Git preview "preview": discovering top-level recipes`,
+		`vaka: Git preview "preview": found 1 top-level recipe(s)`,
+		`vaka: Git preview "preview": packaging recipe "demo" (1/1)`,
+		`vaka: Git preview "preview": validating recipe "demo" (1/1)`,
+		`vaka: Git preview "preview": writing local snapshot`,
+	}
+	remaining := stderr
+	for _, fragment := range want {
+		at := strings.Index(remaining, fragment)
+		if at < 0 {
+			t.Fatalf("Git preview progress is missing or out of order at %q:\n%s", fragment, stderr)
+		}
+		remaining = remaining[at+len(fragment):]
 	}
 }
 

@@ -60,6 +60,9 @@ type Client struct {
 	// younger than this is served without a network round-trip. Zero always
 	// revalidates published indexes. Git previews move only via RefreshIndex.
 	MaxIndexAge time.Duration
+	// Progress receives human-readable status lines for explicit long-running
+	// operations such as Git preview refresh. Nil keeps the client quiet.
+	Progress io.Writer
 }
 
 // IndexResult is a fetched index plus its provenance.
