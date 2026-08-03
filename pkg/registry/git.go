@@ -47,6 +47,9 @@ func (c *Client) fetchGitIndexFromCache(reg Registry) (*IndexResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := hardenExistingGitCache(filepath.Join(dir, reg.Name)); err != nil {
+		return nil, fmt.Errorf("registry %q: secure preview cache: %w", reg.Name, err)
+	}
 	env, age, ok := readIndexCache(indexCachePath(dir, reg.Name), reg.sourceIdentity())
 	if !ok {
 		return nil, fmt.Errorf("registry %q has no resolved Git preview cache; run `vaka registry refresh %s`", reg.Name, reg.Name)
@@ -75,7 +78,7 @@ func (c *Client) refreshGitIndex(ctx context.Context, reg Registry) (*IndexResul
 		return nil, err
 	}
 	regDir := filepath.Join(cacheDir, reg.Name)
-	if err := os.MkdirAll(regDir, 0o700); err != nil {
+	if err := ensurePrivateGitCacheDir(regDir); err != nil {
 		return nil, fmt.Errorf("registry %q: create preview cache: %w", reg.Name, err)
 	}
 	unlock, err := acquireGitRefreshLock(regDir)
@@ -83,6 +86,9 @@ func (c *Client) refreshGitIndex(ctx context.Context, reg Registry) (*IndexResul
 		return nil, fmt.Errorf("registry %q: %w", reg.Name, err)
 	}
 	defer unlock()
+	if err := hardenGitCache(regDir); err != nil {
+		return nil, fmt.Errorf("registry %q: secure preview cache: %w", reg.Name, err)
+	}
 
 	res, err := c.buildGitIndex(ctx, reg, regDir)
 	if err == nil {
@@ -103,6 +109,12 @@ func (c *Client) refreshGitIndex(ctx context.Context, reg Registry) (*IndexResul
 }
 
 func (c *Client) buildGitIndex(ctx context.Context, reg Registry, regDir string) (*IndexResult, error) {
+	oldDigests := c.cachedArtifactDigests(reg)
+	pruneGitArtifacts(regDir, oldDigests, time.Now().Add(-gitArtifactGracePeriod))
+	if err := checkGitArtifactCache(regDir); err != nil {
+		return nil, err
+	}
+
 	repoDir, commit, commitTime, err := fetchGitCommit(ctx, reg.Git)
 	if err != nil {
 		return nil, err
@@ -117,17 +129,15 @@ func (c *Client) buildGitIndex(ctx context.Context, reg Registry, regDir string)
 		return nil, fmt.Errorf("commit %s contains no top-level recipe directories", shortRevision(commit))
 	}
 
-	oldDigests := c.cachedArtifactDigests(reg)
 	newDigests := make(map[string]bool, len(names))
+	createdDigests := make(map[string]bool, len(names))
 	committed := false
 	defer func() {
 		if committed {
 			return
 		}
-		for digest := range newDigests {
-			if !oldDigests[digest] {
-				_ = os.Remove(filepath.Join(regDir, "artifacts", digest+".tar.gz"))
-			}
+		for digest := range createdDigests {
+			_ = os.Remove(filepath.Join(regDir, "artifacts", digest+".tar.gz"))
 		}
 	}()
 	idx := &Index{
@@ -152,11 +162,18 @@ func (c *Client) buildGitIndex(ctx context.Context, reg Registry, regDir string)
 			return nil, fmt.Errorf("recipe %s: %w", name, err)
 		}
 
-		artifactPath, err := installGitArtifact(regDir, artifact, digest)
+		artifactPath, created, err := installGitArtifact(regDir, artifact, digest)
 		if err != nil {
 			return nil, fmt.Errorf("recipe %s: cache artifact: %w", name, err)
 		}
-		newDigests[strings.TrimPrefix(digest, "sha256:")] = true
+		hexDigest := strings.TrimPrefix(digest, "sha256:")
+		newDigests[hexDigest] = true
+		if created {
+			createdDigests[hexDigest] = true
+		}
+		if err := checkGitArtifactCache(regDir); err != nil {
+			return nil, fmt.Errorf("recipe %s: %w", name, err)
+		}
 		idx.Recipes[name] = []IndexEntry{{
 			Version:        manifest.Version,
 			Description:    manifest.Description,
@@ -184,6 +201,11 @@ func (c *Client) buildGitIndex(ctx context.Context, reg Registry, regDir string)
 	if _, err := ParseIndex(data); err != nil {
 		return nil, fmt.Errorf("validate generated preview index: %w", err)
 	}
+	// Give every reader of the current index a full grace period to open its
+	// artifact, even when several refreshes happen in quick succession.
+	if err := touchGitArtifacts(regDir, oldDigests, time.Now()); err != nil {
+		return nil, fmt.Errorf("retain previous preview artifacts: %w", err)
+	}
 	if err := writeIndexCache(indexCachePath(filepath.Dir(regDir), reg.Name), indexCache{
 		Source:   reg.sourceIdentity(),
 		Revision: commit,
@@ -193,13 +215,10 @@ func (c *Client) buildGitIndex(ctx context.Context, reg Registry, regDir string)
 	}
 	committed = true
 
-	// Retain the current and immediately previous artifact sets. Readers that
-	// loaded the old atomic index just before refresh can still fetch its
-	// content, while repeated branch updates do not grow the cache without bound.
-	for digest := range oldDigests {
-		newDigests[digest] = true
-	}
-	pruneGitArtifacts(regDir, newDigests)
+	// Unreferenced artifacts remain available for a bounded grace period. This
+	// avoids invalidating a reader that loaded an older atomic index while still
+	// allowing future refreshes to reclaim storage.
+	pruneGitArtifacts(regDir, newDigests, time.Now().Add(-gitArtifactGracePeriod))
 	return &IndexResult{Index: idx, Revision: commit}, nil
 }
 
@@ -212,6 +231,10 @@ func acquireGitRefreshLock(regDir string) (func(), error) {
 	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
+		return nil, err
+	}
+	if err := f.Chmod(0o600); err != nil {
+		f.Close()
 		return nil, err
 	}
 	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
@@ -348,31 +371,44 @@ func validateGitRecipeArtifact(ctx context.Context, artifact, name string) (*rec
 	return manifest, summary, nil
 }
 
-func installGitArtifact(regDir, tmpPath, digest string) (string, error) {
+func installGitArtifact(regDir, tmpPath, digest string) (string, bool, error) {
 	hexDigest := strings.TrimPrefix(digest, "sha256:")
 	if len(hexDigest) != 64 {
 		os.Remove(tmpPath)
-		return "", fmt.Errorf("invalid artifact digest %q", digest)
+		return "", false, fmt.Errorf("invalid artifact digest %q", digest)
 	}
 	dir := filepath.Join(regDir, "artifacts")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := ensurePrivateGitCacheDir(dir); err != nil {
 		os.Remove(tmpPath)
-		return "", err
+		return "", false, err
 	}
 	final := filepath.Join(dir, hexDigest+".tar.gz")
-	if got, err := fileDigest(final); err == nil && got == digest {
+	if info, err := os.Lstat(final); err == nil {
+		if !info.Mode().IsRegular() {
+			os.Remove(tmpPath)
+			return "", false, fmt.Errorf("cached artifact %q is not a regular file", final)
+		}
+		if got, err := fileDigest(final); err == nil && got == digest {
+			if err := os.Chmod(final, 0o600); err != nil {
+				os.Remove(tmpPath)
+				return "", false, err
+			}
+			os.Remove(tmpPath)
+			return final, false, nil
+		}
+	} else if !os.IsNotExist(err) {
 		os.Remove(tmpPath)
-		return final, nil
+		return "", false, err
 	}
 	if err := os.Chmod(tmpPath, 0o600); err != nil {
 		os.Remove(tmpPath)
-		return "", err
+		return "", false, err
 	}
 	if err := os.Rename(tmpPath, final); err != nil {
 		os.Remove(tmpPath)
-		return "", err
+		return "", false, err
 	}
-	return final, nil
+	return final, true, nil
 }
 
 func fileDigest(path string) (string, error) {
@@ -409,7 +445,7 @@ func (c *Client) cachedArtifactDigests(reg Registry) map[string]bool {
 	return keep
 }
 
-func pruneGitArtifacts(regDir string, keep map[string]bool) {
+func pruneGitArtifacts(regDir string, keep map[string]bool, cutoff time.Time) {
 	dir := filepath.Join(regDir, "artifacts")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -417,11 +453,122 @@ func pruneGitArtifacts(regDir string, keep map[string]bool) {
 	}
 	for _, entry := range entries {
 		name := entry.Name()
-		if entry.Type().IsRegular() && strings.HasSuffix(name, ".tar.gz") &&
-			!keep[strings.TrimSuffix(name, ".tar.gz")] {
+		hexDigest, ok := gitArtifactDigest(name)
+		if !ok || keep[hexDigest] {
+			continue
+		}
+		info, err := entry.Info()
+		if err == nil && info.Mode().IsRegular() && info.ModTime().Before(cutoff) {
 			_ = os.Remove(filepath.Join(dir, name))
 		}
 	}
+}
+
+func gitArtifactDigest(name string) (string, bool) {
+	hexDigest, ok := strings.CutSuffix(name, ".tar.gz")
+	if !ok || len(hexDigest) != 64 {
+		return "", false
+	}
+	if _, err := hex.DecodeString(hexDigest); err != nil {
+		return "", false
+	}
+	return hexDigest, true
+}
+
+func touchGitArtifacts(regDir string, digests map[string]bool, now time.Time) error {
+	for digest := range digests {
+		path := filepath.Join(regDir, "artifacts", digest+".tar.gz")
+		info, err := os.Lstat(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("%q is not a regular file", path)
+		}
+		if err := os.Chmod(path, 0o600); err != nil {
+			return err
+		}
+		if err := os.Chtimes(path, now, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func checkGitArtifactCache(regDir string) error {
+	dir := filepath.Join(regDir, "artifacts")
+	if _, err := directorySizeAtMost(dir, maxGitArtifactCacheBytes); err != nil {
+		return fmt.Errorf("Git preview artifact cache: %w", err)
+	}
+	return nil
+}
+
+func ensurePrivateGitCacheDir(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%q is not a real directory", dir)
+	}
+	return os.Chmod(dir, 0o700)
+}
+
+func hardenExistingGitCache(regDir string) error {
+	if _, err := os.Lstat(regDir); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	return hardenGitCache(regDir)
+}
+
+func hardenGitCache(regDir string) error {
+	if err := ensurePrivateGitCacheDir(regDir); err != nil {
+		return err
+	}
+	artifactsDir := filepath.Join(regDir, "artifacts")
+	if err := ensurePrivateGitCacheDir(artifactsDir); err != nil {
+		return err
+	}
+	for _, path := range []string{filepath.Join(regDir, "cache.yaml"), filepath.Join(regDir, "git-refresh.lock")} {
+		if err := hardenGitCacheFile(path); err != nil {
+			return err
+		}
+	}
+	entries, err := os.ReadDir(artifactsDir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if _, ok := gitArtifactDigest(entry.Name()); !ok {
+			continue
+		}
+		if err := hardenGitCacheFile(filepath.Join(artifactsDir, entry.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func hardenGitCacheFile(path string) error {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%q is not a regular file", path)
+	}
+	return os.Chmod(path, 0o600)
 }
 
 func manifestEnvToIndex(in []recipe.ManifestEnv) []EnvVar {

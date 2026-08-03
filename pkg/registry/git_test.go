@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"vaka.dev/vaka/pkg/recipe"
 )
@@ -272,6 +273,123 @@ func TestGitPreviewObjectStoreLimitFailsClosed(t *testing.T) {
 	_, err := (&Client{CacheDir: t.TempDir()}).RefreshIndex(context.Background(), f.reg)
 	if err == nil || !strings.Contains(err.Error(), "aggregate limit") {
 		t.Fatalf("object-store limit err = %v", err)
+	}
+}
+
+func TestGitPreviewRetainsArtifactsAcrossRapidRefreshes(t *testing.T) {
+	f := newGitRegistryFixture(t)
+	client := &Client{CacheDir: t.TempDir()}
+	first, err := client.RefreshIndex(context.Background(), f.reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstEntry := first.Index.Recipes["demo"][0]
+	firstURL, err := url.Parse(firstEntry.URLs[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	f.write("demo/README.md", "second generation\n")
+	f.commit("second generation")
+	if _, err := client.RefreshIndex(context.Background(), f.reg); err != nil {
+		t.Fatal(err)
+	}
+	f.write("demo/README.md", "third generation\n")
+	f.commit("third generation")
+	if _, err := client.RefreshIndex(context.Background(), f.reg); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(firstURL.Path); err != nil {
+		t.Fatalf("rapid refresh removed an artifact still covered by the reader grace period: %v", err)
+	}
+	copyPath, err := client.FetchTarball(f.reg, "demo", firstEntry)
+	if err != nil {
+		t.Fatalf("fetch artifact from older atomic index: %v", err)
+	}
+	os.Remove(copyPath)
+
+	old := time.Now().Add(-gitArtifactGracePeriod - time.Hour)
+	if err := os.Chtimes(firstURL.Path, old, old); err != nil {
+		t.Fatal(err)
+	}
+	f.write("demo/README.md", "fourth generation\n")
+	f.commit("fourth generation")
+	if _, err := client.RefreshIndex(context.Background(), f.reg); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(firstURL.Path); !os.IsNotExist(err) {
+		t.Fatalf("expired unreferenced artifact still exists: %v", err)
+	}
+}
+
+func TestGitPreviewArtifactCacheLimitPreservesLastSnapshot(t *testing.T) {
+	f := newGitRegistryFixture(t)
+	client := &Client{CacheDir: t.TempDir()}
+	good, err := client.RefreshIndex(context.Background(), f.reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifactDir := filepath.Join(client.CacheDir, f.reg.Name, "artifacts")
+	size, err := directorySizeAtMost(artifactDir, 1<<62)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldLimit := maxGitArtifactCacheBytes
+	maxGitArtifactCacheBytes = size
+	t.Cleanup(func() { maxGitArtifactCacheBytes = oldLimit })
+
+	f.write("demo/README.md", strings.Repeat("changed candidate ", 1000))
+	f.commit("candidate exceeds aggregate cache budget")
+	stale, err := client.RefreshIndex(context.Background(), f.reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stale.Stale || stale.Revision != good.Revision || !strings.Contains(stale.FallbackReason, "aggregate limit") {
+		t.Fatalf("limited refresh = %+v, want retained snapshot %s", stale, good.Revision)
+	}
+	entries, err := os.ReadDir(artifactDir)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("failed limited refresh left artifacts: %v, %v", entries, err)
+	}
+}
+
+func TestGitPreviewMigratesExistingCachePermissions(t *testing.T) {
+	f := newGitRegistryFixture(t)
+	client := &Client{CacheDir: t.TempDir()}
+	res, err := client.RefreshIndex(context.Background(), f.reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifactURL, err := url.Parse(res.Index.Recipes["demo"][0].URLs[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	regDir := filepath.Join(client.CacheDir, f.reg.Name)
+	artifactDir := filepath.Join(regDir, "artifacts")
+	paths := []string{filepath.Join(regDir, "cache.yaml"), filepath.Join(regDir, "git-refresh.lock"), artifactURL.Path}
+	for _, dir := range []string{regDir, artifactDir} {
+		if err := os.Chmod(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, path := range paths {
+		if err := os.Chmod(path, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := client.FetchIndex(f.reg); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{regDir, artifactDir} {
+		if info, err := os.Stat(dir); err != nil || info.Mode().Perm() != 0o700 {
+			t.Fatalf("cache directory %s mode = %v, %v; want 0700", dir, info, err)
+		}
+	}
+	for _, path := range paths {
+		if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0o600 {
+			t.Fatalf("cache file %s mode = %v, %v; want 0600", path, info, err)
+		}
 	}
 }
 
