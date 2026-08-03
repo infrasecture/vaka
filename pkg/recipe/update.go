@@ -30,6 +30,8 @@ type UpdateSpec struct {
 	TarballPath string
 	Target      string // existing recipe directory containing a lock
 	VakaVersion string // running vaka version, for the manifest minVakaVersion check
+	// SourceRevision is optional Git preview provenance.
+	SourceRevision string
 }
 
 // UpdateResult reports what an update did.
@@ -321,6 +323,7 @@ func Update(spec UpdateSpec) (*UpdateResult, error) {
 	}
 
 	finalLock := NewLock(spec.Registry, spec.Name, spec.Version, spec.Digest)
+	finalLock.SourceRevision = spec.SourceRevision
 	var warnings []string
 	hasOps := false
 	paths := sortedKeys(rows)

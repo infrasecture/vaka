@@ -2,8 +2,11 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"vaka.dev/vaka/pkg/registry"
 )
@@ -60,6 +63,19 @@ func TestRegistryRemove(t *testing.T) {
 	cfg := registry.DefaultConfig()
 	_ = cfg.Add(registry.Registry{Name: "acme", URL: "https://recipes.acme.example/index.yaml"})
 	saved := stubRegistryConfig(t, cfg)
+	cacheDir := t.TempDir()
+	cachePath := filepath.Join(cacheDir, "acme", "cache.yaml")
+	if err := os.MkdirAll(filepath.Dir(cachePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cachePath, []byte("cached"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldClient := newRegistryClient
+	newRegistryClient = func(maxAge time.Duration) *registry.Client {
+		return &registry.Client{CacheDir: cacheDir, MaxIndexAge: maxAge}
+	}
+	t.Cleanup(func() { newRegistryClient = oldClient })
 
 	stdout, _, err := runRecipeCmd(t, "registry", "remove", "acme")
 	if err != nil {
@@ -70,6 +86,9 @@ func TestRegistryRemove(t *testing.T) {
 	}
 	if _, ok := (*saved).Lookup("acme"); ok {
 		t.Fatal("acme still in saved config")
+	}
+	if _, err := os.Stat(filepath.Join(cacheDir, "acme")); !os.IsNotExist(err) {
+		t.Fatalf("removed registry cache still exists: %v", err)
 	}
 
 	// The rm alias works; removing a nonexistent registry fails.

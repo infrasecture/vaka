@@ -82,3 +82,48 @@ func TestUnqualifiedResolutionRejectsStaleIndex(t *testing.T) {
 		t.Fatalf("qualified stale index did not warn: %q", warn.String())
 	}
 }
+
+func TestMissingGitPreviewCacheDoesNotBlockUnqualifiedReleaseResolution(t *testing.T) {
+	dir := t.TempDir()
+	indexPath := filepath.Join(dir, "index.yaml")
+	if err := os.WriteFile(indexPath, []byte(`apiVersion: recipes.vaka/v1alpha1
+kind: RegistryIndex
+recipes:
+  stable:
+  - version: 1.0.0
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    urls: [https://example.com/stable.tar.gz]
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldCfg, oldClient := loadRegistriesConfig, newRegistryClient
+	loadRegistriesConfig = func() (*registry.Config, error) {
+		return &registry.Config{
+			APIVersion: registry.APIVersion, Kind: "RegistriesConfig",
+			Registries: []registry.Registry{
+				{Name: "release", URL: "file://" + indexPath},
+				{Name: "preview", Git: &registry.GitSource{URL: "file:///not-used.git", Ref: "candidate"}},
+			},
+		}, nil
+	}
+	newRegistryClient = func(maxAge time.Duration) *registry.Client {
+		return &registry.Client{CacheDir: filepath.Join(dir, "cache"), MaxIndexAge: maxAge}
+	}
+	t.Cleanup(func() { loadRegistriesConfig, newRegistryClient = oldCfg, oldClient })
+
+	var warn bytes.Buffer
+	w, err := loadRegistryWorld(0, "", true, &warn)
+	if err != nil {
+		t.Fatalf("unqualified strict load: %v", err)
+	}
+	if _, ok := w.indexes["release"]; !ok {
+		t.Fatal("published index was not loaded")
+	}
+	if !strings.Contains(warn.String(), `registry "preview" unavailable`) {
+		t.Fatalf("missing preview did not warn: %q", warn.String())
+	}
+	if _, err := loadRegistryWorld(0, "preview", true, &warn); err == nil {
+		t.Fatal("qualified preview unexpectedly tolerated a missing cache")
+	}
+}

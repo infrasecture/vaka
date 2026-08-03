@@ -11,8 +11,9 @@ import (
 )
 
 // browseIndexMaxAge is the freshness window for catalog commands (search,
-// recipes list/info): a younger cache costs no network. vaka get always
-// revalidates (maxAge 0).
+// recipes list/info): a younger published-index cache costs no network. vaka
+// get revalidates published indexes (maxAge 0); Git previews use their last
+// explicitly refreshed cache.
 const browseIndexMaxAge = 15 * time.Minute
 
 // Test seams (same pattern as execDockerComposeFn).
@@ -66,7 +67,10 @@ func loadRegistryWorld(maxAge time.Duration, only string, strict bool, warnOut i
 		}
 		res, err := w.client.FetchIndex(reg)
 		if err != nil {
-			if strict {
+			// Git previews are deliberately excluded from unqualified resolution,
+			// so their cache availability cannot weaken or block the uniqueness
+			// proof across published registries. A qualified preview remains strict.
+			if strict && !(only == "" && reg.IsGit()) {
 				return nil, fmt.Errorf("registry %q: %w", reg.Name, err)
 			}
 			fmt.Fprintf(warnOut, "vaka: warning: registry %q unavailable: %v\n", reg.Name, err)
@@ -95,8 +99,7 @@ type catalogRow struct {
 }
 
 // catalogRows flattens the world into rows (latest version per recipe),
-// sorted by registry then name. Qualified display names are used when more
-// than one registry is configured.
+// sorted by registry then name.
 func (w *registryWorld) catalogRows() []catalogRow {
 	var rows []catalogRow
 	for regName, idx := range w.indexes {
@@ -118,13 +121,25 @@ func (w *registryWorld) catalogRows() []catalogRow {
 	return rows
 }
 
-// displayName qualifies the recipe name when several registries are
-// configured, matching what the user must type to disambiguate.
+// displayName qualifies published recipe names only when several published
+// registries are configured. Git previews never participate in unqualified
+// resolution and are therefore always qualified themselves.
 func (w *registryWorld) displayName(row catalogRow) string {
-	if len(w.cfg.Registries) > 1 {
+	reg, _ := w.cfg.Lookup(row.registry)
+	if publishedRegistryCount(w.cfg) > 1 || reg.IsGit() {
 		return row.registry + "/" + row.name
 	}
 	return row.name
+}
+
+func publishedRegistryCount(cfg *registry.Config) int {
+	count := 0
+	for _, reg := range cfg.Registries {
+		if !reg.IsGit() {
+			count++
+		}
+	}
+	return count
 }
 
 func riskColumn(e registry.IndexEntry) string {

@@ -9,17 +9,15 @@ import (
 )
 
 // completeRecipeRefs completes recipe references for `get` and `recipes info`
-// from cached indexes only (no network — completion must be fast). Names are
-// qualified (registry/name) when more than one registry is configured, so the
-// completion matches the reference the command would resolve.
+// from cached indexes only (no network — completion must be fast). Published
+// names are qualified when more than one published registry is configured;
+// preview names are always qualified.
 func completeRecipeRefs(toComplete string) ([]string, cobra.ShellCompDirective) {
 	cfg, err := loadRegistriesConfig()
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
 	client := newRegistryClient(0)
-	qualify := len(cfg.Registries) > 1
-
 	seen := map[string]bool{}
 	var out []string
 	for _, reg := range cfg.Registries {
@@ -29,7 +27,7 @@ func completeRecipeRefs(toComplete string) ([]string, cobra.ShellCompDirective) 
 		}
 		for name := range idx.Recipes {
 			ref := name
-			if qualify {
+			if publishedRegistryCount(cfg) > 1 || reg.IsGit() {
 				ref = reg.Name + "/" + name
 			}
 			if !seen[ref] && strings.HasPrefix(ref, toComplete) {

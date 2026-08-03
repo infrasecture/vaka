@@ -123,7 +123,7 @@ func TestResolveExactVersion(t *testing.T) {
 	}
 
 	_, err = Resolve(cfg, indexes, Ref{Name: "codex", Version: "3.0.0"})
-	if err == nil || !strings.Contains(err.Error(), "no published version 3.0.0") {
+	if err == nil || !strings.Contains(err.Error(), "no indexed version 3.0.0") {
 		t.Fatalf("err = %v, want unknown-version error", err)
 	}
 }
@@ -166,5 +166,70 @@ func TestResolveToleratesMalformedVersions(t *testing.T) {
 	}
 	if res.Entry.Version != "1.0.0" {
 		t.Fatalf("resolved %s, want 1.0.0 (malformed entry skipped)", res.Entry.Version)
+	}
+}
+
+func TestResolveGitPreviewRequiresQualification(t *testing.T) {
+	cfg := &Config{
+		APIVersion: APIVersion,
+		Kind:       "RegistriesConfig",
+		Registries: []Registry{
+			{Name: "official", URL: "https://official.example/index.yaml"},
+			{Name: "preview", Git: &GitSource{URL: "https://github.com/example/recipes.git", Ref: "candidate"}},
+		},
+	}
+	indexes := map[string]*Index{
+		"official": {Recipes: map[string][]IndexEntry{
+			"stable": {{Version: "1.0.0"}},
+			"shared": {{Version: "1.0.0"}},
+		}},
+		"preview": {Recipes: map[string][]IndexEntry{
+			"preview-only": {{Version: "0.1.0"}},
+			"shared":       {{Version: "2.0.0"}},
+		}},
+	}
+
+	if _, err := Resolve(cfg, indexes, Ref{Name: "preview-only"}); err == nil ||
+		!strings.Contains(err.Error(), "preview/preview-only") {
+		t.Fatalf("unqualified preview err = %v", err)
+	}
+	res, err := Resolve(cfg, indexes, Ref{Registry: "preview", Name: "preview-only"})
+	if err != nil || res.Registry.Name != "preview" {
+		t.Fatalf("qualified preview = %+v, %v", res, err)
+	}
+	// A preview name collision cannot hijack or make an ordinary release
+	// reference ambiguous.
+	res, err = Resolve(cfg, indexes, Ref{Name: "shared"})
+	if err != nil || res.Registry.Name != "official" {
+		t.Fatalf("shared release resolution = %+v, %v", res, err)
+	}
+}
+
+func TestResolveAcceptsSourceRevisionOnlyFromGitPreview(t *testing.T) {
+	revision := strings.Repeat("a", 40)
+	cfg := &Config{
+		APIVersion: APIVersion,
+		Kind:       "RegistriesConfig",
+		Registries: []Registry{
+			{Name: "published", URL: "https://example.invalid/index.yaml"},
+			{Name: "preview", Git: &GitSource{URL: "https://github.com/example/recipes.git", Ref: "candidate"}},
+		},
+	}
+	indexes := map[string]*Index{
+		"published": {Recipes: map[string][]IndexEntry{
+			"demo": {{Version: "1.0.0", SourceRevision: revision}},
+		}},
+		"preview": {Recipes: map[string][]IndexEntry{
+			"demo": {{Version: "1.0.0", SourceRevision: revision}},
+		}},
+	}
+
+	published, err := Resolve(cfg, indexes, Ref{Registry: "published", Name: "demo"})
+	if err != nil || published.Entry.SourceRevision != "" {
+		t.Fatalf("published resolution accepted preview provenance: %+v, %v", published, err)
+	}
+	preview, err := Resolve(cfg, indexes, Ref{Registry: "preview", Name: "demo"})
+	if err != nil || preview.Entry.SourceRevision != revision {
+		t.Fatalf("preview resolution lost provenance: %+v, %v", preview, err)
 	}
 }
