@@ -38,6 +38,15 @@ func TestConfigAddRemove(t *testing.T) {
 		!strings.Contains(err.Error(), "plain http") {
 		t.Fatalf("http add err = %v", err)
 	}
+	if err := cfg.Add(Registry{Name: "preview", Git: &GitSource{
+		URL: "https://github.com/example/recipes.git", Ref: "feature/test",
+	}}); err != nil {
+		t.Fatalf("git add: %v", err)
+	}
+	if reg, ok := cfg.Lookup("preview"); !ok || !reg.IsGit() ||
+		reg.SourceDescription() != "git https://github.com/example/recipes.git#feature/test" {
+		t.Fatalf("git registry = %+v, %v", reg, ok)
+	}
 
 	if err := cfg.Remove("acme"); err != nil {
 		t.Fatalf("Remove: %v", err)
@@ -55,6 +64,9 @@ func TestSaveConfigRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sub", "registries.yaml")
 	cfg := DefaultConfig()
 	_ = cfg.Add(Registry{Name: "acme", URL: "https://recipes.acme.example/index.yaml"})
+	_ = cfg.Add(Registry{Name: "preview", Git: &GitSource{
+		URL: "git@example.com:team/recipes.git", Ref: "refs/heads/candidate",
+	}})
 
 	if err := SaveConfigTo(path, cfg); err != nil {
 		t.Fatalf("SaveConfigTo: %v", err)
@@ -63,7 +75,8 @@ func TestSaveConfigRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfigFrom: %v", err)
 	}
-	if len(back.Registries) != 2 || back.Registries[1].Name != "acme" {
+	if len(back.Registries) != 3 || back.Registries[1].Name != "acme" ||
+		back.Registries[2].Git == nil || back.Registries[2].Git.Ref != "refs/heads/candidate" {
 		t.Fatalf("round trip = %+v", back.Registries)
 	}
 	// The saved document is strictly valid (identity fields set).
@@ -163,6 +176,50 @@ surprise: true
 registries: []
 `,
 			want: "surprise",
+		},
+		{
+			name: "both index and git sources",
+			content: `
+apiVersion: recipes.vaka/v1alpha1
+kind: RegistriesConfig
+registries:
+  - name: acme
+    url: https://a.example/index.yaml
+    git: {url: https://github.com/example/recipes.git, ref: main}
+`,
+			want: "exactly one registry source",
+		},
+		{
+			name: "missing source",
+			content: `
+apiVersion: recipes.vaka/v1alpha1
+kind: RegistriesConfig
+registries:
+  - name: acme
+`,
+			want: "exactly one registry source",
+		},
+		{
+			name: "unsafe git transport",
+			content: `
+apiVersion: recipes.vaka/v1alpha1
+kind: RegistriesConfig
+registries:
+  - name: acme
+    git: {url: git://example.com/recipes.git, ref: main}
+`,
+			want: "unsupported git URL",
+		},
+		{
+			name: "unsafe git ref",
+			content: `
+apiVersion: recipes.vaka/v1alpha1
+kind: RegistriesConfig
+registries:
+  - name: acme
+    git: {url: https://github.com/example/recipes.git, ref: "--upload-pack=bad"}
+`,
+			want: "not a safe branch",
 		},
 		{
 			name: "wrong kind",
