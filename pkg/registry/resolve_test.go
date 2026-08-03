@@ -123,7 +123,7 @@ func TestResolveExactVersion(t *testing.T) {
 	}
 
 	_, err = Resolve(cfg, indexes, Ref{Name: "codex", Version: "3.0.0"})
-	if err == nil || !strings.Contains(err.Error(), "no published version 3.0.0") {
+	if err == nil || !strings.Contains(err.Error(), "no indexed version 3.0.0") {
 		t.Fatalf("err = %v, want unknown-version error", err)
 	}
 }

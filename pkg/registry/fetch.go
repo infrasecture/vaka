@@ -56,8 +56,9 @@ type Client struct {
 	// CacheDir holds per-registry index caches. Empty means
 	// os.UserCacheDir()/vaka/registries.
 	CacheDir string
-	// MaxIndexAge is the freshness window: a cached index younger than this
-	// is served without any network round-trip. Zero always revalidates.
+	// MaxIndexAge is the published-index freshness window: a cached index
+	// younger than this is served without a network round-trip. Zero always
+	// revalidates published indexes. Git previews move only via RefreshIndex.
 	MaxIndexAge time.Duration
 }
 
@@ -309,8 +310,8 @@ func cachedIndexBytes(dir string, reg Registry) ([]byte, time.Duration) {
 	return env.Index, age
 }
 
-// readIndexCache loads and URL-checks the cache envelope. ok is false on any
-// miss: absent, unreadable, malformed, empty, or written for a different URL.
+// readIndexCache loads and source-checks the cache envelope. ok is false on any
+// miss: absent, unreadable, malformed, empty, or written for another source.
 func readIndexCache(path, wantSource string) (env indexCache, age time.Duration, ok bool) {
 	st, err := os.Stat(path)
 	if err != nil {

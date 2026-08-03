@@ -11,8 +11,9 @@ import (
 )
 
 // browseIndexMaxAge is the freshness window for catalog commands (search,
-// recipes list/info): a younger cache costs no network. vaka get always
-// revalidates (maxAge 0).
+// recipes list/info): a younger published-index cache costs no network. vaka
+// get revalidates published indexes (maxAge 0); Git previews use their last
+// explicitly refreshed cache.
 const browseIndexMaxAge = 15 * time.Minute
 
 // Test seams (same pattern as execDockerComposeFn).

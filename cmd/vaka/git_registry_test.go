@@ -151,6 +151,21 @@ func TestGitPreviewCommandLifecycle(t *testing.T) {
 		updatedLock.SourceRevision != changedCommit {
 		t.Fatalf("updated lock = %+v; first = %+v", updatedLock, firstLock)
 	}
+
+	fixture.write("demo/recipe.yaml", "apiVersion: recipes.vaka/v1alpha1\nkind: Recipe\nname: demo\nversion: invalid\ndescription: broken candidate\n")
+	fixture.commit("break candidate")
+	stdout, _, err = runRecipeCmd(t, "registry", "refresh", "preview")
+	if err == nil || !strings.Contains(stdout, "refresh failed (retained cache") ||
+		!strings.Contains(stdout, "strict SemVer") {
+		t.Fatalf("invalid refresh = %q, %v", stdout, err)
+	}
+	stdout, _, err = runRecipeCmd(t, "get", "preview/demo", target)
+	if err != nil || !strings.Contains(stdout, "already up to date") {
+		t.Fatalf("get after failed refresh = %q, %v", stdout, err)
+	}
+	if got := commandFixtureLock(t, target).SourceRevision; got != changedCommit {
+		t.Fatalf("failed refresh changed installed provenance to %s, want %s", got, changedCommit)
+	}
 }
 
 func TestRegistryAddGitRequiresRef(t *testing.T) {

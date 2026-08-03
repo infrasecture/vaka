@@ -15,7 +15,7 @@ func newRegistryCmd() *cobra.Command {
 		Use:   "registry",
 		Short: "Manage recipe registries",
 		Long: `Manage the configured recipe registries: list them, add or remove one,
-or refresh cached indexes. Registries live in the registries.yaml
+or refresh published indexes and Git preview snapshots. Registries live in the registries.yaml
 configuration file (shown by 'vaka registry list').`,
 	}
 	cmd.AddCommand(
@@ -156,7 +156,7 @@ and atomically replace the generated local catalog.`,
 				}
 				status := "ok"
 				if res.Stale {
-					status = fmt.Sprintf("unreachable (cache %s old)", res.Age.Round(time.Second))
+					status = fmt.Sprintf("refresh failed (retained cache %s old)", res.Age.Round(time.Second))
 					if res.FallbackReason != "" {
 						status += ": " + res.FallbackReason
 					}

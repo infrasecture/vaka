@@ -12,7 +12,7 @@ import (
 type Ref struct {
 	Registry string // empty: resolve across all configured registries
 	Name     string
-	Version  string // empty: highest published version
+	Version  string // empty: highest indexed version
 }
 
 // ParseRef parses `[registry/]name[@version]`. It accepts exact versions
@@ -130,7 +130,7 @@ func Resolve(cfg *Config, indexes map[string]*Index, ref Ref) (*Resolved, error)
 	}
 }
 
-// selectVersion picks the exact requested version, or the highest published
+// selectVersion picks the exact requested version, or the highest indexed
 // one when the ref carries no version.
 func selectVersion(ref Ref, versions []IndexEntry) (*IndexEntry, error) {
 	if ref.Version != "" {
@@ -139,7 +139,7 @@ func selectVersion(ref Ref, versions []IndexEntry) (*IndexEntry, error) {
 				return &versions[i], nil
 			}
 		}
-		return nil, fmt.Errorf("recipe %q has no published version %s (the index keeps only recent versions; older releases remain downloadable from the registry's release page)", ref.Name, ref.Version)
+		return nil, fmt.Errorf("recipe %q has no indexed version %s (published indexes may keep only recent versions; older releases remain downloadable from the registry's release page)", ref.Name, ref.Version)
 	}
 
 	var best *IndexEntry
@@ -154,7 +154,7 @@ func selectVersion(ref Ref, versions []IndexEntry) (*IndexEntry, error) {
 		}
 	}
 	if best == nil {
-		return nil, fmt.Errorf("recipe %q has no parseable published versions", ref.Name)
+		return nil, fmt.Errorf("recipe %q has no parseable indexed versions", ref.Name)
 	}
 	return best, nil
 }

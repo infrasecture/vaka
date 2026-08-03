@@ -22,9 +22,9 @@ func newRecipesCmd() *cobra.Command {
 func newRecipesListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
-		Short: "List all recipes published by the configured registries",
+		Short: "List recipes in the configured registry catalogs",
 		Long: `List the registry catalogs (newest version per recipe). This is a
-registry-bound command: it reads the published indexes and never scans the
+registry-bound command: it reads cached published or Git preview indexes and never scans the
 local filesystem for instantiated recipes.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -46,8 +46,8 @@ local filesystem for instantiated recipes.`,
 func newRecipesInfoCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "info <[registry/]name>[@version]",
-		Short: "Show a recipe's published metadata",
-		Long: `Show the registry-published metadata of a recipe: description, tags,
+		Short: "Show a recipe's catalog metadata",
+		Long: `Show registry catalog metadata for a recipe: description, tags,
 versions, documented environment variables, and the advisory policy summary
 computed by the registry's CI. vaka recomputes the policy locally on every
 get; this view is what the registry claims.`,
@@ -70,7 +70,10 @@ get; this view is what the registry claims.`,
 			out := cmd.OutOrStdout()
 			e := res.Entry
 			fmt.Fprintf(out, "Name:        %s/%s\n", res.Registry.Name, res.Name)
-			fmt.Fprintf(out, "Version:     %s (published %s)\n", e.Version, e.Created)
+			fmt.Fprintf(out, "Version:     %s\n", e.Version)
+			if e.Created != "" {
+				fmt.Fprintf(out, "Created:     %s\n", e.Created)
+			}
 			fmt.Fprintf(out, "Description: %s\n", e.Description)
 			if len(e.Tags) > 0 {
 				fmt.Fprintf(out, "Tags:        %s\n", strings.Join(e.Tags, ", "))

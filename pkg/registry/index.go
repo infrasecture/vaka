@@ -6,7 +6,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Index is a registry's published catalog (kind: RegistryIndex).
+// Index is a registry catalog (kind: RegistryIndex), either published or
+// locally generated from an explicitly refreshed Git preview.
 //
 // Unlike documents vaka owns, the index is decoded leniently: registries may
 // be newer than this client and carry fields we do not know yet.
@@ -17,7 +18,7 @@ type Index struct {
 	Recipes    map[string][]IndexEntry `yaml:"recipes"`
 }
 
-// IndexEntry is one published version of one recipe.
+// IndexEntry is one indexed version of one recipe.
 type IndexEntry struct {
 	Version        string         `yaml:"version"`
 	Description    string         `yaml:"description"`

@@ -1,6 +1,6 @@
-// Package registry implements read-only consumption of vaka recipe
-// registries: the registries configuration, the published index catalog,
-// fetching with ETag caching, and recipe reference resolution.
+// Package registry implements vaka recipe registry consumption: configuration,
+// published index fetching with ETag caching, explicit Git preview catalog
+// generation, and recipe reference resolution.
 //
 // Format and security model: docs/design/recipes-registry.md.
 package registry
@@ -156,7 +156,7 @@ func (c *Config) Lookup(name string) (Registry, bool) {
 	return Registry{}, false
 }
 
-// Add appends a registry, validating its name and URL and rejecting a
+// Add appends a registry, validating its name and source and rejecting a
 // duplicate name.
 func (c *Config) Add(reg Registry) error {
 	if err := validateRegistry(reg); err != nil {
