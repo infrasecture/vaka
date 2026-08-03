@@ -330,12 +330,12 @@ func TestUpdateMatrix(t *testing.T) {
 
 	t.Run("unrelated nested untracked files are preserved", func(t *testing.T) {
 		target := installedV1(t)
-		secretDir := filepath.Join(target, ".secrets")
-		secretPath := filepath.Join(secretDir, "openai_api_key")
-		if err := os.Mkdir(secretDir, 0o700); err != nil {
+		stateDir := filepath.Join(target, ".runtime-state")
+		statePath := filepath.Join(stateDir, "private-token")
+		if err := os.Mkdir(stateDir, 0o700); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(secretPath, []byte("test-user-secret\n"), 0o600); err != nil {
+		if err := os.WriteFile(statePath, []byte("test-user-state\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 
@@ -343,23 +343,23 @@ func TestUpdateMatrix(t *testing.T) {
 		if err != nil {
 			t.Fatalf("update: %v", err)
 		}
-		if got := readFile(t, target, ".secrets/openai_api_key"); got != "test-user-secret\n" {
-			t.Fatalf("untracked secret changed to %q", got)
+		if got := readFile(t, target, ".runtime-state/private-token"); got != "test-user-state\n" {
+			t.Fatalf("untracked runtime state changed to %q", got)
 		}
-		secretInfo, err := os.Stat(secretPath)
+		stateInfo, err := os.Stat(statePath)
 		if err != nil {
 			t.Fatal(err)
 		}
-		dirInfo, err := os.Stat(secretDir)
+		dirInfo, err := os.Stat(stateDir)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if secretInfo.Mode().Perm() != 0o600 || dirInfo.Mode().Perm() != 0o700 {
-			t.Fatalf("untracked modes changed: dir=%#o file=%#o", dirInfo.Mode().Perm(), secretInfo.Mode().Perm())
+		if stateInfo.Mode().Perm() != 0o600 || dirInfo.Mode().Perm() != 0o700 {
+			t.Fatalf("untracked modes changed: dir=%#o file=%#o", dirInfo.Mode().Perm(), stateInfo.Mode().Perm())
 		}
 		lock := lockOf(t, target)
-		if _, tracked := lock.Files[".secrets/openai_api_key"]; tracked {
-			t.Fatal("untracked secret was adopted into the recipe lock")
+		if _, tracked := lock.Files[".runtime-state/private-token"]; tracked {
+			t.Fatal("untracked runtime state was adopted into the recipe lock")
 		}
 		if len(res.Warnings) != 0 || len(lock.Deviations) != 0 {
 			t.Fatalf("unrelated untracked file produced warnings=%v deviations=%v", res.Warnings, lock.Deviations)
