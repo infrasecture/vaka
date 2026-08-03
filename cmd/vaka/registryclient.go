@@ -66,7 +66,10 @@ func loadRegistryWorld(maxAge time.Duration, only string, strict bool, warnOut i
 		}
 		res, err := w.client.FetchIndex(reg)
 		if err != nil {
-			if strict {
+			// Git previews are deliberately excluded from unqualified resolution,
+			// so their cache availability cannot weaken or block the uniqueness
+			// proof across published registries. A qualified preview remains strict.
+			if strict && !(only == "" && reg.IsGit()) {
 				return nil, fmt.Errorf("registry %q: %w", reg.Name, err)
 			}
 			fmt.Fprintf(warnOut, "vaka: warning: registry %q unavailable: %v\n", reg.Name, err)

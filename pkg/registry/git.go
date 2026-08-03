@@ -545,8 +545,33 @@ func gitCommand(ctx context.Context, repoDir string, args ...string) *exec.Cmd {
 	base = append(base, "-c", "core.hooksPath=/dev/null")
 	base = append(base, args...)
 	cmd := exec.CommandContext(ctx, "git", base...)
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.Env = gitEnvironment()
 	return cmd
+}
+
+func gitEnvironment() []string {
+	// Repository-selection variables would override -C and could redirect a
+	// fetch or archive into an unrelated user repository. Keep authentication
+	// inputs (credential helpers, SSH agent/command, askpass) intact, but remove
+	// variables that change the object store, worktree, refs, or injected -c
+	// configuration of Vaka's Git subprocesses.
+	blocked := map[string]bool{
+		"GIT_DIR": true, "GIT_WORK_TREE": true, "GIT_COMMON_DIR": true,
+		"GIT_OBJECT_DIRECTORY": true, "GIT_ALTERNATE_OBJECT_DIRECTORIES": true,
+		"GIT_INDEX_FILE": true, "GIT_GRAFT_FILE": true, "GIT_REPLACE_REF_BASE": true,
+		"GIT_NAMESPACE": true, "GIT_QUARANTINE_PATH": true, "GIT_SHALLOW_FILE": true,
+		"GIT_CONFIG_COUNT": true,
+	}
+	env := make([]string, 0, len(os.Environ())+1)
+	for _, item := range os.Environ() {
+		key, _, _ := strings.Cut(item, "=")
+		if blocked[key] || strings.HasPrefix(key, "GIT_CONFIG_KEY_") ||
+			strings.HasPrefix(key, "GIT_CONFIG_VALUE_") || key == "GIT_TERMINAL_PROMPT" {
+			continue
+		}
+		env = append(env, item)
+	}
+	return append(env, "GIT_TERMINAL_PROMPT=0")
 }
 
 func runGit(ctx context.Context, repoDir string, args ...string) ([]byte, error) {

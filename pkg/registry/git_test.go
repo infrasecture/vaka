@@ -250,3 +250,18 @@ func TestGitPreviewCacheIsBoundToURLAndRef(t *testing.T) {
 		t.Fatal("cache was reused after changing the Git ref")
 	}
 }
+
+func TestGitPreviewIgnoresAmbientRepositorySelection(t *testing.T) {
+	f := newGitRegistryFixture(t)
+	t.Setenv("GIT_DIR", filepath.Join(t.TempDir(), "wrong-object-store"))
+	t.Setenv("GIT_WORK_TREE", filepath.Join(t.TempDir(), "wrong-worktree"))
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "core.hooksPath")
+	t.Setenv("GIT_CONFIG_VALUE_0", filepath.Join(t.TempDir(), "hooks"))
+
+	client := &Client{CacheDir: t.TempDir()}
+	res, err := client.RefreshIndex(context.Background(), f.reg)
+	if err != nil || res.Stale || len(res.Index.Recipes["demo"]) != 1 {
+		t.Fatalf("refresh under ambient Git variables = %+v, %v", res, err)
+	}
+}
