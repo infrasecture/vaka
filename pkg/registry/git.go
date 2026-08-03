@@ -52,6 +52,11 @@ func (c *Client) fetchGitIndexFromCache(reg Registry) (*IndexResult, error) {
 	if !gitCommitRE.MatchString(env.Revision) {
 		return nil, fmt.Errorf("registry %q: cached Git preview has an invalid source revision", reg.Name)
 	}
+	for name, versions := range idx.Recipes {
+		if !nameRE.MatchString(name) || len(versions) != 1 || versions[0].SourceRevision != env.Revision {
+			return nil, fmt.Errorf("registry %q: cached Git preview provenance is inconsistent; run `vaka registry refresh %s`", reg.Name, reg.Name)
+		}
+	}
 	return &IndexResult{Index: idx, Revision: env.Revision, Age: age}, nil
 }
 
@@ -64,7 +69,7 @@ func (c *Client) refreshGitIndex(ctx context.Context, reg Registry) (*IndexResul
 		return nil, err
 	}
 	regDir := filepath.Join(cacheDir, reg.Name)
-	if err := os.MkdirAll(regDir, 0o755); err != nil {
+	if err := os.MkdirAll(regDir, 0o700); err != nil {
 		return nil, fmt.Errorf("registry %q: create preview cache: %w", reg.Name, err)
 	}
 	unlock, err := acquireGitRefreshLock(regDir)
@@ -108,6 +113,17 @@ func (c *Client) buildGitIndex(ctx context.Context, reg Registry, regDir string)
 
 	oldDigests := c.cachedArtifactDigests(reg)
 	newDigests := make(map[string]bool, len(names))
+	committed := false
+	defer func() {
+		if committed {
+			return
+		}
+		for digest := range newDigests {
+			if !oldDigests[digest] {
+				_ = os.Remove(filepath.Join(regDir, "artifacts", digest+".tar.gz"))
+			}
+		}
+	}()
 	idx := &Index{
 		APIVersion: APIVersion,
 		Kind:       "RegistryIndex",
@@ -169,6 +185,7 @@ func (c *Client) buildGitIndex(ctx context.Context, reg Registry, regDir string)
 	}); err != nil {
 		return nil, fmt.Errorf("write generated preview index: %w", err)
 	}
+	committed = true
 
 	// Retain the current and immediately previous artifact sets. Readers that
 	// loaded the old atomic index just before refresh can still fetch its
@@ -443,7 +460,7 @@ func installGitArtifact(regDir, tmpPath, digest string) (string, error) {
 		return "", fmt.Errorf("invalid artifact digest %q", digest)
 	}
 	dir := filepath.Join(regDir, "artifacts")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		os.Remove(tmpPath)
 		return "", err
 	}
@@ -452,7 +469,7 @@ func installGitArtifact(regDir, tmpPath, digest string) (string, error) {
 		os.Remove(tmpPath)
 		return final, nil
 	}
-	if err := os.Chmod(tmpPath, 0o644); err != nil {
+	if err := os.Chmod(tmpPath, 0o600); err != nil {
 		os.Remove(tmpPath)
 		return "", err
 	}

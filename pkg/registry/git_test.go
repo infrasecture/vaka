@@ -132,6 +132,13 @@ func TestGitPreviewRefreshUsesOnlyTrackedTopLevelRecipeContent(t *testing.T) {
 	if got, ok := client.CacheRevision(f.reg); !ok || got != first.Revision {
 		t.Fatalf("CacheRevision = %q, %v; want %q", got, ok, first.Revision)
 	}
+	artifactURL, err := url.Parse(entry.URLs[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(artifactURL.Path); err != nil || info.Mode().Perm()&0o077 != 0 {
+		t.Fatalf("cached artifact permissions = %v, %v; want user-only", info, err)
+	}
 
 	artifact, err := client.FetchTarball(f.reg, "demo", entry)
 	if err != nil {
@@ -216,8 +223,19 @@ func TestGitPreviewFailedRefreshPreservesLastSnapshot(t *testing.T) {
 		t.Fatalf("good refresh: %v", err)
 	}
 	goodDigest := good.Index.Recipes["demo"][0].Digest
+	artifactDir := filepath.Join(client.CacheDir, f.reg.Name, "artifacts")
+	beforeArtifacts, err := os.ReadDir(artifactDir)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	f.write("demo/recipe.yaml", "apiVersion: recipes.vaka/v1alpha1\nkind: Recipe\nname: demo\nversion: invalid\ndescription: bad\n")
+	// demo validates and publishes a new temporary artifact first; zzz then
+	// fails validation. The failed transaction must remove demo's unused new
+	// artifact and retain only the prior index's artifact set.
+	f.write("demo/README.md", "changed before later recipe fails\n")
+	f.write("zzz/recipe.yaml", "apiVersion: recipes.vaka/v1alpha1\nkind: Recipe\nname: zzz\nversion: invalid\ndescription: bad\n")
+	f.write("zzz/compose.yaml", gitFixtureCompose)
+	f.write("zzz/vaka.yaml", gitFixturePolicy)
 	f.commit("invalid candidate")
 	stale, err := client.RefreshIndex(context.Background(), f.reg)
 	if err != nil {
@@ -228,6 +246,13 @@ func TestGitPreviewFailedRefreshPreservesLastSnapshot(t *testing.T) {
 	}
 	if !strings.Contains(stale.FallbackReason, "strict SemVer") {
 		t.Fatalf("stale fallback reason = %q", stale.FallbackReason)
+	}
+	afterArtifacts, err := os.ReadDir(artifactDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(afterArtifacts) != len(beforeArtifacts) {
+		t.Fatalf("failed refresh left artifacts: before=%v after=%v", beforeArtifacts, afterArtifacts)
 	}
 	cached, err := client.FetchIndex(f.reg)
 	if err != nil || cached.Revision != good.Revision {
@@ -264,4 +289,60 @@ func TestGitPreviewIgnoresAmbientRepositorySelection(t *testing.T) {
 	if err != nil || res.Stale || len(res.Index.Recipes["demo"]) != 1 {
 		t.Fatalf("refresh under ambient Git variables = %+v, %v", res, err)
 	}
+}
+
+func TestGitPreviewAcceptsFullTagRef(t *testing.T) {
+	f := newGitRegistryFixture(t)
+	f.git("tag", "candidate-v1")
+	reg := f.reg
+	reg.Git = &GitSource{URL: f.reg.Git.URL, Ref: "refs/tags/candidate-v1"}
+
+	res, err := (&Client{CacheDir: t.TempDir()}).RefreshIndex(context.Background(), reg)
+	if err != nil || res.Stale || res.Revision != f.git("rev-parse", "HEAD") {
+		t.Fatalf("full tag refresh = %+v, %v", res, err)
+	}
+}
+
+func TestGitRefreshLockExcludesConcurrentRefresh(t *testing.T) {
+	dir := t.TempDir()
+	unlock, err := acquireGitRefreshLock(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := acquireGitRefreshLock(dir); err == nil || !strings.Contains(err.Error(), "already running") {
+		unlock()
+		t.Fatalf("second lock err = %v", err)
+	}
+	unlock()
+	unlockAgain, err := acquireGitRefreshLock(dir)
+	if err != nil {
+		t.Fatalf("lock after release: %v", err)
+	}
+	unlockAgain()
+}
+
+func TestGitPreviewRejectsInconsistentCachedProvenance(t *testing.T) {
+	f := newGitRegistryFixture(t)
+	client := &Client{CacheDir: t.TempDir()}
+	res, err := client.RefreshIndex(context.Background(), f.reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cachePath := indexCachePath(client.CacheDir, f.reg.Name)
+	env, _, ok := readIndexCache(cachePath, f.reg.sourceIdentity())
+	if !ok {
+		t.Fatal("generated cache missing")
+	}
+	env.Index = []byte(strings.Replace(string(env.Index), res.Revision, strings.Repeat("c", 40), 1))
+	if err := writeIndexCache(cachePath, env); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.FetchIndex(f.reg); err == nil || !strings.Contains(err.Error(), "provenance is inconsistent") {
+		t.Fatalf("inconsistent cache err = %v", err)
+	}
+}
+
+func (f *gitRegistryFixture) git(args ...string) string {
+	f.t.Helper()
+	return strings.TrimSpace(runFixtureGit(f.t, f.dir, args...))
 }
