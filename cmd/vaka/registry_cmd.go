@@ -100,7 +100,7 @@ func newRegistryRemoveCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:               "remove <name>",
 		Aliases:           []string{"rm"},
-		Short:             "Remove a registry from the configuration",
+		Short:             "Remove a registry and its cached data",
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: firstArgComplete(completeRegistryNames),
 		RunE: func(cmd *cobra.Command, args []string) error {

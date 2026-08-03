@@ -52,19 +52,28 @@ the digest establishes what was fetched, not that the code is benign.
 
 Git preview registries are opt-in development sources. `registry add-git` and
 `registry refresh` resolve the configured ref to one full commit and package
-only objects tracked by that commit. Vaka does not check out the repository,
-run its hooks, initialize submodules, or read ignored/untracked worktree files.
-The generated artifact is validated through the same hardened path and its
-digest plus source commit are recorded. Ordinary `get` and catalog commands
-use the generated cache and do not contact Git; branch movement takes effect
-only after an explicit successful refresh.
+only objects tracked by that commit. Vaka reads Git trees and blobs directly,
+without `git archive`, so `.gitattributes` export rules and user archive config
+cannot change the candidate. It does not check out the repository, run its
+hooks, initialize submodules, or read ignored/untracked worktree files. The
+generated artifact is validated through the same hardened path and its digest
+plus source commit are recorded. Ordinary `get` and catalog commands use the
+generated cache and do not contact Git; branch movement takes effect only after
+an explicit successful refresh.
+
+Temporary Git data and cached artifacts each have a 512 MiB aggregate limit in
+addition to per-recipe limits. Preview cache directories and files are private
+to the user (`0700`/`0600`). Atomic index replacement plus a 24-hour artifact
+grace period lets readers finish across rapid refreshes; a failed refresh keeps
+the last complete snapshot. Removing a registry also removes its cached data.
 
 Preview refs are mutable and do not have the release trust semantics of a
 published registry. They must be named explicitly as `registry/recipe`, cannot
 participate in unqualified release resolution, and should be installed into a
 separate disposable directory. Git credentials come from the user's normal
 credential helper or SSH setup; Vaka rejects unsafe transports and embedded
-HTTPS credentials and disables terminal prompts.
+HTTPS credentials and disables Git credential terminal prompts. SSH host-key
+handling remains governed by the user's SSH configuration.
 
 ## Docker Desktop And macOS
 

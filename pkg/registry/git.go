@@ -610,7 +610,7 @@ func gitCommand(ctx context.Context, repoDir string, args ...string) *exec.Cmd {
 
 func gitEnvironment() []string {
 	// Repository-selection variables would override -C and could redirect a
-	// fetch or archive into an unrelated user repository. Keep authentication
+	// Git operation into an unrelated user repository. Keep authentication
 	// inputs (credential helpers, SSH agent/command, askpass) intact, but remove
 	// variables that change the object store, worktree, refs, or injected -c
 	// configuration of Vaka's Git subprocesses.

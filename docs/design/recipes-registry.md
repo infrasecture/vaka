@@ -194,15 +194,23 @@ configuration. A shorthand ref means `refs/heads/<ref>`; callers can provide a
 full `refs/...` name for tags or provider-specific refs. Subsequent branch
 movement is invisible until `vaka registry refresh preview` succeeds.
 
-Refresh initializes a temporary bare object store, shallow-fetches exactly the
-configured ref, and reads Git objects without a checkout. It lists only the
-commit's top-level trees; a tree is a recipe only when it contains a direct
-`recipe.yaml`. Each recipe is archived from that commit, stripped of Git's
-commit-dependent archive metadata, normalized, extracted through the hardened
-extractor, and validated with the same manifest/Compose/policy path used by
-`get`. This gives a content-derived digest that changes for recipe content,
-executable-mode, or symlink-target changes, but not for an unrelated commit.
-The generated entry records the full commit as `sourceRevision`.
+Refresh initializes a temporary bare object store and shallow-fetches exactly
+the configured ref with Git's `blob:none` filter. It reads the commit's tree
+objects without a checkout and lazily fetches only blobs belonging to selected
+top-level recipes; a top-level tree is a recipe only when it contains a direct
+`recipe.yaml`. Servers that do not honor filtering are still bounded by a 512
+MiB aggregate temporary-object-store limit.
+
+Vaka builds a canonical tarball directly from each recipe's tree modes, paths,
+blob bytes, and symlink targets. It deliberately does not use `git archive`, so
+tracked `.gitattributes` directives such as `export-ignore`/`export-subst` and
+user `tar.*` configuration cannot silently alter candidate content or modes.
+The tarball is extracted through the hardened extractor and validated with the
+same manifest/Compose/policy path used by `get`. Its content-derived digest
+changes for recipe content, executable-mode, or symlink-target changes, but not
+for an unrelated commit. The generated entry records the full commit as
+`sourceRevision`; published registries cannot inject that preview-only field
+into output or installation locks.
 
 No working-tree, ignored, or untracked file is read; repository hooks are
 disabled and submodules are not initialized. Git repository-selection and
@@ -213,10 +221,15 @@ sources are HTTPS, SSH, scp-style SSH, and absolute `file://`; unsafe transports
 and embedded HTTPS credentials are rejected.
 
 Artifacts are stored by digest before the generated index envelope is switched.
-The current and immediately previous artifact sets are retained so a reader
-holding the prior atomic index can finish. A failed or cancelled refresh never
-replaces the last complete cache; the CLI reports failure while preserving that
-snapshot. A per-registry `flock` serializes concurrent Git refreshes.
+Before that switch, artifacts referenced by the current index receive a fresh
+24-hour reader grace period. Unreferenced artifacts are removed only after that
+period, so multiple rapid refreshes cannot invalidate a reader holding an older
+atomic index. The artifact cache has a 512 MiB aggregate limit; exceeding it
+fails the refresh and preserves the last complete snapshot instead of deleting
+grace-protected data. Preview cache directories/files are restricted to
+`0700`/`0600`, including migration of an existing cache. A failed or cancelled
+refresh never replaces the last complete cache, and a per-registry `flock`
+serializes refresh and removal.
 
 ## 6. CLI surface
 
@@ -233,7 +246,7 @@ vaka recipes info <[registry/]name>[@version] # metadata, env, policy, versions
 vaka registry list                            # configured registries + cache age
 vaka registry add <name> <index-url>
 vaka registry add-git <name> <git-url> --ref <branch>
-vaka registry remove <name>
+vaka registry remove <name>                    # remove config and cached data
 vaka registry refresh [name]                  # re-fetch indexes / advance previews
 ```
 
@@ -735,8 +748,10 @@ New packages, keeping `cmd/vaka` thin like the compose path:
   entries under the reserved `.vaka-*` namespace; catalog-list tests verify
   that listing consumes cached registry indexes without repository fetching or
   filesystem scanning; Git preview tests use a real local repository to prove
-  explicit refresh, tracked-content isolation, normalized digests,
-  same-version candidate updates, and failed-refresh cache preservation;
+  explicit refresh, blobless tree-object packaging, literal tracked-content
+  isolation from archive attributes/config, content-derived digests,
+  same-version candidate updates, reader-safe retention, aggregate limits,
+  permission migration, and failed-refresh cache preservation;
   version-selection tests cover exact-version and latest selection plus
   SemVer ordering through the selected library.
 

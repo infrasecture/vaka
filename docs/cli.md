@@ -261,14 +261,15 @@ locally.
 vaka registry list                     # configured registries + cache age
 vaka registry add <name> <index-url>   # add a published registry
 vaka registry add-git <name> <git-url> --ref <branch>
-vaka registry remove <name>            # remove one (alias: rm)
+vaka registry remove <name>            # remove config + cache (alias: rm)
 vaka registry refresh [name]           # refresh index(es) or Git preview(s)
 ```
 
-`add`, `add-git`, and `remove` edit `registries.yaml`; `refresh`
-force-revalidates published indexes and advances Git preview refs (or just the
-named registry). The path is shown by `list`; an absent file means the
-official published registry only:
+`add`, `add-git`, and `remove` edit `registries.yaml`; removal also deletes that
+registry's cached index and preview artifacts. `refresh` force-revalidates
+published indexes and advances Git preview refs (or just the named registry).
+The path is shown by `list`; an absent file means the official published
+registry only:
 
 ```yaml
 apiVersion: recipes.vaka/v1alpha1
@@ -306,7 +307,9 @@ Git registries are development preview channels, not release authorities:
   top-level recipes, and builds a local index plus digest-addressed artifacts.
   A shorthand ref names a branch; use `refs/tags/...` or another full
   `refs/...` name when needed.
-- Only files tracked by that commit are packaged. Vaka does not check out or
+- Only files tracked by that commit are packaged. Vaka reads tree/blob objects
+  directly and does not use `git archive`, so `.gitattributes` export rules and
+  user `tar.*` settings cannot change the artifact. It does not check out or
   recursively scan a worktree, execute repository hooks, or initialize
   submodules. Ignored and untracked files cannot enter a preview artifact.
 - Normal `get`, search, info, list, and completion never contact Git. The
@@ -318,9 +321,11 @@ Git registries are development preview channels, not release authorities:
   lock records the commit that supplied installed bytes. Editing a recipe on
   the branch may intentionally change its digest without changing its
   candidate SemVer; after refresh, `vaka get` applies that update. An unrelated
-  commit leaves the normalized recipe digest unchanged.
+  commit leaves the content-derived recipe digest unchanged.
 - A failed refresh preserves the last complete snapshot and returns an error.
-  Existing installs remain usable against that cached snapshot.
+  Existing installs remain usable against that cached snapshot. Cached
+  artifacts have an aggregate 512 MiB limit; old unreferenced artifacts remain
+  for a 24-hour reader grace period and are reclaimed by later refreshes.
 - Install previews into a disposable, separate target such as
   `codex-preview`. Its lock remains bound to the `preview` registry alias; an
   official release should be installed from the official registry rather than
@@ -329,8 +334,9 @@ Git registries are development preview channels, not release authorities:
 Git preview refresh requires the `git` executable. HTTPS, SSH, scp-style SSH,
 and absolute `file://` repository URLs are accepted; plain HTTP, `git://`, and
 custom remote helpers are rejected. Configure private-repository credentials
-through the normal Git credential helper or SSH agent. Vaka disables terminal
-prompts so an unattended refresh fails instead of hanging.
+through the normal Git credential helper or SSH agent. Vaka disables Git
+credential terminal prompts so an unattended credential lookup fails instead
+of hanging; SSH host-key behavior remains controlled by the user's SSH setup.
 
 ## `vaka completion`
 
@@ -356,7 +362,7 @@ generated them; regenerate a saved script if the executable moves.
 
 Vaka completes its native command tree. `vaka get` and `vaka recipes info`
 complete recipe names from the cached registry indexes (qualified as
-`registry/name` when more than one registry is configured, and always
+`registry/name` when more than one published registry is configured, and always
 qualified for Git previews); `vaka registry
 remove`/`refresh` complete configured registry names. Completion reads only
 the local cache, never the network. Compose-backed commands and shorthands
