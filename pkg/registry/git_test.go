@@ -1,0 +1,252 @@
+package registry
+
+import (
+	"context"
+	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"vaka.dev/vaka/pkg/recipe"
+)
+
+const gitFixtureCompose = `services:
+  app:
+    image: alpine:3.20@sha256:0000000000000000000000000000000000000000000000000000000000000000
+`
+
+const gitFixturePolicy = `apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+`
+
+type gitRegistryFixture struct {
+	t   *testing.T
+	dir string
+	reg Registry
+	ref string
+}
+
+func newGitRegistryFixture(t *testing.T) *gitRegistryFixture {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	dir := t.TempDir()
+	runFixtureGit(t, dir, "init", "--quiet", "--initial-branch=preview")
+	f := &gitRegistryFixture{t: t, dir: dir, ref: "preview"}
+	f.reg = Registry{
+		Name: "preview",
+		Git: &GitSource{
+			URL: (&url.URL{Scheme: "file", Path: filepath.ToSlash(dir)}).String(),
+			Ref: f.ref,
+		},
+	}
+	f.write("demo/recipe.yaml", `apiVersion: recipes.vaka/v1alpha1
+kind: Recipe
+name: demo
+version: 1.0.0
+description: Git preview fixture
+tags: [test, preview]
+minVakaVersion: 0.0.1
+env:
+  - name: DEMO_TOKEN
+    required: true
+    description: fixture input
+`)
+	f.write("demo/compose.yaml", gitFixtureCompose)
+	f.write("demo/vaka.yaml", gitFixturePolicy)
+	f.write("demo/README.md", "# demo\n")
+	f.write("demo/run.sh", "#!/bin/sh\nexec true\n")
+	if err := os.Chmod(filepath.Join(dir, "demo", "run.sh"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("compose.yaml", filepath.Join(dir, "demo", "docker-compose.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	f.write(".gitignore", "/demo/.secrets/\n")
+	// A nested manifest is not a top-level recipe and must never be discovered.
+	f.write("nested/inner/recipe.yaml", "not a top-level recipe\n")
+	f.write("docs/note.txt", "registry documentation\n")
+	f.commit("initial recipe")
+	f.write("demo/.secrets/token", "must never enter the preview artifact\n")
+	return f
+}
+
+func (f *gitRegistryFixture) write(name, data string) {
+	f.t.Helper()
+	path := filepath.Join(f.dir, filepath.FromSlash(name))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		f.t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+func (f *gitRegistryFixture) commit(message string) string {
+	f.t.Helper()
+	runFixtureGit(f.t, f.dir, "add", "-A")
+	runFixtureGit(f.t, f.dir, "-c", "user.name=Vaka Test", "-c", "user.email=vaka@example.invalid", "commit", "--quiet", "-m", message)
+	return strings.TrimSpace(runFixtureGit(f.t, f.dir, "rev-parse", "HEAD"))
+}
+
+func runFixtureGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
+	}
+	return string(output)
+}
+
+func TestGitPreviewRefreshUsesOnlyTrackedTopLevelRecipeContent(t *testing.T) {
+	f := newGitRegistryFixture(t)
+	client := &Client{CacheDir: t.TempDir()}
+
+	if _, err := client.FetchIndex(f.reg); err == nil || !strings.Contains(err.Error(), "registry refresh") {
+		t.Fatalf("cold FetchIndex err = %v, want explicit-refresh guidance", err)
+	}
+	first, err := client.RefreshIndex(context.Background(), f.reg)
+	if err != nil {
+		t.Fatalf("first refresh: %v", err)
+	}
+	if first.Stale || first.Revision == "" {
+		t.Fatalf("first refresh = %+v", first)
+	}
+	if len(first.Index.Recipes) != 1 || len(first.Index.Recipes["demo"]) != 1 {
+		t.Fatalf("generated recipes = %+v, want only demo", first.Index.Recipes)
+	}
+	entry := first.Index.Recipes["demo"][0]
+	if entry.SourceRevision != first.Revision || entry.Version != "1.0.0" ||
+		entry.Policy == nil || entry.Policy.DefaultActions["app"] != "reject" {
+		t.Fatalf("generated entry = %+v", entry)
+	}
+	if got, ok := client.CacheRevision(f.reg); !ok || got != first.Revision {
+		t.Fatalf("CacheRevision = %q, %v; want %q", got, ok, first.Revision)
+	}
+
+	artifact, err := client.FetchTarball(f.reg, "demo", entry)
+	if err != nil {
+		t.Fatalf("FetchTarball: %v", err)
+	}
+	defer os.Remove(artifact)
+	extracted := t.TempDir()
+	root, err := recipe.OpenSafeRoot(extracted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := os.Open(artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = recipe.ExtractRecipe(a, "demo", root)
+	a.Close()
+	root.Close()
+	if err != nil {
+		t.Fatalf("ExtractRecipe: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(extracted, ".secrets", "token")); !os.IsNotExist(err) {
+		t.Fatalf("ignored/untracked secret entered artifact: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(extracted, "nested")); !os.IsNotExist(err) {
+		t.Fatalf("nested registry tree entered recipe artifact: %v", err)
+	}
+	if info, err := os.Stat(filepath.Join(extracted, "run.sh")); err != nil || info.Mode().Perm()&0o111 == 0 {
+		t.Fatalf("executable mode was not preserved: info=%v err=%v", info, err)
+	}
+	if target, err := os.Readlink(filepath.Join(extracted, "docker-compose.yaml")); err != nil || target != "compose.yaml" {
+		t.Fatalf("symlink = %q, %v", target, err)
+	}
+
+	// Neither an uncommitted edit nor an unrelated committed change alters the
+	// content-derived recipe digest. The latter advances source provenance only.
+	f.write("demo/README.md", "uncommitted edit\n")
+	again, err := client.RefreshIndex(context.Background(), f.reg)
+	if err != nil {
+		t.Fatalf("same-commit refresh: %v", err)
+	}
+	if got := again.Index.Recipes["demo"][0].Digest; got != entry.Digest {
+		t.Fatalf("uncommitted content changed digest: got %s want %s", got, entry.Digest)
+	}
+	runFixtureGit(t, f.dir, "restore", "demo/README.md")
+	f.write("docs/other.txt", "unrelated committed content\n")
+	unrelatedCommit := f.commit("unrelated change")
+	unrelated, err := client.RefreshIndex(context.Background(), f.reg)
+	if err != nil {
+		t.Fatalf("unrelated refresh: %v", err)
+	}
+	if unrelated.Revision != unrelatedCommit || unrelated.Index.Recipes["demo"][0].Digest != entry.Digest {
+		t.Fatalf("unrelated refresh revision/digest = %s/%s, want %s/%s",
+			unrelated.Revision, unrelated.Index.Recipes["demo"][0].Digest, unrelatedCommit, entry.Digest)
+	}
+
+	// A committed recipe edit remains invisible until explicit refresh, then
+	// produces a new digest even when the candidate SemVer is intentionally unchanged.
+	f.write("demo/README.md", "# changed candidate\n")
+	changedCommit := f.commit("change recipe candidate")
+	cached, err := client.FetchIndex(f.reg)
+	if err != nil {
+		t.Fatalf("cached FetchIndex: %v", err)
+	}
+	if cached.Revision != unrelatedCommit || cached.Index.Recipes["demo"][0].Digest != entry.Digest {
+		t.Fatalf("ordinary fetch advanced mutable ref: %+v", cached)
+	}
+	changed, err := client.RefreshIndex(context.Background(), f.reg)
+	if err != nil {
+		t.Fatalf("changed refresh: %v", err)
+	}
+	if changed.Revision != changedCommit || changed.Index.Recipes["demo"][0].Digest == entry.Digest {
+		t.Fatalf("changed refresh revision/digest = %s/%s", changed.Revision, changed.Index.Recipes["demo"][0].Digest)
+	}
+}
+
+func TestGitPreviewFailedRefreshPreservesLastSnapshot(t *testing.T) {
+	f := newGitRegistryFixture(t)
+	client := &Client{CacheDir: t.TempDir()}
+	good, err := client.RefreshIndex(context.Background(), f.reg)
+	if err != nil {
+		t.Fatalf("good refresh: %v", err)
+	}
+	goodDigest := good.Index.Recipes["demo"][0].Digest
+
+	f.write("demo/recipe.yaml", "apiVersion: recipes.vaka/v1alpha1\nkind: Recipe\nname: demo\nversion: invalid\ndescription: bad\n")
+	f.commit("invalid candidate")
+	stale, err := client.RefreshIndex(context.Background(), f.reg)
+	if err != nil {
+		t.Fatalf("failed refresh with cache: %v", err)
+	}
+	if !stale.Stale || stale.Revision != good.Revision || stale.Index.Recipes["demo"][0].Digest != goodDigest {
+		t.Fatalf("stale result = %+v, want retained revision %s", stale, good.Revision)
+	}
+	if !strings.Contains(stale.FallbackReason, "strict SemVer") {
+		t.Fatalf("stale fallback reason = %q", stale.FallbackReason)
+	}
+	cached, err := client.FetchIndex(f.reg)
+	if err != nil || cached.Revision != good.Revision {
+		t.Fatalf("cache after failed refresh = %+v, %v", cached, err)
+	}
+}
+
+func TestGitPreviewCacheIsBoundToURLAndRef(t *testing.T) {
+	f := newGitRegistryFixture(t)
+	client := &Client{CacheDir: t.TempDir()}
+	if _, err := client.RefreshIndex(context.Background(), f.reg); err != nil {
+		t.Fatal(err)
+	}
+	rebound := f.reg
+	rebound.Git = &GitSource{URL: f.reg.Git.URL, Ref: "other-branch"}
+	if _, err := client.FetchIndex(rebound); err == nil || !strings.Contains(err.Error(), "no resolved Git preview cache") {
+		t.Fatalf("rebound FetchIndex err = %v", err)
+	}
+	if _, ok := client.CachedIndex(rebound); ok {
+		t.Fatal("cache was reused after changing the Git ref")
+	}
+}

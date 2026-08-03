@@ -185,7 +185,7 @@ func validateRegistry(reg Registry) error {
 	return validateGitRef(reg.Git.Ref)
 }
 
-var scpGitURLRE = regexp.MustCompile(`^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[^[:space:]]+$`)
+var scpGitURLRE = regexp.MustCompile(`^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[A-Za-z0-9._~][A-Za-z0-9._~/-]*$`)
 
 // validateGitURL limits Git previews to transports with understood security
 // properties. In particular, git://, plain HTTP, custom remote helpers, and
@@ -240,10 +240,18 @@ func validateGitRef(ref string) error {
 	if ref == "" {
 		return fmt.Errorf("git ref is required")
 	}
-	if len(ref) > 255 || strings.HasPrefix(ref, "-") || strings.HasPrefix(ref, ".") ||
+	unsafeWhitespace := false
+	for _, r := range ref {
+		if r <= 0x20 || r == 0x7f {
+			unsafeWhitespace = true
+			break
+		}
+	}
+	if len(ref) > 255 || ref == "@" || unsafeWhitespace ||
+		strings.HasPrefix(ref, "-") || strings.HasPrefix(ref, ".") ||
 		strings.HasSuffix(ref, "/") || strings.HasSuffix(ref, ".") ||
 		strings.Contains(ref, "..") || strings.Contains(ref, "@{") ||
-		strings.Contains(ref, "//") || strings.ContainsAny(ref, " ~^:?*[\\") {
+		strings.Contains(ref, "//") || strings.ContainsAny(ref, "~^:?*[\\") {
 		return fmt.Errorf("git ref %q is not a safe branch, tag, or full ref name", ref)
 	}
 	for _, part := range strings.Split(ref, "/") {

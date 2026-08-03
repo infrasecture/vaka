@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -63,11 +64,17 @@ type Client struct {
 // IndexResult is a fetched index plus its provenance.
 type IndexResult struct {
 	Index *Index
+	// Revision is the immutable commit selected by a Git preview refresh. It is
+	// empty for published index registries.
+	Revision string
 	// Stale is true when the network fetch failed and a previously cached
 	// index was served instead; callers must surface this loudly.
 	Stale bool
 	// Age is the cache age when the index was served from cache.
 	Age time.Duration
+	// FallbackReason explains why a refresh served the previous cache. It is
+	// populated only when Stale is true.
+	FallbackReason string
 }
 
 func (c *Client) cacheDir() (string, error) {
@@ -101,7 +108,7 @@ func validateIndexURL(raw string) error {
 // shell completion. ok is false when there is no usable cache.
 func (c *Client) CachedIndex(reg Registry) (idx *Index, ok bool) {
 	u, err := url.Parse(reg.URL)
-	if err == nil && u.Scheme == "file" {
+	if !reg.IsGit() && err == nil && u.Scheme == "file" {
 		if data, err := os.ReadFile(u.Path); err == nil {
 			if idx, err := ParseIndex(data); err == nil {
 				return idx, true
@@ -113,7 +120,7 @@ func (c *Client) CachedIndex(reg Registry) (idx *Index, ok bool) {
 	if err != nil {
 		return nil, false
 	}
-	data, _ := cachedIndexBytes(dir, reg) // URL-bound: nil if the name was re-pointed
+	data, _ := cachedIndexBytes(dir, reg) // source-bound: nil if the registry was re-pointed
 	if data == nil {
 		return nil, false
 	}
@@ -130,8 +137,8 @@ func (c *Client) CacheAge(reg Registry) (time.Duration, bool) {
 	if err != nil {
 		return 0, false
 	}
-	// URL-bound: a cache written for a different URL (name re-pointed) is not
-	// this registry's cache.
+	// Source-bound: a cache written for a different URL/ref under the same name
+	// is not this registry's cache.
 	data, age := cachedIndexBytes(dir, reg)
 	if data == nil {
 		return 0, false
@@ -139,12 +146,32 @@ func (c *Client) CacheAge(reg Registry) (time.Duration, bool) {
 	return age, true
 }
 
+// CacheRevision returns the immutable Git commit recorded by the current
+// cache. It is empty/false for published index registries or a cache miss.
+func (c *Client) CacheRevision(reg Registry) (string, bool) {
+	if !reg.IsGit() {
+		return "", false
+	}
+	dir, err := c.cacheDir()
+	if err != nil {
+		return "", false
+	}
+	env, _, ok := readIndexCache(indexCachePath(dir, reg.Name), reg.sourceIdentity())
+	if !ok || env.Revision == "" {
+		return "", false
+	}
+	return env.Revision, true
+}
+
 // FetchIndex returns the registry's index, revalidating the cache per
 // c.MaxIndexAge. On network failure a cached copy is returned with
 // Stale=true; without a cache the failure is fatal.
 func (c *Client) FetchIndex(reg Registry) (*IndexResult, error) {
-	if err := validateIndexURL(reg.URL); err != nil {
+	if err := validateRegistry(reg); err != nil {
 		return nil, err
+	}
+	if reg.IsGit() {
+		return c.fetchGitIndexFromCache(reg)
 	}
 	u, _ := url.Parse(reg.URL)
 	if u.Scheme == "file" {
@@ -165,7 +192,7 @@ func (c *Client) FetchIndex(reg Registry) (*IndexResult, error) {
 	}
 	cachePath := indexCachePath(dir, reg.Name)
 
-	env, cacheAge, ok := readIndexCache(cachePath, reg.URL)
+	env, cacheAge, ok := readIndexCache(cachePath, reg.sourceIdentity())
 	var cached []byte
 	if ok {
 		cached = env.Index
@@ -214,9 +241,9 @@ func (c *Client) FetchIndex(reg Registry) (*IndexResult, error) {
 			return staleFallback(reg, cached, cacheAge, err)
 		}
 		if err := writeIndexCache(cachePath, indexCache{
-			URL:   reg.URL,
-			ETag:  resp.Header.Get("Etag"),
-			Index: data,
+			Source: reg.sourceIdentity(),
+			ETag:   resp.Header.Get("Etag"),
+			Index:  data,
 		}); err != nil {
 			return nil, fmt.Errorf("registry %q: %w", reg.Name, err)
 		}
@@ -228,6 +255,16 @@ func (c *Client) FetchIndex(reg Registry) (*IndexResult, error) {
 	}
 }
 
+// RefreshIndex explicitly updates a registry. Published indexes retain their
+// normal forced-revalidation behavior; Git previews alone resolve and package
+// their mutable ref here.
+func (c *Client) RefreshIndex(ctx context.Context, reg Registry) (*IndexResult, error) {
+	if reg.IsGit() {
+		return c.refreshGitIndex(ctx, reg)
+	}
+	return c.FetchIndex(reg)
+}
+
 func staleFallback(reg Registry, cached []byte, age time.Duration, cause error) (*IndexResult, error) {
 	if cached == nil {
 		return nil, fmt.Errorf("registry %q: fetch index: %w (and no cached copy exists)", reg.Name, cause)
@@ -236,20 +273,24 @@ func staleFallback(reg Registry, cached []byte, age time.Duration, cause error) 
 	if err != nil {
 		return nil, fmt.Errorf("registry %q: fetch index: %w (and the cached copy is unreadable: %v)", reg.Name, cause, err)
 	}
-	return &IndexResult{Index: idx, Stale: true, Age: age}, nil
+	return &IndexResult{Index: idx, Stale: true, Age: age, FallbackReason: cause.Error()}, nil
 }
 
-// indexCache is the per-registry cache envelope: the registry URL, the ETag,
-// and the raw index bytes, written as one atomically-renamed file. Binding all
+// indexCache is the per-registry cache envelope: the complete source identity,
+// its HTTP ETag or Git commit, and the raw index bytes, written as one
+// atomically-renamed file. Binding all
 // three together is what makes the cache trust-safe: a reader can never observe
 // an index paired with a different registry's URL (a torn write or a concurrent
 // URL change under the same name yields either the complete old envelope or the
 // complete new one — never a mix), and a URL mismatch is treated as a miss.
 // (yaml encodes Index as base64, so arbitrary bytes round-trip.)
 type indexCache struct {
-	URL   string `yaml:"url"`
-	ETag  string `yaml:"etag"`
-	Index []byte `yaml:"index"`
+	Source string `yaml:"source,omitempty"`
+	// URL reads caches written before source identities were introduced.
+	URL      string `yaml:"url,omitempty"`
+	ETag     string `yaml:"etag,omitempty"`
+	Revision string `yaml:"revision,omitempty"`
+	Index    []byte `yaml:"index"`
 }
 
 // indexCachePath returns the per-registry cache envelope path.
@@ -261,7 +302,7 @@ func indexCachePath(dir, name string) string {
 // written for reg's exact URL; otherwise (no cache, corrupt, or a URL change)
 // it reports a miss.
 func cachedIndexBytes(dir string, reg Registry) ([]byte, time.Duration) {
-	env, age, ok := readIndexCache(indexCachePath(dir, reg.Name), reg.URL)
+	env, age, ok := readIndexCache(indexCachePath(dir, reg.Name), reg.sourceIdentity())
 	if !ok {
 		return nil, 0
 	}
@@ -270,7 +311,7 @@ func cachedIndexBytes(dir string, reg Registry) ([]byte, time.Duration) {
 
 // readIndexCache loads and URL-checks the cache envelope. ok is false on any
 // miss: absent, unreadable, malformed, empty, or written for a different URL.
-func readIndexCache(path, wantURL string) (env indexCache, age time.Duration, ok bool) {
+func readIndexCache(path, wantSource string) (env indexCache, age time.Duration, ok bool) {
 	st, err := os.Stat(path)
 	if err != nil {
 		return indexCache{}, 0, false
@@ -282,7 +323,11 @@ func readIndexCache(path, wantURL string) (env indexCache, age time.Duration, ok
 	if err := yaml.Unmarshal(data, &env); err != nil {
 		return indexCache{}, 0, false
 	}
-	if env.URL != wantURL || len(env.Index) == 0 {
+	storedSource := env.Source
+	if storedSource == "" && env.URL != "" {
+		storedSource = "index\x00" + env.URL
+	}
+	if storedSource != wantSource || len(env.Index) == 0 {
 		return indexCache{}, 0, false // different registry origin, or empty
 	}
 	return env, time.Since(st.ModTime()), true
@@ -337,10 +382,10 @@ func (c *Client) FetchTarball(reg Registry, name string, entry IndexEntry) (stri
 		return "", fmt.Errorf("%s@%s: index entry has no download URL", name, entry.Version)
 	}
 
-	// A file:// artifact is only trusted from a file:// registry. Otherwise a
+	// A file:// artifact is only trusted from a file:// or Git preview registry. Otherwise a
 	// remote (https) index could point vaka at local files, causing local
 	// reads or resource exhaustion.
-	regIsFile := false
+	regIsFile := reg.IsGit()
 	if u, err := url.Parse(reg.URL); err == nil && u.Scheme == "file" {
 		regIsFile = true
 	}

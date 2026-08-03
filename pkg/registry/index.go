@@ -28,6 +28,9 @@ type IndexEntry struct {
 	MinVakaVersion string         `yaml:"minVakaVersion"`
 	Env            []EnvVar       `yaml:"env"`
 	Policy         *PolicySummary `yaml:"policy"`
+	// SourceRevision identifies the immutable Git commit used to produce a
+	// preview artifact. Published registry entries normally omit it.
+	SourceRevision string `yaml:"sourceRevision,omitempty"`
 }
 
 // EnvVar documents one compose interpolation input of a recipe.
