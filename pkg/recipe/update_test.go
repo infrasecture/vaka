@@ -230,6 +230,28 @@ func TestUpdateSameVersionIsNoChange(t *testing.T) {
 	}
 }
 
+func TestUpdateSameVersionChangedDigestAndSourceRevision(t *testing.T) {
+	target := installedV1(t)
+	newTarball := demoTarballWith(t, composeV1, true, false, map[string]string{
+		"README.md": "changed candidate content\n",
+	})
+	revision := strings.Repeat("b", 40)
+	res, err := Update(UpdateSpec{
+		Registry: "official", Name: "demo", Version: "1.0.0",
+		Digest: digestV2, TarballPath: newTarball, Target: target,
+		SourceRevision: revision,
+	})
+	if err != nil {
+		t.Fatalf("same-version changed-digest update: %v", err)
+	}
+	if res.NoChange || res.Lock.Digest != digestV2 || res.Lock.SourceRevision != revision {
+		t.Fatalf("update result = %+v", res)
+	}
+	if got := readFile(t, target, "README.md"); got != "changed candidate content\n" {
+		t.Fatalf("README = %q", got)
+	}
+}
+
 func TestUpdateMatrix(t *testing.T) {
 	t.Run("modified tracked file still shipped blocks", func(t *testing.T) {
 		target := installedV1(t)

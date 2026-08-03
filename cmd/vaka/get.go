@@ -30,7 +30,7 @@ Forms:
   vaka get @<version> <dir>                    same, for the recipe in <dir>
 
 The reference is [registry/]name[@version]; the version must be exact
-(constraints are not supported) and defaults to the newest published one.
+(constraints are not supported) and defaults to the newest indexed one.
 The target directory defaults to ./<name>. The bare and @<version> forms take
 the recipe's name and registry from its .vaka-recipe.lock, so you can update in
 place without repeating them (or changing directory).
@@ -54,9 +54,10 @@ func runGet(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	// A qualified reference needs only its own registry's index; an
-	// unqualified one needs all of them for the uniqueness rule. get always
-	// revalidates (maxAge 0) and is strict (an unreachable, uncached registry
-	// is fatal, not a warning) on this security-sensitive path.
+	// unqualified one needs the published registries for the uniqueness rule.
+	// get revalidates published indexes (maxAge 0); Git previews deliberately
+	// use the last explicitly refreshed cache. The selected path is strict: an
+	// unavailable qualified registry is fatal, not a warning.
 	world, err := loadRegistryWorld(0, ref.Registry, true, errOut)
 	if err != nil {
 		return err
@@ -101,6 +102,9 @@ func runGet(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Fprintf(out, "%s@%s %s %s (digest %s)\n", res.Name, res.Entry.Version, verb, target, res.Entry.Digest)
+	if res.Entry.SourceRevision != "" {
+		fmt.Fprintf(out, "Source commit: %s\n", res.Entry.SourceRevision)
+	}
 	printDeviations(out, lock)
 
 	// The local lint is authoritative; the index block is only compared.
@@ -235,6 +239,7 @@ func installOrUpdate(res *registry.Resolved, tarball, target string) (verb strin
 			Registry: res.Registry.Name, Name: res.Name,
 			Version: res.Entry.Version, Digest: res.Entry.Digest,
 			TarballPath: tarball, Target: target, VakaVersion: version,
+			SourceRevision: res.Entry.SourceRevision,
 		})
 		return "installed into", lock, nil, err
 	}
@@ -257,6 +262,7 @@ func installOrUpdate(res *registry.Resolved, tarball, target string) (verb strin
 		Registry: res.Registry.Name, Name: res.Name,
 		Version: res.Entry.Version, Digest: res.Entry.Digest,
 		TarballPath: tarball, Target: target, VakaVersion: version,
+		SourceRevision: res.Entry.SourceRevision,
 	})
 	if err != nil {
 		return "", nil, nil, err

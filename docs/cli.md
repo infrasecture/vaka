@@ -245,27 +245,31 @@ Update safety:
 ```bash
 vaka search [term]                  # search names, descriptions, tags
 vaka recipes list                   # full catalogs (newest version each)
-vaka recipes info <name>[@version]  # published metadata of one recipe
+vaka recipes info <name>[@version]  # catalog metadata of one recipe
 ```
 
-Catalog commands read the registries' published indexes (cached with ETag
-revalidation; a cache younger than 15 minutes is served without network).
-They never scan the local filesystem. The policy block they display is the
-registry's advisory copy — `vaka get` always recomputes it locally.
+Catalog commands read published indexes or locally generated Git preview
+indexes. Published indexes use ETag revalidation; a cache younger than 15
+minutes is served without network. Git preview indexes change only on an
+explicit registry refresh. Catalog commands never scan the local filesystem.
+The policy block they display is advisory — `vaka get` always recomputes it
+locally.
 
 ### `vaka registry`
 
 ```bash
 vaka registry list                     # configured registries + cache age
-vaka registry add <name> <index-url>   # add a registry
-vaka registry remove <name>            # remove one (alias: rm)
-vaka registry refresh [name]           # re-fetch index(es), updating the cache
+vaka registry add <name> <index-url>   # add a published registry
+vaka registry add-git <name> <git-url> --ref <branch>
+vaka registry remove <name>            # remove config + cache (alias: rm)
+vaka registry refresh [name]           # refresh index(es) or Git preview(s)
 ```
 
-`add`/`remove` edit `registries.yaml`; `refresh` force-revalidates every
-registry's cached index (or just the named one). Registries are configured
-in `registries.yaml` (path shown by `list`; defaults to the official
-registry when absent):
+`add`, `add-git`, and `remove` edit `registries.yaml`; removal also deletes that
+registry's cached index and preview artifacts. `refresh` force-revalidates
+published indexes and advances Git preview refs (or just the named registry).
+The path is shown by `list`; an absent file means the official published
+registry only:
 
 ```yaml
 apiVersion: recipes.vaka/v1alpha1
@@ -273,13 +277,66 @@ kind: RegistriesConfig
 registries:
   - name: official
     url: https://infrasecture.github.io/vaka-registry/index.yaml
+  - name: preview
+    git:
+      url: https://github.com/infrasecture/vaka-registry.git
+      ref: fix/codex-candidate
 ```
 
-Registry names match `[a-z0-9-]+` and index URLs must be `https://`
-(`file://` is allowed for local/air-gapped registries). An unqualified
-recipe name resolves only when it is unique across all configured
-registries; otherwise vaka lists the qualified candidates
-(`registry/name`).
+Registry names match `[a-z0-9-]+`. Published index URLs must be `https://`
+(`file://` is allowed for local/air-gapped registries). An unqualified recipe
+name resolves only when it is unique across published registries; otherwise
+vaka lists the qualified candidates (`registry/name`).
+
+**Testing an unpublished recipe branch**
+
+```bash
+vaka registry add-git preview \
+  https://github.com/infrasecture/vaka-registry.git \
+  --ref fix/codex-candidate
+vaka get preview/codex@0.2.3 codex-preview
+
+# After more commits are pushed to the branch:
+vaka registry refresh preview
+cd codex-preview && vaka get
+```
+
+Git registries are development preview channels, not release authorities:
+
+- `add-git` resolves the ref immediately to one full commit ID, validates all
+  top-level recipes, and builds a local index plus digest-addressed artifacts.
+  A shorthand ref names a branch; use `refs/tags/...` or another full
+  `refs/...` name when needed.
+- Only files tracked by that commit are packaged. Vaka reads tree/blob objects
+  directly and does not use `git archive`, so `.gitattributes` export rules and
+  user `tar.*` settings cannot change the artifact. It does not check out or
+  recursively scan a worktree, execute repository hooks, or initialize
+  submodules. Ignored and untracked files cannot enter a preview artifact.
+- Normal `get`, search, info, list, and completion never contact Git. The
+  configured branch advances only through `registry refresh`, which resolves
+  it to a new commit and atomically replaces the generated index.
+- Preview recipes must always be qualified (`preview/codex`). They cannot
+  hijack or make an ordinary unqualified release reference ambiguous.
+- The preview index records both the artifact digest and source commit. The
+  lock records the commit that supplied installed bytes. Editing a recipe on
+  the branch may intentionally change its digest without changing its
+  candidate SemVer; after refresh, `vaka get` applies that update. An unrelated
+  commit leaves the content-derived recipe digest unchanged.
+- A failed refresh preserves the last complete snapshot and returns an error.
+  Existing installs remain usable against that cached snapshot. Cached
+  artifacts have an aggregate 512 MiB limit; old unreferenced artifacts remain
+  for a 24-hour reader grace period and are reclaimed by later refreshes.
+- Install previews into a disposable, separate target such as
+  `codex-preview`. Its lock remains bound to the `preview` registry alias; an
+  official release should be installed from the official registry rather than
+  silently changing the preview's provenance.
+
+Git preview refresh requires the `git` executable. HTTPS, SSH, scp-style SSH,
+and absolute `file://` repository URLs are accepted; plain HTTP, `git://`, and
+custom remote helpers are rejected. Configure private-repository credentials
+through the normal Git credential helper or SSH agent. Vaka disables Git
+credential terminal prompts so an unattended credential lookup fails instead
+of hanging; SSH host-key behavior remains controlled by the user's SSH setup.
 
 ## `vaka completion`
 
@@ -305,12 +362,12 @@ generated them; regenerate a saved script if the executable moves.
 
 Vaka completes its native command tree. `vaka get` and `vaka recipes info`
 complete recipe names from the cached registry indexes (qualified as
-`registry/name` when more than one registry is configured); `vaka registry
-remove`/`refresh` complete configured registry names. Completion reads only
-the local cache, never the network. Compose-backed commands and shorthands
-intentionally provide no vaka-generated argument candidates and disable
-filename fallback; use Docker Compose documentation for their flags and
-arguments.
+`registry/name` when more than one published registry is configured, and always
+qualified for Git previews). `vaka registry remove` and `vaka registry refresh`
+complete configured registry names. Completion reads only the local cache,
+never the network. Compose-backed commands and shorthands intentionally provide
+no vaka-generated argument candidates and disable filename fallback; use Docker
+Compose documentation for their flags and arguments.
 
 ## Vaka Wrapper Flags
 
