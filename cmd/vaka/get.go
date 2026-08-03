@@ -101,6 +101,9 @@ func runGet(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Fprintf(out, "%s@%s %s %s (digest %s)\n", res.Name, res.Entry.Version, verb, target, res.Entry.Digest)
+	if res.Entry.SourceRevision != "" {
+		fmt.Fprintf(out, "Source commit: %s\n", res.Entry.SourceRevision)
+	}
 	printDeviations(out, lock)
 
 	// The local lint is authoritative; the index block is only compared.
@@ -235,6 +238,7 @@ func installOrUpdate(res *registry.Resolved, tarball, target string) (verb strin
 			Registry: res.Registry.Name, Name: res.Name,
 			Version: res.Entry.Version, Digest: res.Entry.Digest,
 			TarballPath: tarball, Target: target, VakaVersion: version,
+			SourceRevision: res.Entry.SourceRevision,
 		})
 		return "installed into", lock, nil, err
 	}
@@ -257,6 +261,7 @@ func installOrUpdate(res *registry.Resolved, tarball, target string) (verb strin
 		Registry: res.Registry.Name, Name: res.Name,
 		Version: res.Entry.Version, Digest: res.Entry.Digest,
 		TarballPath: tarball, Target: target, VakaVersion: version,
+		SourceRevision: res.Entry.SourceRevision,
 	})
 	if err != nil {
 		return "", nil, nil, err

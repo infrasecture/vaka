@@ -87,19 +87,33 @@ func Resolve(cfg *Config, indexes map[string]*Index, ref Ref) (*Resolved, error)
 		return &Resolved{Registry: reg, Name: ref.Name, Entry: *entry}, nil
 	}
 
-	var candidates []string
+	var candidates, previewCandidates []string
 	for _, reg := range cfg.Registries {
 		idx, ok := indexes[reg.Name]
 		if !ok {
 			continue
 		}
 		if _, ok := idx.Recipes[ref.Name]; ok {
+			if reg.IsGit() {
+				previewCandidates = append(previewCandidates, reg.Name)
+				continue
+			}
 			candidates = append(candidates, reg.Name)
 		}
 	}
 	sort.Strings(candidates)
 	switch len(candidates) {
 	case 0:
+		if len(previewCandidates) > 0 {
+			sort.Strings(previewCandidates)
+			qualified := make([]string, len(previewCandidates))
+			for i, candidate := range previewCandidates {
+				qualified[i] = candidate + "/" + ref.Name
+			}
+			return nil, fmt.Errorf(
+				"recipe %q exists only in a Git preview registry; preview recipes must be qualified: %s",
+				ref.Name, strings.Join(qualified, ", "))
+		}
 		return nil, fmt.Errorf("recipe %q not found in any configured registry", ref.Name)
 	case 1:
 		qualified := ref

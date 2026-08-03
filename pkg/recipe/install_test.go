@@ -48,8 +48,9 @@ func listParent(t *testing.T, parent string) []string {
 func TestInstallHappyPath(t *testing.T) {
 	parent := t.TempDir()
 	target := filepath.Join(parent, "demo")
-
-	lock, err := Install(installSpec(t, target))
+	spec := installSpec(t, target)
+	spec.SourceRevision = strings.Repeat("a", 40)
+	lock, err := Install(spec)
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
@@ -65,7 +66,8 @@ func TestInstallHappyPath(t *testing.T) {
 		t.Fatalf("ReadLock: exists=%v err=%v", exists, err)
 	}
 	if onDisk.Registry != "official" || onDisk.Name != "demo" ||
-		onDisk.Version != "1.0.0" || onDisk.Digest != testDigest {
+		onDisk.Version != "1.0.0" || onDisk.Digest != testDigest ||
+		onDisk.SourceRevision != spec.SourceRevision {
 		t.Fatalf("lock identity = %+v", onDisk)
 	}
 	if len(onDisk.Deviations) != 0 {
@@ -231,6 +233,7 @@ deviations:
 		{"bad generation", strings.Replace(valid, "0123456789abcdef0123456789abcdef", "xyz", 1), "generation"},
 		{"wrong kind", strings.Replace(valid, "RecipeLock", "Recipe", 1), "kind must be"},
 		{"bad digest", strings.Replace(valid, testDigest, "sha256:zz", 1), "sha256:<64 hex>"},
+		{"bad source revision", strings.Replace(valid, "digest: "+testDigest, "digest: "+testDigest+"\nsourceRevision: branch-name", 1), "full Git commit ID"},
 		{"bad state", strings.Replace(valid, "link:compose.yaml", "md5:nope", 1), "malformed state"},
 		{"bad deviation kind", strings.Replace(valid, "skipped-collision", "merged", 1), "unknown kind"},
 		// File/deviation path keys must be canonical relative paths outside .vaka-*.

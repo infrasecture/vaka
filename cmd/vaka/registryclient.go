@@ -95,8 +95,7 @@ type catalogRow struct {
 }
 
 // catalogRows flattens the world into rows (latest version per recipe),
-// sorted by registry then name. Qualified display names are used when more
-// than one registry is configured.
+// sorted by registry then name.
 func (w *registryWorld) catalogRows() []catalogRow {
 	var rows []catalogRow
 	for regName, idx := range w.indexes {
@@ -121,7 +120,8 @@ func (w *registryWorld) catalogRows() []catalogRow {
 // displayName qualifies the recipe name when several registries are
 // configured, matching what the user must type to disambiguate.
 func (w *registryWorld) displayName(row catalogRow) string {
-	if len(w.cfg.Registries) > 1 {
+	reg, _ := w.cfg.Lookup(row.registry)
+	if len(w.cfg.Registries) > 1 || reg.IsGit() {
 		return row.registry + "/" + row.name
 	}
 	return row.name

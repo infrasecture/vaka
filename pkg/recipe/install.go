@@ -20,6 +20,8 @@ type InstallSpec struct {
 	TarballPath string // local path of the verified tarball
 	Target      string // directory to create; must not exist
 	VakaVersion string // running vaka version, for the manifest minVakaVersion check
+	// SourceRevision is optional Git preview provenance.
+	SourceRevision string
 }
 
 // Install materializes a recipe at spec.Target: extract into a dot-prefixed
@@ -74,6 +76,7 @@ func Install(spec InstallSpec) (*Lock, error) {
 	}
 
 	lock := NewLock(spec.Registry, spec.Name, spec.Version, spec.Digest)
+	lock.SourceRevision = spec.SourceRevision
 	if err := root.WalkFiles(func(path string, _ fs.DirEntry) error {
 		state, err := EntryState(root, path)
 		if err != nil {

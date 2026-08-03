@@ -79,6 +79,9 @@ get; this view is what the registry claims.`,
 				fmt.Fprintf(out, "Requires:    vaka >= %s\n", e.MinVakaVersion)
 			}
 			fmt.Fprintf(out, "Digest:      %s\n", e.Digest)
+			if e.SourceRevision != "" {
+				fmt.Fprintf(out, "Git commit:  %s\n", e.SourceRevision)
+			}
 
 			if versions := world.indexes[res.Registry.Name].Recipes[res.Name]; len(versions) > 1 {
 				fmt.Fprintf(out, "Versions (%d indexed, newest first):\n", len(versions))

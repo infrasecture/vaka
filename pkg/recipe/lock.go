@@ -23,9 +23,10 @@ const (
 )
 
 var (
-	lockDigestRE = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
-	entryStateRE = regexp.MustCompile(`^(sha256:[0-9a-f]{64}(\+x)?|link:.+)$`)
-	generationRE = regexp.MustCompile(`^[0-9a-f]{32}$`)
+	lockDigestRE     = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	sourceRevisionRE = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})$`)
+	entryStateRE     = regexp.MustCompile(`^(sha256:[0-9a-f]{64}(\+x)?|link:.+)$`)
+	generationRE     = regexp.MustCompile(`^[0-9a-f]{32}$`)
 )
 
 // newGeneration returns a fresh 128-bit random installation-generation nonce.
@@ -71,6 +72,9 @@ type Lock struct {
 	Name       string `yaml:"name"`
 	Version    string `yaml:"version"`
 	Digest     string `yaml:"digest"`
+	// SourceRevision is the immutable Git commit that produced a preview
+	// artifact. Published registry installs leave it empty.
+	SourceRevision string `yaml:"sourceRevision,omitempty"`
 	// Generation is a per-commit random nonce identifying this exact installed
 	// state, so an update journal can be bound to the lock it belongs to.
 	Generation string            `yaml:"generation"`
@@ -122,6 +126,9 @@ func (l *Lock) validate() error {
 	}
 	if !lockDigestRE.MatchString(l.Digest) {
 		return fmt.Errorf("digest %q is not sha256:<64 hex>", l.Digest)
+	}
+	if l.SourceRevision != "" && !sourceRevisionRE.MatchString(l.SourceRevision) {
+		return fmt.Errorf("sourceRevision %q is not a full Git commit ID", l.SourceRevision)
 	}
 	if l.Generation == "" {
 		// Distinguish the legacy case (field absent → written by a vaka from

@@ -18,8 +18,6 @@ func completeRecipeRefs(toComplete string) ([]string, cobra.ShellCompDirective) 
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
 	client := newRegistryClient(0)
-	qualify := len(cfg.Registries) > 1
-
 	seen := map[string]bool{}
 	var out []string
 	for _, reg := range cfg.Registries {
@@ -29,7 +27,7 @@ func completeRecipeRefs(toComplete string) ([]string, cobra.ShellCompDirective) 
 		}
 		for name := range idx.Recipes {
 			ref := name
-			if qualify {
+			if len(cfg.Registries) > 1 || reg.IsGit() {
 				ref = reg.Name + "/" + name
 			}
 			if !seen[ref] && strings.HasPrefix(ref, toComplete) {
