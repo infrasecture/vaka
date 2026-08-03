@@ -52,7 +52,8 @@ for a tag or other ref.`,
 			if err := cfg.Add(reg); err != nil {
 				return err
 			}
-			res, err := newRegistryClient(0).RefreshIndex(cmd.Context(), reg)
+			client := newRegistryClient(0)
+			res, err := client.RefreshIndex(cmd.Context(), reg)
 			if err != nil {
 				return err
 			}
@@ -60,6 +61,9 @@ for a tag or other ref.`,
 				return fmt.Errorf("registry %q could not be resolved from Git: %s", reg.Name, res.FallbackReason)
 			}
 			if err := saveRegistriesConfig(cfg); err != nil {
+				if cleanupErr := client.RemoveCache(reg); cleanupErr != nil {
+					return fmt.Errorf("save registry configuration: %w (and remove newly generated cache: %v)", err, cleanupErr)
+				}
 				return err
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Added Git preview registry %q (%s#%s at %s)\n",

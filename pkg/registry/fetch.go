@@ -176,25 +176,22 @@ func (c *Client) RemoveCache(reg Registry) error {
 		return err
 	}
 	regDir := filepath.Join(dir, reg.Name)
-	info, err := os.Lstat(regDir)
+	var unlock func()
+	if reg.IsGit() {
+		unlock, err = acquireGitRefreshLock(regDir)
+		if err != nil {
+			return err
+		}
+		defer unlock()
+	}
+	_, err = os.Lstat(regDir)
 	if os.IsNotExist(err) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	// RemoveAll removes a symlink itself rather than following it. Do not enter
-	// or lock a cache path that is not a real directory.
-	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return os.RemoveAll(regDir)
-	}
-	if reg.IsGit() {
-		unlock, err := acquireGitRefreshLock(regDir)
-		if err != nil {
-			return err
-		}
-		defer unlock()
-	}
+	// RemoveAll removes a cache symlink itself rather than following it.
 	return os.RemoveAll(regDir)
 }
 

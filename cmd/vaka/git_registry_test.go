@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net/url"
 	"os"
 	"os/exec"
@@ -31,6 +32,7 @@ func newCommandGitFixture(t *testing.T) *commandGitFixture {
 		url: (&url.URL{Scheme: "file", Path: filepath.ToSlash(dir)}).String(),
 	}
 	f.git("init", "--quiet", "--initial-branch=preview")
+	f.git("config", "uploadpack.allowFilter", "true")
 	f.write("demo/recipe.yaml", `apiVersion: recipes.vaka/v1alpha1
 kind: Recipe
 name: demo
@@ -194,6 +196,26 @@ func TestRegistryAddGitRequiresRef(t *testing.T) {
 	_, _, err := runRecipeCmd(t, "registry", "add-git", "preview", "https://github.com/example/recipes.git")
 	if err == nil || !strings.Contains(err.Error(), "required flag") {
 		t.Fatalf("missing --ref err = %v", err)
+	}
+}
+
+func TestRegistryAddGitCleansCacheWhenConfigSaveFails(t *testing.T) {
+	fixture := newCommandGitFixture(t)
+	stubRegistryConfig(t, &registry.Config{APIVersion: registry.APIVersion, Kind: "RegistriesConfig"})
+	saveRegistriesConfig = func(*registry.Config) error { return fmt.Errorf("injected save failure") }
+	cacheDir := t.TempDir()
+	oldClient := newRegistryClient
+	newRegistryClient = func(maxAge time.Duration) *registry.Client {
+		return &registry.Client{CacheDir: cacheDir, MaxIndexAge: maxAge}
+	}
+	t.Cleanup(func() { newRegistryClient = oldClient })
+
+	_, _, err := runRecipeCmd(t, "registry", "add-git", "preview", fixture.url, "--ref", "preview")
+	if err == nil || !strings.Contains(err.Error(), "injected save failure") {
+		t.Fatalf("add-git save err = %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(cacheDir, "preview")); !os.IsNotExist(err) {
+		t.Fatalf("failed add left generated cache: %v", err)
 	}
 }
 

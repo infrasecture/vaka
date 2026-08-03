@@ -366,8 +366,9 @@ func TestGitPreviewMigratesExistingCachePermissions(t *testing.T) {
 	}
 	regDir := filepath.Join(client.CacheDir, f.reg.Name)
 	artifactDir := filepath.Join(regDir, "artifacts")
-	paths := []string{filepath.Join(regDir, "cache.yaml"), filepath.Join(regDir, "git-refresh.lock"), artifactURL.Path}
-	for _, dir := range []string{regDir, artifactDir} {
+	lockPath := gitRefreshLockPath(regDir)
+	paths := []string{filepath.Join(regDir, "cache.yaml"), lockPath, artifactURL.Path}
+	for _, dir := range []string{regDir, artifactDir, filepath.Dir(lockPath)} {
 		if err := os.Chmod(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -377,11 +378,10 @@ func TestGitPreviewMigratesExistingCachePermissions(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-
 	if _, err := client.FetchIndex(f.reg); err != nil {
 		t.Fatal(err)
 	}
-	for _, dir := range []string{regDir, artifactDir} {
+	for _, dir := range []string{regDir, artifactDir, filepath.Dir(lockPath)} {
 		if info, err := os.Stat(dir); err != nil || info.Mode().Perm() != 0o700 {
 			t.Fatalf("cache directory %s mode = %v, %v; want 0700", dir, info, err)
 		}
@@ -497,6 +497,34 @@ func TestGitRefreshLockExcludesConcurrentRefresh(t *testing.T) {
 		t.Fatalf("lock after release: %v", err)
 	}
 	unlockAgain()
+}
+
+func TestGitPreviewCacheRemovalUsesRefreshLock(t *testing.T) {
+	f := newGitRegistryFixture(t)
+	client := &Client{CacheDir: t.TempDir()}
+	if _, err := client.RefreshIndex(context.Background(), f.reg); err != nil {
+		t.Fatal(err)
+	}
+	regDir := filepath.Join(client.CacheDir, f.reg.Name)
+	unlock, err := acquireGitRefreshLock(regDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.RemoveCache(f.reg); err == nil || !strings.Contains(err.Error(), "already running") {
+		unlock()
+		t.Fatalf("remove during refresh err = %v", err)
+	}
+	unlock()
+
+	if err := client.RemoveCache(f.reg); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(regDir); !os.IsNotExist(err) {
+		t.Fatalf("removed Git preview cache still exists: %v", err)
+	}
+	if info, err := os.Stat(gitRefreshLockPath(regDir)); err != nil || !info.Mode().IsRegular() {
+		t.Fatalf("stable refresh lock = %v, %v", info, err)
+	}
 }
 
 func TestGitPreviewRejectsInconsistentCachedProvenance(t *testing.T) {

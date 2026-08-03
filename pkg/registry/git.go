@@ -223,7 +223,11 @@ func (c *Client) buildGitIndex(ctx context.Context, reg Registry, regDir string)
 }
 
 func acquireGitRefreshLock(regDir string) (func(), error) {
-	path := filepath.Join(regDir, "git-refresh.lock")
+	lockDir := filepath.Join(filepath.Dir(regDir), ".locks")
+	if err := ensurePrivateGitCacheDir(lockDir); err != nil {
+		return nil, err
+	}
+	path := gitRefreshLockPath(regDir)
 	if fi, err := os.Lstat(path); err == nil && fi.Mode()&os.ModeSymlink != 0 {
 		return nil, fmt.Errorf("Git preview refresh lock is a symlink; refusing it")
 	} else if err != nil && !os.IsNotExist(err) {
@@ -240,11 +244,15 @@ func acquireGitRefreshLock(regDir string) (func(), error) {
 	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
 		f.Close()
 		if errors.Is(err, unix.EWOULDBLOCK) {
-			return nil, fmt.Errorf("another Git preview refresh is already running")
+			return nil, fmt.Errorf("another Git preview refresh or removal is already running")
 		}
 		return nil, err
 	}
 	return func() { _ = f.Close() }, nil
+}
+
+func gitRefreshLockPath(regDir string) string {
+	return filepath.Join(filepath.Dir(regDir), ".locks", filepath.Base(regDir)+".lock")
 }
 
 func fetchGitCommit(ctx context.Context, source *GitSource) (repoDir, commit, commitTime string, err error) {
@@ -537,7 +545,11 @@ func hardenGitCache(regDir string) error {
 	if err := ensurePrivateGitCacheDir(artifactsDir); err != nil {
 		return err
 	}
-	for _, path := range []string{filepath.Join(regDir, "cache.yaml"), filepath.Join(regDir, "git-refresh.lock")} {
+	lockPath := gitRefreshLockPath(regDir)
+	if err := ensurePrivateGitCacheDir(filepath.Dir(lockPath)); err != nil {
+		return err
+	}
+	for _, path := range []string{filepath.Join(regDir, "cache.yaml"), lockPath} {
 		if err := hardenGitCacheFile(path); err != nil {
 			return err
 		}
