@@ -164,6 +164,40 @@ func (c *Client) CacheRevision(reg Registry) (string, bool) {
 	return env.Revision, true
 }
 
+// RemoveCache removes all cached state for a configured registry. Git preview
+// removal is serialized with refresh so a concurrent writer cannot recreate a
+// partially removed snapshot.
+func (c *Client) RemoveCache(reg Registry) error {
+	if err := validateRegistry(reg); err != nil {
+		return err
+	}
+	dir, err := c.cacheDir()
+	if err != nil {
+		return err
+	}
+	regDir := filepath.Join(dir, reg.Name)
+	info, err := os.Lstat(regDir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	// RemoveAll removes a symlink itself rather than following it. Do not enter
+	// or lock a cache path that is not a real directory.
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return os.RemoveAll(regDir)
+	}
+	if reg.IsGit() {
+		unlock, err := acquireGitRefreshLock(regDir)
+		if err != nil {
+			return err
+		}
+		defer unlock()
+	}
+	return os.RemoveAll(regDir)
+}
+
 // FetchIndex returns the registry's index, revalidating the cache per
 // c.MaxIndexAge. On network failure a cached copy is returned with
 // Stale=true; without a cache the failure is fatal.

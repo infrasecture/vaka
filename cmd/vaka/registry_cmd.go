@@ -15,8 +15,8 @@ func newRegistryCmd() *cobra.Command {
 		Use:   "registry",
 		Short: "Manage recipe registries",
 		Long: `Manage the configured recipe registries: list them, add or remove one,
-or refresh published indexes and Git preview snapshots. Registries live in the registries.yaml
-configuration file (shown by 'vaka registry list').`,
+or refresh published indexes and Git preview snapshots. Registries live in the
+registries.yaml configuration file (shown by 'vaka registry list').`,
 	}
 	cmd.AddCommand(
 		newRegistryListCmd(),
@@ -108,8 +108,15 @@ func newRegistryRemoveCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			reg, ok := cfg.Lookup(args[0])
+			if !ok {
+				return fmt.Errorf("registry %q is not configured", args[0])
+			}
 			if err := cfg.Remove(args[0]); err != nil {
 				return err
+			}
+			if err := newRegistryClient(0).RemoveCache(reg); err != nil {
+				return fmt.Errorf("remove registry %q cache: %w", args[0], err)
 			}
 			if err := saveRegistriesConfig(cfg); err != nil {
 				return err
