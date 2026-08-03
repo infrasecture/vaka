@@ -61,11 +61,12 @@ plus source commit are recorded. Ordinary `get` and catalog commands use the
 generated cache and do not contact Git; branch movement takes effect only after
 an explicit successful refresh.
 
-Temporary Git data and cached artifacts each have a 512 MiB aggregate limit in
-addition to per-recipe limits. Preview cache directories and files are private
-to the user (`0700`/`0600`). Atomic index replacement plus a 24-hour artifact
-grace period lets readers finish across rapid refreshes; a failed refresh keeps
-the last complete snapshot. Removing a registry also removes its cached data.
+The temporary Git object store for one refresh and each registry's artifact
+cache each have a 512 MiB aggregate limit in addition to per-recipe limits.
+Preview cache directories and files are private to the user (`0700`/`0600`).
+Atomic index replacement plus a 24-hour artifact grace period lets readers
+finish across rapid refreshes; a failed refresh keeps the last complete
+snapshot. Removing a registry also removes its cached data.
 
 Preview refs are mutable and do not have the release trust semantics of a
 published registry. They must be named explicitly as `registry/recipe`, cannot
