@@ -121,14 +121,25 @@ func (w *registryWorld) catalogRows() []catalogRow {
 	return rows
 }
 
-// displayName qualifies the recipe name when several registries are
-// configured, matching what the user must type to disambiguate.
+// displayName qualifies published recipe names only when several published
+// registries are configured. Git previews never participate in unqualified
+// resolution and are therefore always qualified themselves.
 func (w *registryWorld) displayName(row catalogRow) string {
 	reg, _ := w.cfg.Lookup(row.registry)
-	if len(w.cfg.Registries) > 1 || reg.IsGit() {
+	if publishedRegistryCount(w.cfg) > 1 || reg.IsGit() {
 		return row.registry + "/" + row.name
 	}
 	return row.name
+}
+
+func publishedRegistryCount(cfg *registry.Config) int {
+	count := 0
+	for _, reg := range cfg.Registries {
+		if !reg.IsGit() {
+			count++
+		}
+	}
+	return count
 }
 
 func riskColumn(e registry.IndexEntry) string {

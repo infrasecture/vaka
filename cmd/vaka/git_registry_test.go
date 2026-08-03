@@ -75,7 +75,24 @@ func (f *commandGitFixture) commit(message string) string {
 
 func TestGitPreviewCommandLifecycle(t *testing.T) {
 	fixture := newCommandGitFixture(t)
-	initial := &registry.Config{APIVersion: registry.APIVersion, Kind: "RegistriesConfig"}
+	publishedIndex := filepath.Join(t.TempDir(), "index.yaml")
+	if err := os.WriteFile(publishedIndex, []byte(`apiVersion: recipes.vaka/v1alpha1
+kind: RegistryIndex
+recipes:
+  stable:
+    - version: 1.0.0
+      description: published fixture
+      digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+      urls: [https://example.invalid/stable.tar.gz]
+      sourceRevision: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	initial := &registry.Config{
+		APIVersion: registry.APIVersion,
+		Kind:       "RegistriesConfig",
+		Registries: []registry.Registry{{Name: "official", URL: "file://" + publishedIndex}},
+	}
 	saved := stubRegistryConfig(t, initial)
 	cacheDir := t.TempDir()
 	oldClient := newRegistryClient
@@ -101,11 +118,15 @@ func TestGitPreviewCommandLifecycle(t *testing.T) {
 		t.Fatalf("registry list = %q, %v", stdout, err)
 	}
 	stdout, _, err = runRecipeCmd(t, "recipes", "list")
-	if err != nil || !strings.Contains(stdout, "preview/demo") {
+	if err != nil || !strings.Contains(stdout, "preview/demo") || !strings.Contains(stdout, "stable") || strings.Contains(stdout, "official/stable") {
 		t.Fatalf("recipes list = %q, %v", stdout, err)
 	}
-	if got, _ := completeRecipeRefs(""); len(got) != 1 || got[0] != "preview/demo" {
-		t.Fatalf("Git preview completions = %v, want [preview/demo]", got)
+	if got, _ := completeRecipeRefs(""); len(got) != 2 || got[0] != "preview/demo" || got[1] != "stable" {
+		t.Fatalf("mixed published/preview completions = %v, want [preview/demo stable]", got)
+	}
+	stdout, _, err = runRecipeCmd(t, "recipes", "info", "stable")
+	if err != nil || strings.Contains(stdout, "Git commit:") {
+		t.Fatalf("published info accepted preview provenance = %q, %v", stdout, err)
 	}
 
 	target := filepath.Join(t.TempDir(), "demo")

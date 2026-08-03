@@ -84,7 +84,13 @@ func Resolve(cfg *Config, indexes map[string]*Index, ref Ref) (*Resolved, error)
 		if err != nil {
 			return nil, err
 		}
-		return &Resolved{Registry: reg, Name: ref.Name, Entry: *entry}, nil
+		selected := *entry
+		// sourceRevision is local Git-preview provenance, not an extension a
+		// published index can inject into user output or an installation lock.
+		if !reg.IsGit() {
+			selected.SourceRevision = ""
+		}
+		return &Resolved{Registry: reg, Name: ref.Name, Entry: selected}, nil
 	}
 
 	var candidates, previewCandidates []string

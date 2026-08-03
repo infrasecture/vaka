@@ -204,3 +204,32 @@ func TestResolveGitPreviewRequiresQualification(t *testing.T) {
 		t.Fatalf("shared release resolution = %+v, %v", res, err)
 	}
 }
+
+func TestResolveAcceptsSourceRevisionOnlyFromGitPreview(t *testing.T) {
+	revision := strings.Repeat("a", 40)
+	cfg := &Config{
+		APIVersion: APIVersion,
+		Kind:       "RegistriesConfig",
+		Registries: []Registry{
+			{Name: "published", URL: "https://example.invalid/index.yaml"},
+			{Name: "preview", Git: &GitSource{URL: "https://github.com/example/recipes.git", Ref: "candidate"}},
+		},
+	}
+	indexes := map[string]*Index{
+		"published": {Recipes: map[string][]IndexEntry{
+			"demo": {{Version: "1.0.0", SourceRevision: revision}},
+		}},
+		"preview": {Recipes: map[string][]IndexEntry{
+			"demo": {{Version: "1.0.0", SourceRevision: revision}},
+		}},
+	}
+
+	published, err := Resolve(cfg, indexes, Ref{Registry: "published", Name: "demo"})
+	if err != nil || published.Entry.SourceRevision != "" {
+		t.Fatalf("published resolution accepted preview provenance: %+v, %v", published, err)
+	}
+	preview, err := Resolve(cfg, indexes, Ref{Registry: "preview", Name: "demo"})
+	if err != nil || preview.Entry.SourceRevision != revision {
+		t.Fatalf("preview resolution lost provenance: %+v, %v", preview, err)
+	}
+}
