@@ -350,6 +350,44 @@ func TestUpdateMatrix(t *testing.T) {
 		}
 	})
 
+	t.Run("unrelated nested untracked files are preserved", func(t *testing.T) {
+		target := installedV1(t)
+		stateDir := filepath.Join(target, ".runtime-state")
+		statePath := filepath.Join(stateDir, "private-token")
+		if err := os.Mkdir(stateDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(statePath, []byte("test-user-state\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		res, err := updateTo(target, "2.0.0", digestV2, tarballV2(t))
+		if err != nil {
+			t.Fatalf("update: %v", err)
+		}
+		if got := readFile(t, target, ".runtime-state/private-token"); got != "test-user-state\n" {
+			t.Fatalf("untracked runtime state changed to %q", got)
+		}
+		stateInfo, err := os.Stat(statePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dirInfo, err := os.Stat(stateDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stateInfo.Mode().Perm() != 0o600 || dirInfo.Mode().Perm() != 0o700 {
+			t.Fatalf("untracked modes changed: dir=%#o file=%#o", dirInfo.Mode().Perm(), stateInfo.Mode().Perm())
+		}
+		lock := lockOf(t, target)
+		if _, tracked := lock.Files[".runtime-state/private-token"]; tracked {
+			t.Fatal("untracked runtime state was adopted into the recipe lock")
+		}
+		if len(res.Warnings) != 0 || len(lock.Deviations) != 0 {
+			t.Fatalf("unrelated untracked file produced warnings=%v deviations=%v", res.Warnings, lock.Deviations)
+		}
+	})
+
 	t.Run("untracked collision is skipped and converges after resolution", func(t *testing.T) {
 		target := installedV1(t)
 		mutate(t, target, "newfile.txt", "mine, not the recipe's\n")
