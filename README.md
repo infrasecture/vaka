@@ -22,7 +22,7 @@ separate file, and Vaka does not write generated policy files to the host.
 - [Mental Model](#mental-model)
 - [Requirements](#requirements)
 - [Limits](#limits)
-- [Examples](#examples)
+- [Codex Example](#codex-example)
 - [Documentation](#documentation)
 - [Status](#status)
 - [License](#license)
@@ -35,77 +35,67 @@ vaka reduces that blast radius. A service that only needs OpenAI, Anthropic, Git
 
 ## Install
 
-On Linux, install the package for your distribution and architecture from the
-[latest release](https://github.com/infrasecture/vaka/releases/latest). On
-macOS, use Homebrew:
+### Linux
+
+Vaka publishes native `amd64` and `arm64` packages for Debian/Ubuntu (`.deb`),
+Fedora/RHEL (`.rpm`), and Arch Linux. Use the copy-and-paste commands in
+[Linux installation](docs/installation.md#linux-packages), or download a package
+from the [latest release](https://github.com/infrasecture/vaka/releases/latest).
+
+### macOS
+
+Install Vaka with Homebrew:
 
 ```bash
 brew tap infrasecture/tap
 brew install vaka
 ```
 
-Then verify the host setup:
+### Verify The Installation
+
+Check Docker and pull or repair Vaka's container runtime:
 
 ```bash
 vaka version
-vaka doctor
+vaka doctor --fix
 ```
 
-Packages, raw macOS binaries, source builds, nightly builds, and compatibility
-requirements are covered in [Installation](docs/installation.md).
+Raw macOS binaries, source builds, nightly builds, and Docker compatibility are
+covered in [Installation](docs/installation.md).
 
 ## Quickstart
 
-Choose the path that matches what you want to do.
-
-### Install And Review A Published Recipe
-
-Search the built-in registry, inspect the recipe, and install it into a new
-directory:
+Install the current Codex recipe and launch its protected workspace:
 
 ```bash
-vaka search codex
-vaka recipes info codex
 mkdir -p "$HOME/vaka-recipes"
 vaka get codex "$HOME/vaka-recipes/codex"
-```
-
-`vaka get` verifies and validates the recipe but never runs it. Read the
-installed instructions before starting anything:
-
-```bash
 cd "$HOME/vaka-recipes/codex"
-less README.md
+./myCodex
 ```
 
-### Protect Your Compose Project
+On first launch, press Enter to use the default `work` workspace, then choose
+ChatGPT subscription, OpenAI API key, or the experimental Vertex profile.
+`myCodex` handles authentication, pulls images as needed, starts the protected
+Codex and LiteLLM stack through Vaka, and attaches you to an interactive Codex
+session. Codex can reach the model through the gateway, but direct connections
+to arbitrary internet hosts are rejected.
 
-Create `vaka.yaml` next to your Compose file, with one matching entry for each
-service you want Vaka to manage. Then validate and start the project:
+To use Codex on an existing project, run the launcher from that project instead:
 
 ```bash
-vaka validate --compose docker-compose.yaml
-vaka up -d
+cd /path/to/your/project
+"$HOME/vaka-recipes/codex/myCodex"
 ```
 
-Use the fixed shorthands for common operations:
+The current project directory is the only host workspace mounted read/write into
+Codex. See
+[First Secure Codex Session](docs/quickstart.md) for what happens during startup
+and how to use an existing project.
 
-```bash
-vaka ps
-vaka logs --tail 50 agent
-vaka exec agent sh
-vaka down
-```
-
-The complete Compose command surface lives under `vaka compose`:
-
-```bash
-vaka compose -f compose.prod.yaml up -d
-vaka compose pull
-```
-
-See [Quickstart](docs/quickstart.md) for a complete policy example and the
-recipe update flow.
+Vaka can also protect services in an existing Compose project without a recipe.
+[Write Your First `vaka.yaml`](docs/vaka-yaml-quickstart.md) covers that separate
+workflow.
 
 ## Mental Model
 
@@ -135,24 +125,25 @@ If the firewall cannot be installed, the app does not start.
 - vaka is not a VM or a hostile-code sandbox. It reduces network blast radius; it does not defend against kernel escapes or code that already has access to sensitive files inside the mounted workspace.
 - Some nftables features require reasonably modern Linux kernels. Very old pre-5.x kernels may fail to load the generated ruleset.
 
-## Examples
+## Codex Example
 
-A gateway is a useful pattern when an agent needs access to a provider but does
-not need general internet access:
+The Codex recipe is a complete example of Vaka protecting an AI coding agent.
+It runs Codex in one container and LiteLLM in a second container. Your project is
+mounted only into Codex; model credentials are supplied only to LiteLLM. Vaka
+lets Codex call the gateway on the private Compose network and lets the gateway
+call the upstream endpoints allowed by the selected profile, while rejecting
+Codex's other outbound traffic.
 
-- The agent can reach only local sidecars it needs.
-- Internet-facing access is placed on a narrower gateway service.
-- Each service gets its own egress policy.
-
-See [Examples](docs/examples.md) for the current `vaka get` workflow, safe
-updates, and this gateway pattern. Runnable recipes come from configured
-registries; this repository does not carry a second copy.
+[Codex Recipe: A Restricted Agent Workspace](docs/examples.md) shows the
+architecture, authentication choices, workspace and credential boundaries,
+common commands, updates, and what the isolation does and does not protect.
 
 ## Documentation
 
 - [Installation](docs/installation.md)
-- [Quickstart](docs/quickstart.md)
-- [Examples](docs/examples.md)
+- [Run Codex with Vaka](docs/quickstart.md)
+- [Understand the Codex recipe](docs/examples.md)
+- [Write your first `vaka.yaml`](docs/vaka-yaml-quickstart.md)
 - [Policy reference](docs/policy.md)
 - [CLI reference](docs/cli.md)
 - [Security model](docs/security.md)

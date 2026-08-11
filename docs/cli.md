@@ -162,7 +162,8 @@ vaka get preview/example example-preview
 
 # After the configured ref advances:
 vaka registry refresh preview
-(cd example-preview && vaka get)
+cd example-preview
+vaka get
 ```
 
 `add-git` resolves the ref to one immutable commit immediately. Vaka reads

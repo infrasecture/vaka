@@ -1,139 +1,98 @@
-# Quickstart
+# First Secure Codex Session
 
-Vaka supports two starting points:
-
-- Install a published recipe when you want a ready-made Compose project.
-- Add `vaka.yaml` when you already have a Compose project.
+This guide installs the published Codex recipe, starts it through Vaka, and
+leaves you attached to a usable Codex session.
 
 ## Before You Start
 
-Install the Vaka CLI using the [installation guide](installation.md), then
-check the Docker target:
-
-```bash
-vaka version
-vaka doctor
-```
-
-If the runtime image is missing or incompatible, let Vaka repair it:
+You need Docker with Compose v2 and the Vaka CLI. Follow the
+[installation guide](installation.md), then check the Docker target and prepare
+the Vaka runtime:
 
 ```bash
 vaka doctor --fix
 ```
 
-## Path A: Install And Review A Published Recipe
+The Codex launcher requires Bash 4.4 or newer. Linux distributions normally
+provide it. On macOS, install a current Bash with Homebrew if the launcher asks
+for one.
 
-Search the configured registries and inspect a recipe before downloading it:
+## Install The Recipe
 
-```bash
-vaka search codex
-vaka recipes info codex
-```
-
-Create a parent directory and install into a new target:
+Install the latest published Codex recipe into a new directory:
 
 ```bash
 mkdir -p "$HOME/vaka-recipes"
 vaka get codex "$HOME/vaka-recipes/codex"
 ```
 
-The first install target must not already exist. `vaka get` verifies the
-artifact digest, validates the manifest, Compose model, and Vaka policy, checks
-the minimum Vaka version, and records provenance in `.vaka-recipe.lock`. It
-never starts containers or runs recipe scripts.
+`vaka get` verifies and validates the downloaded recipe. It installs files only;
+it does not start containers or execute the recipe.
 
-Read the instructions shipped with the installed recipe:
+The install summary currently reports `codex:unpinned-image`. This is expected:
+the cross-platform Codex workstation uses a fixed version tag, while the
+LiteLLM image is pinned by digest.
+
+## Start Codex
+
+For a quick first session, launch from the recipe directory:
 
 ```bash
 cd "$HOME/vaka-recipes/codex"
-less README.md
+./myCodex
 ```
 
-Run only the command documented by that recipe. Some recipes use `vaka up`;
-others provide a launcher that supplies additional configuration.
+The launcher asks for a workspace name. Press Enter to use `work`; the project
+files for this session will live under `.workspaces/work`. The recipe directory
+itself, including its stored credentials, is never mounted into Codex.
 
-To update later, run `vaka get` from the installed directory:
+Next, choose how the LiteLLM gateway should authenticate upstream:
+
+1. ChatGPT subscription — complete the displayed browser device-login flow.
+2. OpenAI API key — enter a key or provide `OPENAI_API_KEY` or
+   `OPENAI_API_KEY_FILE`.
+3. Google Vertex AI — an experimental profile that requires your own Vertex
+   configuration.
+
+`myCodex` handles that authentication flow, pulls images as needed, starts the
+Codex and LiteLLM containers through Vaka, waits for the session to become ready,
+and attaches your terminal. You are now using interactive Codex with the chosen
+workspace mounted; model calls go through LiteLLM, while other direct outbound
+connections are blocked.
+
+## Use An Existing Project
+
+Run the same launcher from the project you want Codex to edit:
 
 ```bash
-(cd "$HOME/vaka-recipes/codex" && vaka get)
+cd /path/to/your/project
+"$HOME/vaka-recipes/codex/myCodex"
 ```
 
-The update changes recipe files only. Follow the installed README to apply the
-new files to any running stack.
+The current directory is mounted read/write at the same absolute path inside
+the Codex container. Files Codex creates remain owned by your host user. No
+other project directory is shared unless you explicitly add another mount.
 
-## Path B: Protect Your Compose Project
+## Return Or Stop
 
-Create `vaka.yaml` next to your Compose file. Replace `app` with the name of a
-service from your Compose project and replace `api.example.com` with the
-destination that service actually needs:
-
-```yaml
-apiVersion: agent.vaka/v1alpha1
-kind: ServicePolicy
-services:
-  app:
-    network:
-      egress:
-        defaultAction: reject
-        block_metadata: drop
-        accept:
-          - dns: {}
-          - proto: tcp
-            to: [api.example.com]
-            ports: [443]
-```
-
-Validate the policy and its service names:
+Run the launcher again from the same project directory to reattach. Bring the
+complete stack down when you no longer need it:
 
 ```bash
-vaka validate --compose docker-compose.yaml
+"$HOME/vaka-recipes/codex/myCodex"       # start if needed and attach
+"$HOME/vaka-recipes/codex/myCodex" down  # remove the complete stack
 ```
 
-If your project uses another filename or several Compose files, repeat
-`--compose` for the exact set you want to check.
+To leave Codex running and return to your host shell, press `Ctrl-b`, then `d`.
+Run the launcher from the same project directory when you want to reattach.
 
-Preview what Vaka will apply:
+`down` preserves the project's Codex configuration and history volume. Do not
+add `-v` unless you intentionally want to delete that state.
 
-```bash
-vaka show-nft app
-vaka show-compose
-```
+## Next
 
-Start and operate the stack through Vaka:
-
-```bash
-vaka up -d
-vaka ps
-vaka logs --tail 50 app
-```
-
-Open an interactive shell when you need one, then exit it before stopping the
-stack:
-
-```bash
-vaka exec app sh
-vaka down
-```
-
-Compose command flags follow the command. Compose global flags, such as `-f`,
-`--profile`, and `--project-directory`, use the `vaka compose` namespace:
-
-```bash
-vaka up --build -d
-vaka compose -f compose.prod.yaml --profile worker up -d
-```
-
-Vaka flags go before the command and value-taking flags use `=`:
-
-```bash
-vaka --vaka-file=policies/prod.yaml compose -f compose.prod.yaml up -d
-```
-
-## Next Steps
-
-- [Examples](examples.md) explains the complete recipe lifecycle.
-- [Policy reference](policy.md) covers every policy field and rule type.
-- [CLI reference](cli.md) covers registry management, update safety, Compose
-  dispatch, and Vaka flags.
-- [Troubleshooting](troubleshooting.md) covers build-only services, image
-  inspection, Docker compatibility, and DNS behavior.
+- [Codex Recipe: A Restricted Agent Workspace](examples.md) explains the
+  containers, credentials, network boundary, common usage patterns, and recipe
+  updates.
+- [Write Your First `vaka.yaml`](vaka-yaml-quickstart.md) is the separate path
+  for protecting services in an existing Compose project.
