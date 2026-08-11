@@ -222,9 +222,11 @@ resolve against that same registry, so you never repeat the name and the
 result is never ambiguous. If the directory is not a vaka recipe, `vaka get`
 says so and does nothing.
 
-`vaka get` only changes recipe files, never docker images or containers — run
-`vaka up` afterward to apply an updated recipe (Compose pulls a newly-pinned
-image and recreates affected services).
+`vaka get` only changes recipe files, never Docker images or containers. Follow
+the installed recipe's README to apply an update. Recipes with launchers may
+need launcher-supplied identity, credentials, overlays, or state; for example,
+apply a Codex update from the project directory with
+`/path/to/codex/myCodex up`, not bare `vaka up`.
 
 Update safety:
 
@@ -280,7 +282,7 @@ registries:
   - name: preview
     git:
       url: https://github.com/infrasecture/vaka-registry.git
-      ref: fix/codex-candidate
+      ref: main
 ```
 
 Registry names match `[a-z0-9-]+`. Published index URLs must be `https://`
@@ -293,10 +295,11 @@ vaka lists the qualified candidates (`registry/name`).
 ```bash
 vaka registry add-git preview \
   https://github.com/infrasecture/vaka-registry.git \
-  --ref fix/codex-candidate
-vaka get preview/codex@0.2.3 codex-preview
+  --ref main
+vaka recipes info preview/codex
+vaka get preview/codex codex-preview
 
-# After more commits are pushed to the branch:
+# After more commits are pushed to the configured ref:
 vaka registry refresh preview
 cd codex-preview && vaka get
 ```
@@ -312,6 +315,7 @@ Git registries are development preview channels, not release authorities:
   user `tar.*` settings cannot change the artifact. It does not check out or
   recursively scan a worktree, execute repository hooks, or initialize
   submodules. Ignored and untracked files cannot enter a preview artifact.
+- Replace `main` above with a candidate branch to preview unpublished work.
 - Normal `get`, search, info, list, and completion never contact Git. The
   configured branch advances only through `registry refresh`, which resolves
   it to a new commit and atomically replaces the generated index.

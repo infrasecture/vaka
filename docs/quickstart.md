@@ -8,8 +8,9 @@ Linux:
 
 ```bash
 # Debian / Ubuntu
-curl -fLO https://github.com/infrasecture/vaka/releases/download/v0.0.2/vaka_0.0.2_amd64.deb
-sudo dpkg -i vaka_0.0.2_amd64.deb
+VAKA_VERSION=0.3.0
+curl -fLO "https://github.com/infrasecture/vaka/releases/download/v${VAKA_VERSION}/vaka_${VAKA_VERSION}_amd64.deb"
+sudo dpkg -i "vaka_${VAKA_VERSION}_amd64.deb"
 ```
 
 See [installation.md](installation.md) for RPM, Arch Linux, source-build, and macOS binary options.
@@ -21,13 +22,39 @@ brew tap infrasecture/tap
 brew install vaka
 ```
 
+## Recipe Fast Path
+
+If you want a maintained, ready-to-run stack instead of adapting an existing
+Compose project, install the Codex recipe from the official registry:
+
+```bash
+vaka recipes info codex
+vaka get codex
+(cd codex && ./myCodex)
+```
+
+`vaka get` verifies and validates the recipe but never starts Docker. Codex uses
+its recipe-specific launcher rather than bare `vaka up`; the subshell returns
+you to the parent directory when the session ends. See the
+[examples guide](examples.md) for running it against an existing project,
+updates, authentication profiles, and the security-migration notice.
+
 ## 2. Add `vaka.yaml`
 
-For a realistic starting point, use the [Codex + LiteLLM example](../examples/codex). It puts the internet-facing model-provider access on a LiteLLM sidecar and keeps the Codex container restricted to that local sidecar.
+For your existing Compose project, create `vaka.yaml` next to
+`docker-compose.yaml`. Each key under `services:` must match a Compose service
+name; see the [policy reference](policy.md) for the schema.
 
-Start from [`examples/codex/vaka.yaml`](../examples/codex/vaka.yaml), then adapt service names and allowed endpoints for your Compose project.
+To inspect a maintained sidecar policy without mixing it into your project,
+fetch the recipe into a separate, new directory and review its `vaka.yaml`:
 
-Create `vaka.yaml` next to `docker-compose.yaml`. Each key under `services:` must match a Compose service name.
+```bash
+vaka get codex codex-reference
+```
+
+Adapt service names and allowed endpoints to your own stack. Do not copy the
+recipe's launcher or Compose files piecemeal; those files form one tested
+runtime and credential contract.
 
 ## 3. Validate
 

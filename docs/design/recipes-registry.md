@@ -1,19 +1,20 @@
 # Design: vaka Recipes Registry
 
-Status: accepted — ready for Phase 1 implementation (amendments expected as
-implementation feedback, not further paper review)
+Status: implemented in Vaka v0.3.0; retained as a design record (amendments
+track implementation feedback)
 Scope: `vaka get`, `vaka search`, `vaka recipes`, `vaka registry` and the
-registry repository format. Nothing here is implemented yet.
+registry repository format.
 
 ## 1. Concept
 
 A **recipe** is a ready-to-run, security-hardened compose project: a
 `docker-compose.yaml`/`compose.yaml` plus a `vaka.yaml` egress policy, together
 with any supporting files (README, launcher scripts, sidecar configs,
-`.env.example`). `examples/codex` is the prototype: it ships a README, a
+`.env.example`). The original `examples/codex` prototype shipped a README, a
 `myCodex` launcher, a prestart script, a LiteLLM config and a
 `docker-compose.yaml → compose.yaml` symlink — so a recipe is a *directory*,
-not just two YAML files.
+not just two YAML files. That runnable stack now lives in the registry; the
+in-repository example is a compatibility pointer.
 
 A **registry** is a published catalog of versioned recipes that vaka can
 search, fetch, verify, and update — the docker-registry / app-store experience:
@@ -22,8 +23,8 @@ search, fetch, verify, and update — the docker-registry / app-store experience
 vaka search agent                 # browse the catalog(s)
 vaka recipes info codex           # metadata, required env, policy summary
 vaka get codex                    # fetch latest into ./codex, verified
-vaka get codex                    # later: same command updates it
-cd codex && vaka up               # vaka never runs a recipe by itself
+cd codex && ./myCodex             # use this recipe's documented launcher
+vaka get                          # later: update its managed files in place
 ```
 
 ## 2. Two formats: authoring vs distribution
@@ -254,7 +255,8 @@ The nameless forms (`vaka get`, `vaka get @<version>`) carry no recipe name:
 they take the name and registry from the target directory's
 `.vaka-recipe.lock` and resolve against that same registry, so an in-place
 update needs no `cd` and is never ambiguous. `vaka get` changes only recipe
-files — `vaka up` afterward is what pulls a newly-pinned image.
+files. Applying an update is recipe-specific: follow the installed README and
+use any supplied launcher rather than assuming bare `vaka up` is sufficient.
 
 `vaka get` semantics (the app-store verb, deliberately idempotent like
 `docker pull`):
@@ -670,8 +672,8 @@ get the same guarantees by copying two workflow files):
    compute digest, attach to a GitHub Release, regenerate `index.yaml`, and
    publish it (GitHub Pages branch or release asset behind a stable URL).
 
-`examples/codex` migrates to the registry repo as the first recipe (the
-in-repo example can remain as a pointer or a slim copy).
+`examples/codex` migrated to the registry repo as the first recipe; the
+in-repository path remains as a pointer rather than a second executable copy.
 
 ### Official hosting and scalability
 

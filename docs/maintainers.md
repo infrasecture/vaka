@@ -127,11 +127,11 @@ about the built artifacts or the complete release-preparation procedure.
 On an ordinary development checkout, build version-stamped artifacts with:
 
 ```bash
-./build.sh --release --packages --cli-version v0.2.0
+./build.sh --release --packages --cli-version v0.3.0
 ```
 
 This builds the full architecture matrix, local runtime images, and Linux
-packages. The resulting CLI reports `v0.2.0`, making this path suitable for
+packages. The resulting CLI reports `v0.3.0`, making this path suitable for
 local installation, packaging, and behavior tests. It does not require a clean
 checkout and does not run the release vulnerability scan, full release test
 gate, image-mount smoke test, registry preflight, or release-asset preparation.
@@ -146,7 +146,7 @@ On a host satisfying all release-builder requirements, qualify the exact
 release candidate without publishing it:
 
 ```bash
-./release.sh --version v0.2.0 --prepare-only
+./release.sh --version v0.3.0 --prepare-only
 ```
 
 This path requires a clean checkout. In addition to building the exact release
@@ -184,7 +184,7 @@ publication succeeds.
 Run preparation on the release builder:
 
 ```bash
-./release.sh --version v0.2.0 --prepare-only
+./release.sh --version v0.3.0 --prepare-only
 ```
 
 Preparation:
@@ -204,7 +204,7 @@ After reviewing the prepared output, publish on the same builder and Docker
 target:
 
 ```bash
-./release.sh --version v0.2.0 --publish-prepared
+./release.sh --version v0.3.0 --publish-prepared
 ```
 
 The publish phase validates all prepared state again, preflights external Git,
@@ -221,7 +221,7 @@ GitHub, and Homebrew prerequisites, repeats runtime registry preflight, then:
 Preparation and publication may also run in one invocation:
 
 ```bash
-./release.sh --version v0.2.0
+./release.sh --version v0.3.0
 ```
 
 Keeping the two commands is recommended for a deliberate review point.

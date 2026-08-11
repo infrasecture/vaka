@@ -20,17 +20,19 @@ combination before running Compose.
 Linux release assets are distributed as Debian, RPM, and Arch Linux packages from the [GitHub releases page](https://github.com/infrasecture/vaka/releases).
 
 ```bash
+VAKA_VERSION=0.3.0
+
 # Debian / Ubuntu
-curl -fLO https://github.com/infrasecture/vaka/releases/download/v0.0.2/vaka_0.0.2_amd64.deb
-sudo dpkg -i vaka_0.0.2_amd64.deb
+curl -fLO "https://github.com/infrasecture/vaka/releases/download/v${VAKA_VERSION}/vaka_${VAKA_VERSION}_amd64.deb"
+sudo dpkg -i "vaka_${VAKA_VERSION}_amd64.deb"
 
 # Fedora / RHEL / CentOS
-curl -fLO https://github.com/infrasecture/vaka/releases/download/v0.0.2/vaka-0.0.2-1.x86_64.rpm
-sudo rpm -i vaka-0.0.2-1.x86_64.rpm
+curl -fLO "https://github.com/infrasecture/vaka/releases/download/v${VAKA_VERSION}/vaka-${VAKA_VERSION}-1.x86_64.rpm"
+sudo rpm -i "vaka-${VAKA_VERSION}-1.x86_64.rpm"
 
 # Arch Linux
-curl -fLO https://github.com/infrasecture/vaka/releases/download/v0.0.2/vaka-0.0.2-1-x86_64.pkg.tar.zst
-sudo pacman -U vaka-0.0.2-1-x86_64.pkg.tar.zst
+curl -fLO "https://github.com/infrasecture/vaka/releases/download/v${VAKA_VERSION}/vaka-${VAKA_VERSION}-1-x86_64.pkg.tar.zst"
+sudo pacman -U "vaka-${VAKA_VERSION}-1-x86_64.pkg.tar.zst"
 ```
 
 Packages install the host CLI at `/usr/local/bin/vaka`. They do not install
@@ -64,9 +66,11 @@ Build packages with:
 Local package outputs appear in `dist/`, for example:
 
 ```bash
-sudo dpkg -i dist/vaka_0.0.2_amd64.deb
-sudo rpm -i dist/vaka-0.0.2-1.x86_64.rpm
-sudo pacman -U dist/vaka-0.0.2-1-x86_64.pkg.tar.zst
+PACKAGE_VERSION="$(git describe --tags --always --dirty)"
+PACKAGE_VERSION="${PACKAGE_VERSION#v}"
+sudo dpkg -i "dist/vaka_${PACKAGE_VERSION}_amd64.deb"
+sudo rpm -i "dist/vaka-${PACKAGE_VERSION}-1.x86_64.rpm"
+sudo pacman -U "dist/vaka-${PACKAGE_VERSION}-1-x86_64.pkg.tar.zst"
 ```
 
 Build the full release matrix with:
@@ -121,17 +125,20 @@ Docker Desktop must be using Linux containers. That is the normal Docker Desktop
 Homebrew is the preferred macOS install path, but raw macOS binaries are also attached to releases:
 
 ```bash
+VAKA_VERSION=0.3.0
+
 # macOS arm64, Apple Silicon
-curl -fsSL https://github.com/infrasecture/vaka/releases/download/v0.0.2/vaka-darwin-arm64 -o vaka
+curl -fsSL "https://github.com/infrasecture/vaka/releases/download/v${VAKA_VERSION}/vaka-darwin-arm64" -o vaka
 
 # macOS amd64, Intel
-curl -fsSL https://github.com/infrasecture/vaka/releases/download/v0.0.2/vaka-darwin-amd64 -o vaka
+curl -fsSL "https://github.com/infrasecture/vaka/releases/download/v${VAKA_VERSION}/vaka-darwin-amd64" -o vaka
 
 chmod +x vaka
 sudo mv vaka /usr/local/bin/vaka
 ```
 
-Replace `v0.0.2` with the release you want if you are not installing the latest release.
+Change `VAKA_VERSION` to another published release when an exact older version
+is required.
 
 ## First-Run Runtime Image
 

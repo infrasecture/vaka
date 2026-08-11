@@ -48,17 +48,19 @@ vaka reduces that blast radius. A service that only needs OpenAI, Anthropic, Git
 On Linux, install a `.deb`, `.rpm`, or Arch package from the [releases page](https://github.com/infrasecture/vaka/releases):
 
 ```bash
+VAKA_VERSION=0.3.0
+
 # Debian / Ubuntu
-curl -fLO https://github.com/infrasecture/vaka/releases/download/v0.0.2/vaka_0.0.2_amd64.deb
-sudo dpkg -i vaka_0.0.2_amd64.deb
+curl -fLO "https://github.com/infrasecture/vaka/releases/download/v${VAKA_VERSION}/vaka_${VAKA_VERSION}_amd64.deb"
+sudo dpkg -i "vaka_${VAKA_VERSION}_amd64.deb"
 
 # Fedora / RHEL / CentOS
-curl -fLO https://github.com/infrasecture/vaka/releases/download/v0.0.2/vaka-0.0.2-1.x86_64.rpm
-sudo rpm -i vaka-0.0.2-1.x86_64.rpm
+curl -fLO "https://github.com/infrasecture/vaka/releases/download/v${VAKA_VERSION}/vaka-${VAKA_VERSION}-1.x86_64.rpm"
+sudo rpm -i "vaka-${VAKA_VERSION}-1.x86_64.rpm"
 
 # Arch Linux
-curl -fLO https://github.com/infrasecture/vaka/releases/download/v0.0.2/vaka-0.0.2-1-x86_64.pkg.tar.zst
-sudo pacman -U vaka-0.0.2-1-x86_64.pkg.tar.zst
+curl -fLO "https://github.com/infrasecture/vaka/releases/download/v${VAKA_VERSION}/vaka-${VAKA_VERSION}-1-x86_64.pkg.tar.zst"
+sudo pacman -U "vaka-${VAKA_VERSION}-1-x86_64.pkg.tar.zst"
 ```
 
 On macOS, use Homebrew:
@@ -111,9 +113,12 @@ Ready-made, policy-hardened stacks are published in the
 
 ```bash
 vaka search agent
-vaka get codex        # fetch the recipe, digest-verified; never runs docker
-cd codex && vaka up
-vaka get              # later: update this recipe in place (then `vaka up`)
+vaka recipes info codex
+vaka get codex                       # verified fetch; never runs docker
+cd /path/to/project
+/path/to/codex/myCodex               # use the recipe-specific launcher
+(cd /path/to/codex && vaka get)      # later: update recipe files in place
+/path/to/codex/myCodex up            # apply updated files to this project
 ```
 
 For a slower walkthrough, see [docs/quickstart.md](docs/quickstart.md).
@@ -147,17 +152,21 @@ If the firewall cannot be installed, the app does not start.
 
 ## Examples
 
-The fastest way to see a realistic policy is the [Codex + LiteLLM example](examples/codex). It runs Codex in one container, routes model traffic through a LiteLLM sidecar, and uses vaka to prevent the Codex container from reaching the internet directly.
+The fastest way to see a maintained, realistic policy is the official Codex
+recipe. Inspect it with `vaka recipes info codex`, install it with
+`vaka get codex`, and run it through the installed `myCodex` launcher. The
+[Codex compatibility pointer](examples/codex) explains why the old runnable
+copy was retired.
 
-Use its policy as the starting point: [`examples/codex/vaka.yaml`](examples/codex/vaka.yaml).
-
-That example demonstrates the recommended sidecar pattern for agent containers:
+The recipe demonstrates the recommended sidecar pattern for agent containers:
 
 - The agent can reach only local sidecars it needs.
 - Internet-facing access is placed on a narrower gateway service.
 - Each service gets its own egress policy.
 
-More examples will live under [examples/](examples/). See [docs/examples.md](docs/examples.md) for the catalogue and adaptation notes.
+See [docs/examples.md](docs/examples.md) for catalog discovery, verified
+installation, safe updates, the Codex security migration, Git preview recipes,
+and adaptation notes.
 
 ## Documentation
 
