@@ -1,6 +1,11 @@
 # Policy Reference
 
-`vaka.yaml` is a service policy file. It is separate from `docker-compose.yaml`; service names in both files must match.
+`vaka.yaml` is a service policy file separate from `docker-compose.yaml`. Every
+service named in the policy must exist in the merged Compose project. Compose
+services omitted from the policy remain unmanaged.
+
+For a practical first policy and the commands that apply it, start with
+[Write Your First `vaka.yaml`](vaka-yaml-quickstart.md).
 
 ## Minimal Shape
 
@@ -234,5 +239,3 @@ Current limits:
 - You cannot arbitrarily interleave accept, reject, and drop rules.
 - `block_metadata` has fixed precedence ahead of user rules.
 - Native `.nft` and nft JSON pass-through are not implemented yet.
-
-Track the native nft escape-hatch work in [issue #19](https://github.com/infrasecture/vaka/issues/19).

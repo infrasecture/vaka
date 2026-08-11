@@ -108,4 +108,5 @@ unprotected container-creation path.
 
 `vaka-init` uses the Linux kernel nftables subsystem through the `nft` binary. Very old kernels may not support all nftables features used by vaka, such as `inet` family tables or `icmpx`.
 
-Pre-5.x kernels are uncommon on currently supported mainstream distributions, but the known limitation is tracked in [issue #17](https://github.com/infrasecture/vaka/issues/17).
+Pre-5.x kernels are uncommon on currently supported mainstream distributions;
+test the generated ruleset on older kernels before relying on enforcement.
