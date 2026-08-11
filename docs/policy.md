@@ -234,5 +234,3 @@ Current limits:
 - You cannot arbitrarily interleave accept, reject, and drop rules.
 - `block_metadata` has fixed precedence ahead of user rules.
 - Native `.nft` and nft JSON pass-through are not implemented yet.
-
-Track the native nft escape-hatch work in [issue #19](https://github.com/infrasecture/vaka/issues/19).

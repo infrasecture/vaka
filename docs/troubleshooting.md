@@ -154,7 +154,7 @@ while Compose's `--pull=always` fetches and runs B. If A and B differ in
 
 **Digest-pinned images are immune.** `repo@sha256:…` is immutable, so a forced
 pull re-verifies the same digest — inspected == executed. Pinning is the
-recommended practice and is what the recipe registry does.
+recommended practice for reproducible Compose projects and recipes.
 
 Two ways to avoid it:
 

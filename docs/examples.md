@@ -1,167 +1,102 @@
-# Examples
+# Recipes And Examples
 
-Maintained, runnable stacks are published as versioned recipes. Use Vaka's
-catalog and `get` commands instead of copying an executable snapshot from this
-repository.
+Runnable examples are distributed as versioned recipes. This repository
+documents the workflow; `vaka get` installs the current recipe from a configured
+registry.
 
-## Official Recipe Catalogue
+## Discover A Recipe
+
+Search recipe names, descriptions, and tags:
 
 ```bash
-vaka search agent
-vaka recipes list
+vaka search codex
 vaka recipes info codex
 ```
 
-`vaka recipes info` is the current source for a recipe's published version,
-digest, minimum Vaka version, environment inputs, version history, policy
-summary, and advisory risk flags. Catalog commands inspect registry state; they
-do not inspect local recipe installations or run Docker.
+`vaka recipes info` shows the selected version, digest, minimum Vaka version,
+documented environment variables, indexed versions, and the registry's
+advisory policy and risk summary. It reads catalog data and does not inspect a
+local installation.
 
-## Codex With LiteLLM Gateway
+## Install The Codex Recipe
 
-The official Codex recipe runs Codex in one container and LiteLLM in a separate
-local gateway container. The agent can reach only the gateway, while the gateway
-has its own provider-specific egress policy.
-
-### Install And Run
-
-Install the current catalog version into a new `codex` directory:
+The target's parent must exist and the target itself must be new:
 
 ```bash
-vaka get codex
-cd codex
-./myCodex
+mkdir -p "$HOME/vaka-recipes"
+vaka get codex "$HOME/vaka-recipes/codex"
 ```
 
-`vaka get` verifies the artifact digest, validates the staged recipe, recomputes
-its policy and risk summary, and writes a `.vaka-recipe.lock`. It changes recipe
-files only and never starts Docker.
+During installation, `vaka get`:
 
-Codex must be launched with the installed recipe's `myCodex`, not bare
-`vaka up` or `docker compose`. The launcher supplies host identity, authentication
-profile selection, per-project state, and the profile-specific Compose and Vaka
-files. When invoked from the recipe directory it creates or reuses a confined
-named workspace.
+- verifies the downloaded artifact against its registry digest;
+- extracts it without allowing path escapes or special files;
+- validates the recipe identity, minimum Vaka version, Compose model, and
+  `vaka.yaml` policy;
+- writes `.vaka-recipe.lock` with the installed provenance and file state; and
+- publishes the completed directory without replacing an existing path.
 
-For an existing project, invoke the installed launcher from that project's
-directory:
+After the files are installed, `vaka get` reports a locally computed policy and
+risk summary and warns about required environment variables absent from the
+current process. It does not load `.env`. A failure to produce that advisory
+summary is a warning and does not roll back an otherwise valid installation.
+
+`vaka get` installs files only. It never starts Docker or runs recipe code.
+
+## Review The Installation
+
+Read the instructions and policy that came from the verified artifact:
 
 ```bash
-cd /path/to/project
-/path/to/codex/myCodex
+cd "$HOME/vaka-recipes/codex"
+less README.md
+less vaka.yaml
 ```
 
-First-run setup offers ChatGPT subscription login, an OpenAI API key, and the
-available experimental profiles. The installed recipe README is authoritative
-for profile requirements and operational commands.
+Then use the launch command documented in that README. A recipe may use plain
+`vaka up` or provide a launcher for additional identity, credentials, Compose
+overlays, or state handling. Vaka deliberately does not guess how a recipe
+should be run.
 
-### Check Status And Update
+## Update An Installed Recipe
 
-The catalog, installed files, and running stack have separate status surfaces:
+Run the same verb without a recipe name from inside the installation:
 
 ```bash
-vaka recipes info codex             # current published catalog metadata
-(cd /path/to/codex && vaka get)      # check/update the installed recipe
-
-cd /path/to/project
-/path/to/codex/myCodex info          # resolved project and state
-/path/to/codex/myCodex auth status   # selected authentication profile
-/path/to/codex/myCodex ps            # running services
+(cd "$HOME/vaka-recipes/codex" && vaka get)
 ```
 
-A bare `vaka get` inside an installed recipe uses its lock to resolve the same
-registry and recipe. Updates preserve untracked state, refuse to overwrite
-locally modified tracked files, and recover by rerunning `vaka get` after an
-interruption. Follow the installed README after an update; for Codex, run
-`/path/to/codex/myCodex up` from the same project directory so Compose applies
-the updated stack files.
+The lock supplies the registry and recipe name, and an omitted version selects
+the highest indexed version. Use the exact-version forms documented under
+[`vaka get`](cli.md#vaka-get) when you need a specific `X.Y.Z` release.
 
-### `codex@0.3.1` Security Migration
+Updates are conservative:
 
-Recipe versions through `0.3.0` exposed the LiteLLM administrator credential to
-the Codex container. Release `0.3.1` introduced route-restricted agent
-authentication, rotation of the affected key, and a fail-closed guard for
-legacy containers.
+- An edited tracked file that the new release still ships blocks the update.
+- A locally deleted tracked file that is still shipped is restored.
+- A modified tracked file dropped by the new release is kept as an untracked
+  deviation.
+- Untracked files are left alone. A byte-identical collision is adopted into
+  the lock; a different collision is kept and reported as a deviation.
+- An interrupted update is journaled and converges when `vaka get` is run
+  again.
 
-After updating an affected installation, follow its README. When instructed,
-run `myCodex down` from the same project directory, then rerun `myCodex`. Use
-`vaka recipes info codex` rather than this historical notice to determine the
-current catalog version.
+Updating files does not change running containers. Follow the installed README
+to apply the new recipe version.
 
-The former runnable `examples/codex` copy matched `codex@0.1.0` and was not a
-managed recipe. Its [compatibility pointer](../examples/codex) explains how to
-install into a fresh target.
+## A Gateway Pattern For Agents
 
-## Test An Unpublished Recipe
+A local gateway can let an agent reach a provider without giving the agent
+general internet access. The pattern is:
 
-Git preview registries let maintainers test a branch without treating it as an
-official release:
+- deny the agent's outbound traffic by default;
+- allow it to reach only the local services it needs;
+- put provider access on a narrower gateway service; and
+- give each service its own explicit egress policy.
 
-```bash
-vaka registry add-git preview \
-  https://github.com/infrasecture/vaka-registry.git \
-  --ref main
-vaka recipes info preview/codex
-vaka get preview/codex codex-preview
+Use this as an architectural example, not as a file-copy template. To protect
+your own Compose project, start with the [Quickstart](quickstart.md) and adapt
+the [policy schema](policy.md) to your service names and destinations.
 
-# After the configured ref advances:
-vaka registry refresh preview
-(cd codex-preview && vaka get)
-```
-
-Preview recipe names are always registry-qualified. An explicit refresh pins
-the configured ref to a new commit and atomically replaces the local preview
-catalog. Replace `main` with your candidate branch when testing unpublished
-work, and install previews into disposable targets separate from official
-recipes.
-
-## Recommended Agent Pattern
-
-For agent containers, prefer a sidecar or gateway pattern:
-
-- The agent container is blocked by default.
-- The agent can reach only local services it needs.
-- Internet-facing access lives in a narrower gateway service.
-- Each gateway has its own explicit egress allowlist.
-
-This is usually safer than allowing the agent container to reach model
-providers, package registries, GitHub, arbitrary documentation sites, and
-internal systems directly.
-
-## Adapting Existing Compose Agent Stacks
-
-Vaka can usually be added to an existing Compose stack without changing the
-Compose file:
-
-1. Identify the service that runs the agent loop.
-2. List the external endpoints it actually needs.
-3. Add DNS plus those endpoints to `vaka.yaml`.
-4. Run `vaka validate --compose docker-compose.yaml`.
-5. Start with `vaka up` instead of `docker compose up`.
-
-Inspect an installed recipe when you need a maintained policy reference. Adapt
-the policy to your own service names and endpoints rather than copying the
-recipe's launcher or Compose contract piecemeal.
-
-Common candidates include self-hosted coding agents, browser/tool sandboxes,
-model gateways, package-cache sidecars, and MCP gateway services.
-
-Examples of stacks where the same pattern can apply:
-
-- [OpenHands](https://github.com/OpenHands/OpenHands)
-- [OpenClaw](https://github.com/openclaw/openclaw)
-- [SwarmClaw](https://github.com/swarmclawai/swarmclaw)
-- [Docker Compose for Agents](https://github.com/docker/compose-for-agents)
-
-Treat the links as integration targets, not as tested official Vaka recipes.
-
-## Other Useful Patterns
-
-The same policy model applies outside coding agents:
-
-- Vendor or SaaS connector containers that should call only the vendor's published endpoints.
-- CI and build containers that should reach package registries and artifact stores, not production services.
-- Dev and staging services that should not accidentally connect to production systems.
-- Data-processing jobs that should egress only to approved warehouses, logs, or object stores.
-- Suspicious binary analysis where the process should have no network access or only a narrow allowlist.
-- Plugin or extension containers that need their own explicit egress contract.
+For custom published registries and commit-pinned Git previews, see the
+[registry commands](cli.md#vaka-registry).

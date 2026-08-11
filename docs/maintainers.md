@@ -122,19 +122,28 @@ Linux packages install only `/usr/local/bin/vaka`.
 There are two non-publishing workflows. Choose according to whether the test is
 about the built artifacts or the complete release-preparation procedure.
 
+Export the intended, unreleased CLI version once, replacing the placeholder.
+Every stable-release command below reuses it:
+
+```bash
+export RELEASE_VERSION=vX.Y.Z
+: "${RELEASE_VERSION:?export RELEASE_VERSION to the intended vX.Y.Z}"
+```
+
 ### Build And Inspect Artifacts
 
 On an ordinary development checkout, build version-stamped artifacts with:
 
 ```bash
-./build.sh --release --packages --cli-version v0.3.0
+./build.sh --release --packages --cli-version "${RELEASE_VERSION}"
 ```
 
 This builds the full architecture matrix, local runtime images, and Linux
-packages. The resulting CLI reports `v0.3.0`, making this path suitable for
-local installation, packaging, and behavior tests. It does not require a clean
-checkout and does not run the release vulnerability scan, full release test
-gate, image-mount smoke test, registry preflight, or release-asset preparation.
+packages. The resulting CLI reports the selected version, making this path
+suitable for local installation, packaging, and behavior tests. It does not
+require a clean checkout and does not run the release vulnerability scan, full
+release test gate, image-mount smoke test, registry preflight, or release-asset
+preparation.
 
 The build records the source commit and dirty state in its prepared metadata.
 The build itself never publishes images, Git tags, GitHub releases, or Homebrew
@@ -146,7 +155,7 @@ On a host satisfying all release-builder requirements, qualify the exact
 release candidate without publishing it:
 
 ```bash
-./release.sh --version v0.3.0 --prepare-only
+./release.sh --version "${RELEASE_VERSION}" --prepare-only
 ```
 
 This path requires a clean checkout. In addition to building the exact release
@@ -184,7 +193,7 @@ publication succeeds.
 Run preparation on the release builder:
 
 ```bash
-./release.sh --version v0.3.0 --prepare-only
+./release.sh --version "${RELEASE_VERSION}" --prepare-only
 ```
 
 Preparation:
@@ -204,7 +213,7 @@ After reviewing the prepared output, publish on the same builder and Docker
 target:
 
 ```bash
-./release.sh --version v0.3.0 --publish-prepared
+./release.sh --version "${RELEASE_VERSION}" --publish-prepared
 ```
 
 The publish phase validates all prepared state again, preflights external Git,
@@ -221,7 +230,7 @@ GitHub, and Homebrew prerequisites, repeats runtime registry preflight, then:
 Preparation and publication may also run in one invocation:
 
 ```bash
-./release.sh --version v0.3.0
+./release.sh --version "${RELEASE_VERSION}"
 ```
 
 Keeping the two commands is recommended for a deliberate review point.

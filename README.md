@@ -11,18 +11,8 @@ vaka lets you run `vaka up` instead of `docker compose up` and enforce a per-ser
 
 You keep your existing `docker-compose.yaml`. You add a small `vaka.yaml` that says which hosts, ports, DNS servers, and metadata endpoints each service may reach. vaka loads nftables rules inside each container's own Linux network namespace, then hands control to the original entrypoint.
 
-No image rebuilds. No compose-file edits. No generated policy files on the host.
-
-<!--
-  DEMO VIDEO PLACEHOLDER:
-  Add a non-autoplay demo block here once the edited assets are ready.
-  Suggested shape:
-    - short clickable thumbnail or animated preview, not full autoplay video
-    - link to docs/demo.md for full recordings:
-      1. agent container without vaka
-      2. agent container with vaka policy and LiteLLM sidecar
-  Keep large MP4 files out of git; prefer release assets or another durable host.
--->
+Normal use does not require a Vaka-specific image rebuild. Policy stays in a
+separate file, and Vaka does not write generated policy files to the host.
 
 ## Contents
 
@@ -45,83 +35,77 @@ vaka reduces that blast radius. A service that only needs OpenAI, Anthropic, Git
 
 ## Install
 
-On Linux, install a `.deb`, `.rpm`, or Arch package from the [releases page](https://github.com/infrasecture/vaka/releases):
-
-```bash
-VAKA_VERSION=0.3.0
-
-# Debian / Ubuntu
-curl -fLO "https://github.com/infrasecture/vaka/releases/download/v${VAKA_VERSION}/vaka_${VAKA_VERSION}_amd64.deb"
-sudo dpkg -i "vaka_${VAKA_VERSION}_amd64.deb"
-
-# Fedora / RHEL / CentOS
-curl -fLO "https://github.com/infrasecture/vaka/releases/download/v${VAKA_VERSION}/vaka-${VAKA_VERSION}-1.x86_64.rpm"
-sudo rpm -i "vaka-${VAKA_VERSION}-1.x86_64.rpm"
-
-# Arch Linux
-curl -fLO "https://github.com/infrasecture/vaka/releases/download/v${VAKA_VERSION}/vaka-${VAKA_VERSION}-1-x86_64.pkg.tar.zst"
-sudo pacman -U "vaka-${VAKA_VERSION}-1-x86_64.pkg.tar.zst"
-```
-
-On macOS, use Homebrew:
+On Linux, install the package for your distribution and architecture from the
+[latest release](https://github.com/infrasecture/vaka/releases/latest). On
+macOS, use Homebrew:
 
 ```bash
 brew tap infrasecture/tap
 brew install vaka
-
-# or track nightly builds
-brew install vaka-nightly
 ```
 
-Full install options are in [docs/installation.md](docs/installation.md).
+Then verify the host setup:
+
+```bash
+vaka version
+vaka doctor
+```
+
+Packages, raw macOS binaries, source builds, nightly builds, and compatibility
+requirements are covered in [Installation](docs/installation.md).
 
 ## Quickstart
 
-For your own Compose project, create `vaka.yaml` next to `docker-compose.yaml`. Each key under `services:` must match a Compose service name.
+Choose the path that matches what you want to do.
 
-Check the setup:
+### Install And Review A Published Recipe
+
+Search the built-in registry, inspect the recipe, and install it into a new
+directory:
 
 ```bash
-vaka doctor
+vaka search codex
+vaka recipes info codex
+mkdir -p "$HOME/vaka-recipes"
+vaka get codex "$HOME/vaka-recipes/codex"
+```
+
+`vaka get` verifies and validates the recipe but never runs it. Read the
+installed instructions before starting anything:
+
+```bash
+cd "$HOME/vaka-recipes/codex"
+less README.md
+```
+
+### Protect Your Compose Project
+
+Create `vaka.yaml` next to your Compose file, with one matching entry for each
+service you want Vaka to manage. Then validate and start the project:
+
+```bash
 vaka validate --compose docker-compose.yaml
+vaka up -d
 ```
 
-Start the stack:
+Use the fixed shorthands for common operations:
 
 ```bash
-vaka up
-```
-
-Use normal Compose commands through vaka:
-
-```bash
-vaka logs -f agent
+vaka ps
+vaka logs --tail 50 agent
 vaka exec agent sh
 vaka down
 ```
 
-The full docker compose surface (including compose global flags such as `-f`
-and `--profile`) lives under `vaka compose`:
+The complete Compose command surface lives under `vaka compose`:
 
 ```bash
 vaka compose -f compose.prod.yaml up -d
-vaka compose pull  # prefetch service images and the Vaka runtime
+vaka compose pull
 ```
 
-Ready-made, policy-hardened stacks are published in the
-[recipe registry](https://github.com/infrasecture/vaka-registry):
-
-```bash
-vaka search agent
-vaka recipes info codex
-vaka get codex                       # verified fetch; never runs docker
-cd /path/to/project
-/path/to/codex/myCodex               # use the recipe-specific launcher
-(cd /path/to/codex && vaka get)      # later: update recipe files in place
-/path/to/codex/myCodex up            # apply updated files to this project
-```
-
-For a slower walkthrough, see [docs/quickstart.md](docs/quickstart.md).
+See [Quickstart](docs/quickstart.md) for a complete policy example and the
+recipe update flow.
 
 ## Mental Model
 
@@ -139,7 +123,8 @@ If the firewall cannot be installed, the app does not start.
 
 - Docker Engine 28.0.0 or newer (effective API 1.48+) and Docker Compose 2.35.0 or newer.
 - Linux containers. Docker Desktop on macOS is supported because containers run inside Docker's Linux VM.
-- A Compose project and a matching `vaka.yaml`.
+- A Compose project and matching `vaka.yaml` when protecting your own stack;
+  published recipes supply their own Compose and policy files.
 - Network access to pull the versioned `emsi/vaka-init:runtime-vX.Y.Z` runtime image on first use, unless you bake the helper binaries into your image.
 
 ## Limits
@@ -152,21 +137,16 @@ If the firewall cannot be installed, the app does not start.
 
 ## Examples
 
-The fastest way to see a maintained, realistic policy is the official Codex
-recipe. Inspect it with `vaka recipes info codex`, install it with
-`vaka get codex`, and run it through the installed `myCodex` launcher. The
-[Codex compatibility pointer](examples/codex) explains why the old runnable
-copy was retired.
-
-The recipe demonstrates the recommended sidecar pattern for agent containers:
+A gateway is a useful pattern when an agent needs access to a provider but does
+not need general internet access:
 
 - The agent can reach only local sidecars it needs.
 - Internet-facing access is placed on a narrower gateway service.
 - Each service gets its own egress policy.
 
-See [docs/examples.md](docs/examples.md) for catalog discovery, verified
-installation, safe updates, the Codex security migration, Git preview recipes,
-and adaptation notes.
+See [Examples](docs/examples.md) for the current `vaka get` workflow, safe
+updates, and this gateway pattern. Runnable recipes come from configured
+registries; this repository does not carry a second copy.
 
 ## Documentation
 

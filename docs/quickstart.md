@@ -1,131 +1,139 @@
 # Quickstart
 
-This guide assumes you already have a working Docker Compose project.
+Vaka supports two starting points:
 
-## 1. Install vaka
+- Install a published recipe when you want a ready-made Compose project.
+- Add `vaka.yaml` when you already have a Compose project.
 
-Linux:
+## Before You Start
 
-```bash
-# Debian / Ubuntu
-VAKA_VERSION=0.3.0
-curl -fLO "https://github.com/infrasecture/vaka/releases/download/v${VAKA_VERSION}/vaka_${VAKA_VERSION}_amd64.deb"
-sudo dpkg -i "vaka_${VAKA_VERSION}_amd64.deb"
-```
-
-See [installation.md](installation.md) for RPM, Arch Linux, source-build, and macOS binary options.
-
-macOS:
+Install the Vaka CLI using the [installation guide](installation.md), then
+check the Docker target:
 
 ```bash
-brew tap infrasecture/tap
-brew install vaka
-```
-
-## Recipe Fast Path
-
-If you want a maintained, ready-to-run stack instead of adapting an existing
-Compose project, install the Codex recipe from the official registry:
-
-```bash
-vaka recipes info codex
-vaka get codex
-(cd codex && ./myCodex)
-```
-
-`vaka get` verifies and validates the recipe but never starts Docker. Codex uses
-its recipe-specific launcher rather than bare `vaka up`; the subshell returns
-you to the parent directory when the session ends. See the
-[examples guide](examples.md) for running it against an existing project,
-updates, authentication profiles, and the security-migration notice.
-
-## 2. Add `vaka.yaml`
-
-For your existing Compose project, create `vaka.yaml` next to
-`docker-compose.yaml`. Each key under `services:` must match a Compose service
-name; see the [policy reference](policy.md) for the schema.
-
-To inspect a maintained sidecar policy without mixing it into your project,
-fetch the recipe into a separate, new directory and review its `vaka.yaml`:
-
-```bash
-vaka get codex codex-reference
-```
-
-Adapt service names and allowed endpoints to your own stack. Do not copy the
-recipe's launcher or Compose files piecemeal; those files form one tested
-runtime and credential contract.
-
-## 3. Validate
-
-```bash
-vaka validate --compose docker-compose.yaml
-```
-
-This checks the policy schema, service names, and unsupported `network_mode: host` services.
-
-## 4. Check The Host
-
-```bash
+vaka version
 vaka doctor
 ```
 
-If the runtime image is missing or incompatible, let vaka repair it:
+If the runtime image is missing or incompatible, let Vaka repair it:
 
 ```bash
 vaka doctor --fix
 ```
 
-## 5. Start The Stack
+## Path A: Install And Review A Published Recipe
+
+Search the configured registries and inspect a recipe before downloading it:
 
 ```bash
-vaka up
+vaka search codex
+vaka recipes info codex
 ```
 
-Use regular Compose flags after the command as usual; Compose global flags
-such as `-f` require the `vaka compose` form:
+Create a parent directory and install into a new target:
+
+```bash
+mkdir -p "$HOME/vaka-recipes"
+vaka get codex "$HOME/vaka-recipes/codex"
+```
+
+The first install target must not already exist. `vaka get` verifies the
+artifact digest, validates the manifest, Compose model, and Vaka policy, checks
+the minimum Vaka version, and records provenance in `.vaka-recipe.lock`. It
+never starts containers or runs recipe scripts.
+
+Read the instructions shipped with the installed recipe:
+
+```bash
+cd "$HOME/vaka-recipes/codex"
+less README.md
+```
+
+Run only the command documented by that recipe. Some recipes use `vaka up`;
+others provide a launcher that supplies additional configuration.
+
+To update later, run `vaka get` from the installed directory:
+
+```bash
+(cd "$HOME/vaka-recipes/codex" && vaka get)
+```
+
+The update changes recipe files only. Follow the installed README to apply the
+new files to any running stack.
+
+## Path B: Protect Your Compose Project
+
+Create `vaka.yaml` next to your Compose file. Replace `app` with the name of a
+service from your Compose project and replace `api.example.com` with the
+destination that service actually needs:
+
+```yaml
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+        block_metadata: drop
+        accept:
+          - dns: {}
+          - proto: tcp
+            to: [api.example.com]
+            ports: [443]
+```
+
+Validate the policy and its service names:
+
+```bash
+vaka validate --compose docker-compose.yaml
+```
+
+If your project uses another filename or several Compose files, repeat
+`--compose` for the exact set you want to check.
+
+Preview what Vaka will apply:
+
+```bash
+vaka show-nft app
+vaka show-compose
+```
+
+Start and operate the stack through Vaka:
+
+```bash
+vaka up -d
+vaka ps
+vaka logs --tail 50 app
+```
+
+Open an interactive shell when you need one, then exit it before stopping the
+stack:
+
+```bash
+vaka exec app sh
+vaka down
+```
+
+Compose command flags follow the command. Compose global flags, such as `-f`,
+`--profile`, and `--project-directory`, use the `vaka compose` namespace:
 
 ```bash
 vaka up --build -d
-vaka compose -f compose.prod.yaml up -d
+vaka compose -f compose.prod.yaml --profile worker up -d
 ```
 
-Use `--vaka-file=<path>` before the command when the policy file is not named `vaka.yaml`:
+Vaka flags go before the command and value-taking flags use `=`:
 
 ```bash
 vaka --vaka-file=policies/prod.yaml compose -f compose.prod.yaml up -d
 ```
 
-## 6. Operate The Stack
+## Next Steps
 
-```bash
-vaka ps
-vaka logs -f agent
-vaka exec agent sh
-vaka down
-```
-
-Reference commands are proxied through Docker Compose with a metadata-only
-Vaka overlay; they do not evaluate policy or create helper resources.
-
-## Preview Generated Output
-
-Preview the nftables rules for one service:
-
-```bash
-vaka show-nft agent
-```
-
-Preview the generated Compose override:
-
-```bash
-vaka show-compose
-vaka show-compose -o /tmp/vaka-override.yaml
-```
-
-`show-compose` intentionally does not print the per-service encoded policy values.
-
-## Build-Only Services
-
-For build-only service failures, see
-[Build-Only Services](troubleshooting.md#build-only-services).
+- [Examples](examples.md) explains the complete recipe lifecycle.
+- [Policy reference](policy.md) covers every policy field and rule type.
+- [CLI reference](cli.md) covers registry management, update safety, Compose
+  dispatch, and Vaka flags.
+- [Troubleshooting](troubleshooting.md) covers build-only services, image
+  inspection, Docker compatibility, and DNS behavior.

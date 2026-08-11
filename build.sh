@@ -6,7 +6,7 @@
 # Usage:
 #   ./build.sh                  build native host targets (fast local loop)
 #   ./build.sh --release        build full release matrix without publishing
-#   ./build.sh --release --cli-version v0.3.0 --packages
+#   ./build.sh --release --cli-version vX.Y.Z --packages
 #                               build an unpublished, non-dev release locally
 #   ./build.sh --preflight-runtime
 #                               check the prepared runtime against the registry
