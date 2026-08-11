@@ -83,13 +83,6 @@ esac
 sudo install -m 0755 "dist/vaka-linux-${vaka_arch}" /usr/local/bin/vaka
 ```
 
-Use the binary matching your host:
-
-- `dist/vaka-linux-amd64`
-- `dist/vaka-linux-arm64`
-- `dist/vaka-darwin-amd64`
-- `dist/vaka-darwin-arm64`
-
 Build packages with:
 
 ```bash
@@ -111,6 +104,13 @@ Build the full release matrix with:
 ```bash
 ./build.sh --release
 ```
+
+That release build produces all four host CLI binaries:
+
+- `dist/vaka-linux-amd64`
+- `dist/vaka-linux-arm64`
+- `dist/vaka-darwin-amd64`
+- `dist/vaka-darwin-arm64`
 
 ## macOS With Homebrew
 
