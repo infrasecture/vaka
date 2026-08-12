@@ -39,9 +39,15 @@ if [[ -f "${prepared_state}" ]]; then
     fi
 fi
 [[ -n "${runtime_version}" ]] || die "runtime bundle version is empty"
-runtime_ref="emsi/vaka-init:runtime-${runtime_version}"
-
 engine_version="$(docker version --format '{{.Server.Version}}')" || die "cannot query Docker Engine"
+daemon_arch_raw="$(docker version --format '{{.Server.Arch}}')" || die "cannot query Docker target architecture"
+case "${daemon_arch_raw}" in
+    amd64|x86_64) daemon_arch=amd64 ;;
+    arm64|aarch64) daemon_arch=arm64 ;;
+    *) die "unsupported Docker target architecture: ${daemon_arch_raw}" ;;
+esac
+runtime_ref="emsi/vaka-init:runtime-${runtime_version}-${daemon_arch}"
+
 compose_version="$(docker compose version --short)" || die "cannot query Docker Compose"
 
 if [[ -n "${EXPECT_ENGINE}" ]] && \

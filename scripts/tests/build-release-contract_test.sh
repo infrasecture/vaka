@@ -69,5 +69,6 @@ assert_file_contains nft/Dockerfile 'FROM alpine:3.21@sha256:'
 assert_file_contains release.sh 'GOVULNCHECK_VERSION:-v1.6.0'
 assert_file_contains release.sh 'ARTIFACT_LIST_SHA256'
 assert_file_contains scripts/smoke-image-mount.sh 'RUNTIME_EFFECTIVE_VERSION'
+assert_file_contains scripts/smoke-image-mount.sh '{{.Server.Arch}}'
 
 echo "PASS: build and release command contracts"
