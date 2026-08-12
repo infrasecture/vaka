@@ -192,10 +192,17 @@ func (d *dockerServices) ImageExists(ctx context.Context, ref string) (bool, err
 	return false, fmt.Errorf("inspect %s on %s: %w", ref, d.targetDesc, err)
 }
 
-// ResolveRuntimeImage resolves and validates Vaka's own runtime image. The
-// runtime tag is only a lookup key: callers receive the immutable local image
-// ID, and the image's bundle-version label must match exactly.
+// ResolveRuntimeImage resolves and validates Vaka's own runtime image. ref is
+// the platform-neutral runtime tag embedded in the CLI. Vaka derives the
+// matching immutable architecture tag from the selected Docker daemon, never
+// from the host running the CLI. Callers receive the immutable local image ID,
+// and the image's bundle-version label must match exactly.
 func (d *dockerServices) ResolveRuntimeImage(ctx context.Context, ref, expectedVersion string, repair bool) (ResolvedImage, error) {
+	ref, err := d.runtimeImageReference(ctx, ref)
+	if err != nil {
+		return ResolvedImage{}, err
+	}
+
 	inspect, err := d.c.ImageInspect(ctx, ref)
 	if errdefs.IsNotFound(err) && repair {
 		if err := d.pullImage(ctx, ref); err != nil {
@@ -211,6 +218,9 @@ func (d *dockerServices) ResolveRuntimeImage(ctx context.Context, ref, expectedV
 	}
 
 	resolved, validationErr := validateRuntimeImage(ref, expectedVersion, inspect)
+	if validationErr == nil {
+		validationErr = d.validateRuntimeMountIdentity(ctx, ref, resolved.ID)
+	}
 	if validationErr == nil {
 		resolved = d.selectRuntimeMountSource(resolved)
 	}
@@ -231,7 +241,60 @@ func (d *dockerServices) ResolveRuntimeImage(ctx context.Context, ref, expectedV
 	if validationErr != nil {
 		return ResolvedImage{}, fmt.Errorf("runtime image %s remains incompatible after refresh: %w", ref, validationErr)
 	}
+	if err := d.validateRuntimeMountIdentity(ctx, ref, resolved.ID); err != nil {
+		return ResolvedImage{}, fmt.Errorf("runtime image %s remains incompatible after refresh: %w", ref, err)
+	}
 	return d.selectRuntimeMountSource(resolved), nil
+}
+
+func (d *dockerServices) runtimeImageReference(ctx context.Context, ref string) (string, error) {
+	server, err := d.c.ServerVersion(ctx)
+	if err != nil {
+		return "", fmt.Errorf("query Docker target architecture on %s: %w", d.targetDesc, err)
+	}
+	arch, err := normalizeRuntimeArchitecture(server.Arch)
+	if err != nil {
+		return "", fmt.Errorf("Docker target %s: %w", d.targetDesc, err)
+	}
+	named, err := reference.ParseNormalizedNamed(ref)
+	if err != nil {
+		return "", fmt.Errorf("parse runtime image reference %q: %w", ref, err)
+	}
+	tagged, ok := named.(reference.Tagged)
+	if !ok {
+		return "", fmt.Errorf("runtime image reference %q has no version tag", ref)
+	}
+	archRef, err := reference.WithTag(reference.TrimNamed(named), tagged.Tag()+"-"+arch)
+	if err != nil {
+		return "", fmt.Errorf("build %s runtime image reference from %q: %w", arch, ref, err)
+	}
+	return reference.FamiliarString(archRef), nil
+}
+
+func normalizeRuntimeArchitecture(raw string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "amd64", "x86_64":
+		return "amd64", nil
+	case "arm64", "aarch64":
+		return "arm64", nil
+	default:
+		return "", fmt.Errorf("architecture %q has no published Vaka runtime image; supported architectures: amd64, arm64", raw)
+	}
+}
+
+// validateRuntimeMountIdentity ensures the immutable identity passed through
+// Compose is also a directly resolvable Docker image. Containerd-backed stores
+// can expose child manifest digests that exist as content but not as image
+// records; image mounts cannot use those content-only digests.
+func (d *dockerServices) validateRuntimeMountIdentity(ctx context.Context, ref, id string) error {
+	inspect, err := d.c.ImageInspect(ctx, id)
+	if err != nil {
+		return fmt.Errorf("runtime image %s returned mount identity %s that is not directly inspectable on %s: %w", ref, id, d.targetDesc, err)
+	}
+	if inspect.ID != id {
+		return fmt.Errorf("runtime image %s mount identity %s resolves to different image %s on %s", ref, id, inspect.ID, d.targetDesc)
+	}
+	return nil
 }
 
 func (d *dockerServices) selectRuntimeMountSource(resolved ResolvedImage) ResolvedImage {

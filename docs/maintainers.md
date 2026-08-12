@@ -270,9 +270,13 @@ Publication retries are safe: matching immutable data is reused, a prior
 partial architecture push can be completed, and only mutable `:latest` is
 rewritten.
 
-The Vaka CLI itself resolves the versioned runtime image, validates its label,
-and normally passes the exact local `sha256:` image ID to Compose. Engine 29.0
-and 29.1 receive an immutable 40-hex-character compatibility prefix instead.
+The Vaka CLI reads the selected Docker daemon architecture and resolves the
+matching immutable architecture tag, then validates its label and verifies that
+its exact local `sha256:` identity is directly inspectable. This distinction is
+required by containerd-backed image stores, where a multi-platform image's
+platform child can exist as content without being a directly resolvable image
+record. Vaka normally passes the complete identity to Compose; Engine 29.0 and
+29.1 receive an immutable 40-hex-character compatibility prefix instead.
 Vaka retains the complete ID in metadata and never relies on `:latest` for
 execution.
 
