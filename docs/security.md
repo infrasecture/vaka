@@ -33,7 +33,7 @@ If the original Compose service already had `NET_ADMIN`, vaka treats that as int
 
 - Inbound traffic and published ports.
 - Host-level firewall policy.
-- Network isolation for `network_mode: host`.
+- Network isolation for `network_mode: host`, `service:...`, or `container:...`.
 - Filesystem secrecy inside mounted directories.
 - Protection from Docker, kernel, or hypervisor escapes.
 - A full hostile-code sandbox for root-level adversaries.
@@ -80,7 +80,9 @@ handling remains governed by the user's SSH configuration.
 
 The `vaka` CLI can run on macOS. Enforcement still happens in Linux containers inside Docker Desktop's Linux VM. The macOS host does not need native nftables support.
 
-The same caveats apply as on Linux: the container backend must be Linux, and `network_mode: host` cannot be isolated per container.
+The same caveats apply as on Linux: the container backend must be Linux, and a
+managed service must own its network namespace. Vaka rejects the shared network
+modes `host`, `service:...`, and `container:...`.
 
 ## No Host Policy File
 

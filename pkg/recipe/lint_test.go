@@ -325,6 +325,22 @@ services:
 		}
 	})
 
+	t.Run("shared network namespace is refused", func(t *testing.T) {
+		for _, networkMode := range []string{"service:other", "container:external"} {
+			t.Run(networkMode, func(t *testing.T) {
+				sharedCompose := fmt.Sprintf("services:\n  app:\n    image: alpine:3.20\n    network_mode: %q\n  other:\n    image: alpine:3.20\n", networkMode)
+				dir := writeRecipeDir(t, sharedCompose, good)
+				if err := os.WriteFile(filepath.Join(dir, "recipe.yaml"), []byte(goodManifest), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if err := ValidateStaged(context.Background(), dir, demo); err == nil ||
+					!strings.Contains(err.Error(), "network_mode: "+networkMode) {
+					t.Fatalf("err = %v, want shared-network-namespace refusal", err)
+				}
+			})
+		}
+	})
+
 	t.Run("manifest minVakaVersion is enforced from the artifact", func(t *testing.T) {
 		// The index need not carry minVakaVersion at all; the digest-bound
 		// manifest's value is authoritative and must block an older vaka.

@@ -118,12 +118,15 @@ func validateWithMode(p *ServicePolicy, networkModes map[string]string, mode val
 		}
 
 		// Service must exist in docker-compose.yaml when compose data is available.
+		// Every managed service must also own its network namespace. Otherwise two
+		// containers can race to install different rules into the same nftables
+		// table, or a managed container can alter another container's policy.
 		if networkModes != nil {
-			mode, ok := networkModes[name]
+			networkMode, ok := networkModes[name]
 			if !ok {
 				add("%s: service %q not found in docker-compose.yaml", prefix, name)
-			} else if mode == "host" {
-				add("%s: network_mode: host — vaka cannot isolate a container sharing the host network namespace", prefix)
+			} else if networkMode == "host" || strings.HasPrefix(networkMode, "service:") || strings.HasPrefix(networkMode, "container:") {
+				add("%s: network_mode: %s — vaka cannot isolate a container that does not own its network namespace", prefix, networkMode)
 			}
 		}
 

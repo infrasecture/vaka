@@ -98,9 +98,12 @@ Current Compose versions may print `Image mount is an experimental feature`
 while creating a service. This is a Compose status message; the mount remains
 read-only and is supported by Vaka's minimum Engine and Compose versions.
 
-## `network_mode: host`
+## Shared `network_mode`
 
-vaka rejects services using `network_mode: host`. Those services share the host network namespace, so vaka cannot install a per-container egress policy.
+Vaka rejects managed services using `network_mode: host`, `service:...`, or
+`container:...`. Those modes share the host or another container's network
+namespace, so Vaka cannot install an independently owned per-container egress
+policy.
 
 Use a normal bridge network or move enforcement to a host/VM firewall layer.
 
