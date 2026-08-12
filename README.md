@@ -120,7 +120,9 @@ If the firewall cannot be installed, the app does not start.
 ## Limits
 
 - vaka controls outbound traffic only. It does not manage published ports or inbound access.
-- `network_mode: host` is not supported because there is no per-container network namespace to isolate.
+- `network_mode: host`, `service:...`, and `container:...` are not supported for
+  managed services because they do not provide an independently owned network
+  namespace for Vaka to isolate.
 - Hostnames are resolved when the container starts. Restart long-running services if allowed endpoints move.
 - vaka is not a VM or a hostile-code sandbox. It reduces network blast radius; it does not defend against kernel escapes or code that already has access to sensitive files inside the mounted workspace.
 - Some nftables features require reasonably modern Linux kernels. Very old pre-5.x kernels may fail to load the generated ruleset.

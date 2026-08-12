@@ -96,7 +96,7 @@ func TestValidatePortOutOfRange(t *testing.T) {
 	}
 }
 
-func TestValidateNetworkModeHost(t *testing.T) {
+func TestValidateRejectsSharedNetworkModes(t *testing.T) {
 	p := mustParse(t, `
 apiVersion: agent.vaka/v1alpha1
 kind: ServicePolicy
@@ -106,13 +106,25 @@ services:
       egress:
         defaultAction: reject
 `)
-	compose := map[string]string{"s": "host"} // service → network_mode
-	errs := policy.Validate(p, compose)
-	if len(errs) == 0 {
-		t.Fatal("expected error for network_mode: host")
+
+	for _, networkMode := range []string{"host", "service:other", "container:external"} {
+		t.Run(networkMode, func(t *testing.T) {
+			errs := policy.Validate(p, map[string]string{"s": networkMode})
+			if len(errs) == 0 {
+				t.Fatalf("expected error for network_mode: %s", networkMode)
+			}
+			if !strings.Contains(errs[0].Error(), "network_mode: "+networkMode) {
+				t.Errorf("error %q does not mention network_mode: %s", errs[0], networkMode)
+			}
+		})
 	}
-	if !strings.Contains(errs[0].Error(), "network_mode: host") {
-		t.Errorf("error %q does not mention network_mode: host", errs[0])
+
+	for _, networkMode := range []string{"", "bridge", "none"} {
+		t.Run("allows "+networkMode, func(t *testing.T) {
+			if errs := policy.Validate(p, map[string]string{"s": networkMode}); len(errs) != 0 {
+				t.Fatalf("network_mode %q: unexpected errors: %v", networkMode, errs)
+			}
+		})
 	}
 }
 
