@@ -5,7 +5,7 @@
 #   rootfs/opt/vaka/sbin/nft       — static nft binary
 #
 # Usage when baking into a harness image:
-#   FROM emsi/vaka-init:runtime-v0.1.0 AS vaka
+#   FROM emsi/vaka-init:runtime-v0.1.1 AS vaka
 #   FROM ubuntu:24.04
 #   COPY --from=vaka /opt/vaka/sbin/vaka-init /opt/vaka/sbin/vaka-init
 #   COPY --from=vaka /opt/vaka/sbin/nft       /opt/vaka/sbin/nft

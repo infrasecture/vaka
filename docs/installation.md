@@ -25,7 +25,7 @@ the block for your distribution; each one is self-contained.
 ### Debian Or Ubuntu
 
 ```bash
-VAKA_VERSION=0.3.0
+VAKA_VERSION=0.3.1
 vaka_arch="$(dpkg --print-architecture)"
 case "${vaka_arch}" in
   amd64|arm64) ;;
@@ -38,7 +38,7 @@ sudo dpkg -i "vaka_${VAKA_VERSION}_${vaka_arch}.deb"
 ### Fedora, RHEL, Or CentOS
 
 ```bash
-VAKA_VERSION=0.3.0
+VAKA_VERSION=0.3.1
 vaka_arch="$(uname -m)"
 case "${vaka_arch}" in
   x86_64|aarch64) ;;
@@ -51,7 +51,7 @@ sudo rpm -i "vaka-${VAKA_VERSION}-1.${vaka_arch}.rpm"
 ### Arch Linux
 
 ```bash
-VAKA_VERSION=0.3.0
+VAKA_VERSION=0.3.1
 vaka_arch="$(uname -m)"
 case "${vaka_arch}" in
   x86_64|aarch64) ;;
@@ -194,7 +194,7 @@ therefore use `vaka doctor --fix` normally.
 If containers cannot use the runtime image, copy its binaries into your service image:
 
 ```dockerfile
-ARG VAKA_RUNTIME_VERSION=v0.1.0
+ARG VAKA_RUNTIME_VERSION=v0.1.1
 FROM emsi/vaka-init:runtime-${VAKA_RUNTIME_VERSION} AS vaka
 FROM ubuntu:24.04
 COPY --from=vaka --chmod=0555 /opt/vaka/sbin/vaka-init /opt/vaka/sbin/vaka-init
