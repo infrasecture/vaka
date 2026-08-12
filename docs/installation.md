@@ -173,8 +173,10 @@ sudo install -m 0755 vaka /usr/local/bin/vaka
 
 ## First-Run Runtime Image
 
-Normal use pulls `emsi/vaka-init:runtime-vX.Y.Z` when needed. The runtime
-bundle has its own version and does not change for every Vaka CLI release. Run:
+Normal use selects the Docker daemon architecture and pulls the corresponding
+`emsi/vaka-init:runtime-vX.Y.Z-amd64` or
+`emsi/vaka-init:runtime-vX.Y.Z-arm64` image when needed. The runtime bundle has
+its own version and does not change for every Vaka CLI release. Run:
 
 ```bash
 vaka doctor

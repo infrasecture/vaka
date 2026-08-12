@@ -26,14 +26,18 @@ import (
 
 // fakeDockerClient implements dockerClient for unit tests without a live daemon.
 type fakeDockerClient struct {
-	serverVersion dockertypes.Version
-	clientVersion string
-	serverErr     error
-	notFound      bool                        // ImageInspect returns NotFound when true
-	inspectResult dockerimage.InspectResponse // returned when notFound == false
-	inspectCalled int                         // number of ImageInspect invocations
-	pullErr       error                       // error to return from ImagePull; nil = success
-	pullCalled    bool
+	serverVersion  dockertypes.Version
+	clientVersion  string
+	serverErr      error
+	notFound       bool                        // ImageInspect returns NotFound when true
+	inspectResult  dockerimage.InspectResponse // returned when notFound == false
+	inspectResults map[string]dockerimage.InspectResponse
+	inspectErrs    map[string]error
+	inspectRefs    []string
+	inspectCalled  int   // number of ImageInspect invocations
+	pullErr        error // error to return from ImagePull; nil = success
+	pullCalled     bool
+	pullRefs       []string
 }
 
 func (f *fakeDockerClient) ClientVersion() string {
@@ -50,19 +54,27 @@ func (f *fakeDockerClient) ServerVersion(context.Context) (dockertypes.Version, 
 	if f.serverVersion.Version != "" || f.serverVersion.APIVersion != "" {
 		return f.serverVersion, nil
 	}
-	return dockertypes.Version{Version: minimumDockerEngineVersion, APIVersion: minimumDockerAPIVersion}, nil
+	return dockertypes.Version{Version: minimumDockerEngineVersion, APIVersion: minimumDockerAPIVersion, Arch: "amd64"}, nil
 }
 
-func (f *fakeDockerClient) ImageInspect(_ context.Context, _ string, _ ...client.ImageInspectOption) (dockerimage.InspectResponse, error) {
+func (f *fakeDockerClient) ImageInspect(_ context.Context, ref string, _ ...client.ImageInspectOption) (dockerimage.InspectResponse, error) {
 	f.inspectCalled++
+	f.inspectRefs = append(f.inspectRefs, ref)
+	if err, ok := f.inspectErrs[ref]; ok {
+		return dockerimage.InspectResponse{}, err
+	}
+	if result, ok := f.inspectResults[ref]; ok {
+		return result, nil
+	}
 	if f.notFound {
 		return dockerimage.InspectResponse{}, errdefs.NotFound(errors.New("not found"))
 	}
 	return f.inspectResult, nil
 }
 
-func (f *fakeDockerClient) ImagePull(_ context.Context, _ string, _ dockerimage.PullOptions) (io.ReadCloser, error) {
+func (f *fakeDockerClient) ImagePull(_ context.Context, ref string, _ dockerimage.PullOptions) (io.ReadCloser, error) {
 	f.pullCalled = true
+	f.pullRefs = append(f.pullRefs, ref)
 	if f.pullErr != nil {
 		return nil, f.pullErr
 	}
@@ -233,6 +245,8 @@ func TestCheckRuntimeCompatibility(t *testing.T) {
 // --- ResolveRuntimeImage tests ---
 
 const testRuntimeImageID = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+const testRuntimeImageRef = "emsi/vaka-init:runtime-v0.1.0"
+const testRuntimeAMD64Ref = testRuntimeImageRef + "-amd64"
 
 func runtimeImageConfig(version string) dockerimage.InspectResponse {
 	inspect := imageConfig(nil, nil, "")
@@ -244,7 +258,7 @@ func runtimeImageConfig(version string) dockerimage.InspectResponse {
 func TestResolveRuntimeImageReturnsExactIDWithoutPull(t *testing.T) {
 	dc := &fakeDockerClient{inspectResult: runtimeImageConfig("v0.1.0")}
 	ds := &dockerServices{c: dc, targetDesc: "test-context"}
-	got, err := ds.ResolveRuntimeImage(context.Background(), "emsi/vaka-init:runtime-v0.1.0", "v0.1.0", true)
+	got, err := ds.ResolveRuntimeImage(context.Background(), testRuntimeImageRef, "v0.1.0", true)
 	if err != nil {
 		t.Fatalf("ResolveRuntimeImage: %v", err)
 	}
@@ -257,6 +271,10 @@ func TestResolveRuntimeImageReturnsExactIDWithoutPull(t *testing.T) {
 	if dc.pullCalled {
 		t.Fatal("present compatible runtime image was re-pulled")
 	}
+	wantRefs := []string{testRuntimeAMD64Ref, testRuntimeImageID}
+	if !strEq(dc.inspectRefs, wantRefs) {
+		t.Fatalf("inspect refs = %v, want %v", dc.inspectRefs, wantRefs)
+	}
 }
 
 func TestResolveRuntimeImageUsesCompactSourceForAffectedEngine(t *testing.T) {
@@ -266,7 +284,7 @@ func TestResolveRuntimeImageUsesCompactSourceForAffectedEngine(t *testing.T) {
 		targetDesc:                 "test-context",
 		useCompactImageMountSource: true,
 	}
-	got, err := ds.ResolveRuntimeImage(context.Background(), "emsi/vaka-init:runtime-v0.1.0", "v0.1.0", false)
+	got, err := ds.ResolveRuntimeImage(context.Background(), testRuntimeImageRef, "v0.1.0", false)
 	if err != nil {
 		t.Fatalf("ResolveRuntimeImage: %v", err)
 	}
@@ -278,25 +296,28 @@ func TestResolveRuntimeImageUsesCompactSourceForAffectedEngine(t *testing.T) {
 func TestResolveRuntimeImageMissingRespectsRepair(t *testing.T) {
 	dc := &fakeDockerClient{notFound: true, inspectResult: runtimeImageConfig("v0.1.0")}
 	ds := &dockerServices{c: dc, targetDesc: "test-context"}
-	if _, err := ds.ResolveRuntimeImage(context.Background(), "runtime", "v0.1.0", false); err == nil {
+	if _, err := ds.ResolveRuntimeImage(context.Background(), testRuntimeImageRef, "v0.1.0", false); err == nil {
 		t.Fatal("missing runtime image accepted without repair")
 	}
 	if dc.pullCalled {
 		t.Fatal("repair=false pulled missing runtime image")
 	}
-	got, err := ds.ResolveRuntimeImage(context.Background(), "runtime", "v0.1.0", true)
+	got, err := ds.ResolveRuntimeImage(context.Background(), testRuntimeImageRef, "v0.1.0", true)
 	if err != nil {
 		t.Fatalf("repair missing runtime image: %v", err)
 	}
 	if got.ID != testRuntimeImageID || !dc.pullCalled {
 		t.Fatalf("resolved=%+v pullCalled=%v", got, dc.pullCalled)
 	}
+	if !strEq(dc.pullRefs, []string{testRuntimeAMD64Ref}) {
+		t.Fatalf("pull refs = %v, want [%s]", dc.pullRefs, testRuntimeAMD64Ref)
+	}
 }
 
 func TestResolveRuntimeImageRejectsVersionMismatch(t *testing.T) {
 	dc := &fakeDockerClient{inspectResult: runtimeImageConfig("v0.0.9")}
 	ds := &dockerServices{c: dc, targetDesc: "test-context"}
-	_, err := ds.ResolveRuntimeImage(context.Background(), "runtime", "v0.1.0", false)
+	_, err := ds.ResolveRuntimeImage(context.Background(), testRuntimeImageRef, "v0.1.0", false)
 	if err == nil || !strings.Contains(err.Error(), "has bundle version v0.0.9, require v0.1.0") {
 		t.Fatalf("version mismatch error = %v", err)
 	}
@@ -309,7 +330,7 @@ func TestResolveRuntimeImagePullFailureIsWrapped(t *testing.T) {
 	pullErr := errors.New("network unreachable")
 	dc := &fakeDockerClient{notFound: true, pullErr: pullErr}
 	ds := &dockerServices{c: dc, targetDesc: "test-context"}
-	_, err := ds.ResolveRuntimeImage(context.Background(), "runtime", "v0.1.0", true)
+	_, err := ds.ResolveRuntimeImage(context.Background(), testRuntimeImageRef, "v0.1.0", true)
 	if err == nil || !errors.Is(err, pullErr) {
 		t.Fatalf("pull failure = %v, want wrapped %v", err, pullErr)
 	}
@@ -320,9 +341,85 @@ func TestResolveRuntimeImageRejectsInvalidImageID(t *testing.T) {
 	inspect.ID = "runtime:mutable"
 	dc := &fakeDockerClient{inspectResult: inspect}
 	ds := &dockerServices{c: dc, targetDesc: "test-context"}
-	_, err := ds.ResolveRuntimeImage(context.Background(), "runtime", "v0.1.0", false)
+	_, err := ds.ResolveRuntimeImage(context.Background(), testRuntimeImageRef, "v0.1.0", false)
 	if err == nil || !strings.Contains(err.Error(), "invalid image ID") {
 		t.Fatalf("invalid ID error = %v", err)
+	}
+}
+
+func TestNormalizeRuntimeArchitecture(t *testing.T) {
+	tests := map[string]string{
+		"amd64":   "amd64",
+		"x86_64":  "amd64",
+		"ARM64":   "arm64",
+		"aarch64": "arm64",
+	}
+	for input, want := range tests {
+		t.Run(input, func(t *testing.T) {
+			got, err := normalizeRuntimeArchitecture(input)
+			if err != nil || got != want {
+				t.Fatalf("normalizeRuntimeArchitecture(%q) = %q, %v; want %q", input, got, err, want)
+			}
+		})
+	}
+	if _, err := normalizeRuntimeArchitecture("riscv64"); err == nil || !strings.Contains(err.Error(), "supported architectures: amd64, arm64") {
+		t.Fatalf("unsupported architecture error = %v", err)
+	}
+}
+
+func TestResolveRuntimeImageUsesDockerTargetArchitecture(t *testing.T) {
+	dc := &fakeDockerClient{
+		serverVersion: dockertypes.Version{Version: "29.2.1", APIVersion: "1.53", Arch: "aarch64"},
+		inspectResult: runtimeImageConfig("v0.1.0"),
+	}
+	ds := &dockerServices{c: dc, targetDesc: "context colima"}
+	if _, err := ds.ResolveRuntimeImage(context.Background(), testRuntimeImageRef, "v0.1.0", false); err != nil {
+		t.Fatalf("ResolveRuntimeImage: %v", err)
+	}
+	wantRefs := []string{testRuntimeImageRef + "-arm64", testRuntimeImageID}
+	if !strEq(dc.inspectRefs, wantRefs) {
+		t.Fatalf("inspect refs = %v, want %v", dc.inspectRefs, wantRefs)
+	}
+}
+
+func TestResolveRuntimeImageRejectsUnsupportedDockerTargetArchitecture(t *testing.T) {
+	dc := &fakeDockerClient{serverVersion: dockertypes.Version{Version: "29.2.1", APIVersion: "1.53", Arch: "riscv64"}}
+	ds := &dockerServices{c: dc, targetDesc: "remote-context"}
+	_, err := ds.ResolveRuntimeImage(context.Background(), testRuntimeImageRef, "v0.1.0", true)
+	if err == nil || !strings.Contains(err.Error(), `architecture "riscv64"`) || len(dc.inspectRefs) != 0 || dc.pullCalled {
+		t.Fatalf("unsupported target result: err=%v inspectRefs=%v pullCalled=%v", err, dc.inspectRefs, dc.pullCalled)
+	}
+}
+
+func TestResolveRuntimeImageRequiresVersionedReference(t *testing.T) {
+	dc := &fakeDockerClient{}
+	ds := &dockerServices{c: dc, targetDesc: "test-context"}
+	_, err := ds.ResolveRuntimeImage(context.Background(), "emsi/vaka-init", "v0.1.0", true)
+	if err == nil || !strings.Contains(err.Error(), "has no version tag") || len(dc.inspectRefs) != 0 || dc.pullCalled {
+		t.Fatalf("untagged reference result: err=%v inspectRefs=%v pullCalled=%v", err, dc.inspectRefs, dc.pullCalled)
+	}
+}
+
+func TestResolveRuntimeImageTargetArchitectureQueryFailure(t *testing.T) {
+	serverErr := errors.New("daemon unavailable")
+	dc := &fakeDockerClient{serverErr: serverErr}
+	ds := &dockerServices{c: dc, targetDesc: "context colima"}
+	_, err := ds.ResolveRuntimeImage(context.Background(), testRuntimeImageRef, "v0.1.0", true)
+	if err == nil || !errors.Is(err, serverErr) || !strings.Contains(err.Error(), "query Docker target architecture") {
+		t.Fatalf("target architecture query error = %v", err)
+	}
+}
+
+func TestResolveRuntimeImageRejectsContentOnlyMountIdentity(t *testing.T) {
+	notFound := errdefs.NotFound(errors.New("content exists without image record"))
+	dc := &fakeDockerClient{
+		inspectResult: runtimeImageConfig("v0.1.0"),
+		inspectErrs:   map[string]error{testRuntimeImageID: notFound},
+	}
+	ds := &dockerServices{c: dc, targetDesc: "context colima"}
+	_, err := ds.ResolveRuntimeImage(context.Background(), testRuntimeImageRef, "v0.1.0", false)
+	if err == nil || !strings.Contains(err.Error(), "not directly inspectable") {
+		t.Fatalf("content-only identity error = %v", err)
 	}
 }
 
