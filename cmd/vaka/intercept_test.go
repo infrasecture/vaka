@@ -28,11 +28,12 @@ func TestClassifyComposeVerb(t *testing.T) {
 		{"rm", verbReference},
 		{"logs", verbReference},
 		{"ps", verbReference},
-		{"exec", verbReference},
+		{"exec", verbExec},
 		{"pull", verbReference},
 		{"version", verbMetadata},
 		{"ls", verbMetadata},
-		{"future-container-command", verbRender},
+		{"bridge", verbMetadata},
+		{"future-container-command", verbUnknown},
 	}
 	for _, tc := range tests {
 		if got := classifyComposeVerb(tc.verb); got != tc.want {
@@ -152,7 +153,7 @@ func TestServicesNeedingPrebuild(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := []string{"buildonly", "needsbuild", "needsuser"}
+	want := []string{"buildonly", "hasentry", "needsbuild", "needsuser"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("got %v, want %v", got, want)
 	}
@@ -202,7 +203,7 @@ func TestServicesNeedingPrebuildForceRebuild(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := []string{"buildonly", "prebuilt"}
+	want := []string{"buildonly", "hasentry", "prebuilt"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("got %v, want %v", got, want)
 	}

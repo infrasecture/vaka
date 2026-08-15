@@ -38,12 +38,14 @@ type RuntimeMount struct {
 
 // ServiceEntry holds per-service data needed to build the compose override.
 type ServiceEntry struct {
-	Name           string
-	Entrypoint     []string
-	Command        []string
-	CapDelta       []string
-	EnvVarName     string
-	PolicyRevision string
+	Name             string
+	Entrypoint       []string
+	Command          []string
+	CapDelta         []string
+	EnvVarName       string
+	PolicyRevision   string
+	Healthcheck      []string
+	HealthcheckShell []string
 	// OptOut is true when the service carries the agent.vaka.init: present label,
 	// meaning vaka-init is already baked into the image at /opt/vaka/sbin/.
 	OptOut bool
@@ -71,13 +73,18 @@ type secretDef struct {
 }
 
 type serviceOverride struct {
-	User       string                             `yaml:"user,omitempty"`
-	Entrypoint []string                           `yaml:"entrypoint,omitempty"`
-	Command    []string                           `yaml:"command,omitempty"`
-	CapAdd     []string                           `yaml:"cap_add,omitempty"`
-	Labels     map[string]string                  `yaml:"labels,omitempty"`
-	Secrets    []secretMount                      `yaml:"secrets,omitempty"`
-	Volumes    []composetypes.ServiceVolumeConfig `yaml:"volumes,omitempty"`
+	User        string                             `yaml:"user,omitempty"`
+	Entrypoint  []string                           `yaml:"entrypoint,omitempty"`
+	Command     []string                           `yaml:"command,omitempty"`
+	CapAdd      []string                           `yaml:"cap_add,omitempty"`
+	Labels      map[string]string                  `yaml:"labels,omitempty"`
+	Secrets     []secretMount                      `yaml:"secrets,omitempty"`
+	Volumes     []composetypes.ServiceVolumeConfig `yaml:"volumes,omitempty"`
+	Healthcheck *healthcheckOverride               `yaml:"healthcheck,omitempty"`
+}
+
+type healthcheckOverride struct {
+	Test []string `yaml:"test"`
 }
 
 type secretMount struct {
@@ -134,6 +141,13 @@ func BuildOverride(entries []ServiceEntry, runtime RuntimeMount) (string, error)
 			},
 			Secrets: []secretMount{{Source: key, Target: "vaka.yaml"}},
 		}
+		wrappedHealthcheck, err := wrapHealthcheck(e.Healthcheck, e.HealthcheckShell)
+		if err != nil {
+			return "", fmt.Errorf("build compose override: service %s: %w", e.Name, err)
+		}
+		if len(wrappedHealthcheck) > 0 {
+			svc.Healthcheck = &healthcheckOverride{Test: wrappedHealthcheck}
+		}
 
 		if runtime.ImageID != "" && !e.OptOut {
 			svc.Labels[RuntimeImageLabel] = runtime.ImageID
@@ -150,6 +164,33 @@ func BuildOverride(entries []ServiceEntry, runtime RuntimeMount) (string, error)
 	}
 
 	return marshalOverride(override)
+}
+
+func wrapHealthcheck(test, imageShell []string) ([]string, error) {
+	if len(test) == 0 || (len(test) == 1 && test[0] == "NONE") {
+		return nil, nil
+	}
+	switch test[0] {
+	case "CMD":
+		if len(test) == 1 {
+			return nil, fmt.Errorf("healthcheck CMD has no command")
+		}
+		out := []string{"CMD", vakaInitPath, "exec", "--"}
+		return append(out, test[1:]...), nil
+	case "CMD-SHELL":
+		if len(test) < 2 {
+			return nil, fmt.Errorf("healthcheck CMD-SHELL has no command")
+		}
+		shell := append([]string{}, imageShell...)
+		if len(shell) == 0 {
+			shell = []string{"/bin/sh", "-c"}
+		}
+		out := []string{"CMD", vakaInitPath, "exec", "--"}
+		out = append(out, shell...)
+		return append(out, strings.Join(test[1:], " ")), nil
+	default:
+		return nil, fmt.Errorf("unsupported healthcheck test type %q", test[0])
+	}
 }
 
 func runtimeImageMountSource(imageID, source string) (string, error) {

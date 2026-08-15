@@ -98,6 +98,11 @@ services:
   app:
     image: "${VAKA_SMOKE_SERVICE_IMAGE}"
     command: ["sleep", "3600"]
+    healthcheck:
+      test: ["CMD-SHELL", "sed -n '/^Cap/p' /proc/self/status > /tmp/vaka-health-caps"]
+      interval: 1s
+      timeout: 5s
+      retries: 10
 YAML
 
 cat > "${policy_file}" <<'YAML'
@@ -166,4 +171,55 @@ if docker container exec "${container_id}" /bin/sh -c 'printf smoke > /opt/vaka/
     die "write to read-only /opt/vaka mount unexpectedly succeeded"
 fi
 
-printf 'PASS: exact image ID %s is mounted read-only and executable at /opt/vaka\n' "${runtime_id}"
+assert_no_net_admin() {
+    local source=$1
+    local caps=$2
+    local name hex value
+    for name in CapInh CapPrm CapEff CapBnd CapAmb; do
+        hex="$(awk -v key="${name}:" '$1 == key {print $2}' <<<"${caps}")"
+        [[ -n "${hex}" ]] || die "${source} did not report ${name}: ${caps}"
+        value=$((16#${hex}))
+        (( (value & 0x1000) == 0 )) || die "${source} retained NET_ADMIN in ${name}: ${hex}"
+    done
+}
+
+printf '==> Verifying Vaka exec trampoline capabilities\n'
+exec_caps="$("${VAKA_BIN}" \
+    "--vaka-file=${policy_file}" \
+    compose \
+    --project-name "${project}" \
+    --file "${compose_file}" \
+    exec -T app /bin/sh -c "sed -n '/^Cap/p' /proc/self/status")"
+assert_no_net_admin "vaka exec" "${exec_caps}"
+
+set +e
+"${VAKA_BIN}" \
+    "--vaka-file=${policy_file}" \
+    compose \
+    --project-name "${project}" \
+    --file "${compose_file}" \
+    exec -T app /bin/sh -c 'exit 23'
+exec_status=$?
+set -e
+[[ ${exec_status} -eq 23 ]] || die "vaka exec returned ${exec_status}; expected command status 23"
+
+if "${VAKA_BIN}" \
+    "--vaka-file=${policy_file}" \
+    compose \
+    --project-name "${project}" \
+    --file "${compose_file}" \
+    exec -T app /opt/vaka/sbin/nft delete table inet vaka >/dev/null 2>&1; then
+    die "vaka exec command modified nftables despite dropped NET_ADMIN"
+fi
+
+printf '==> Verifying wrapped healthcheck capabilities\n'
+health_caps=""
+for _ in $(seq 1 20); do
+    health_caps="$(docker container exec "${container_id}" sh -c 'cat /tmp/vaka-health-caps 2>/dev/null' || true)"
+    [[ -n "${health_caps}" ]] && break
+    sleep 0.5
+done
+[[ -n "${health_caps}" ]] || die "wrapped healthcheck did not record its capabilities"
+assert_no_net_admin "healthcheck" "${health_caps}"
+
+printf 'PASS: exact image ID %s is read-only; exec and healthchecks drop NET_ADMIN\n' "${runtime_id}"

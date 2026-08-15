@@ -14,6 +14,7 @@ func TestBuildInjectionOverrideResolvesAndMountsRuntimeImage(t *testing.T) {
 		vakaInitPresent  bool
 		wantEnsureCalls  int
 		wantRuntimeMount bool
+		wantErr          string
 	}{
 		{
 			name:             "injection enabled and service not opted out",
@@ -23,18 +24,16 @@ func TestBuildInjectionOverrideResolvesAndMountsRuntimeImage(t *testing.T) {
 			wantRuntimeMount: true,
 		},
 		{
-			name:             "all services opted out with vaka-init absent",
-			optOut:           true,
-			vakaInitPresent:  false,
-			wantEnsureCalls:  0,
-			wantRuntimeMount: false,
+			name:            "baked helper label is rejected",
+			optOut:          true,
+			vakaInitPresent: false,
+			wantErr:         "verified read-only runtime mount",
 		},
 		{
-			name:             "vaka-init present skips image ensure",
-			optOut:           false,
-			vakaInitPresent:  true,
-			wantEnsureCalls:  0,
-			wantRuntimeMount: false,
+			name:            "baked helper flag is rejected",
+			optOut:          false,
+			vakaInitPresent: true,
+			wantErr:         "verified read-only runtime mount",
 		},
 	}
 
@@ -76,6 +75,12 @@ services:
 				t.Fatalf("ParseComposeInvocation: %v", err)
 			}
 			gotYAML, _, err := buildInjectionOverride(context.Background(), ds, "vaka.yaml", inv, tc.vakaInitPresent)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("buildInjectionOverride error = %v, want %q", err, tc.wantErr)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("buildInjectionOverride: %v", err)
 			}
@@ -188,7 +193,7 @@ services:
 	if err != nil {
 		t.Fatalf("ParseComposeInvocation: %v", err)
 	}
-	_, _, err = buildInjectionOverride(context.Background(), ds, "vaka.yaml", inv, true)
+	_, _, err = buildInjectionOverride(context.Background(), ds, "vaka.yaml", inv, false)
 	if err != nil {
 		t.Fatalf("buildInjectionOverride: %v", err)
 	}

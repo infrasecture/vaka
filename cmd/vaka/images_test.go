@@ -443,24 +443,24 @@ func TestResolveRuntimeMatrix(t *testing.T) {
 		wantInspect   bool
 	}{
 		{
-			name:          "entrypoint and user set no inspect",
+			name:          "entrypoint and user set still inspects image healthcheck",
 			composeEP:     []string{"/app"},
 			composeCmd:    []string{"--flag"},
 			composeUser:   "app",
 			wantEP:        []string{"/app"},
 			wantCmd:       []string{"--flag"},
 			wantImageUser: "",
-			wantInspect:   false,
+			wantInspect:   true,
 		},
 		{
-			name:          "entrypoint only with compose user set no inspect",
+			name:          "entrypoint only with compose user still inspects image healthcheck",
 			composeEP:     []string{"/app"},
 			composeCmd:    nil,
 			composeUser:   "1000:1000",
 			wantEP:        []string{"/app"},
 			wantCmd:       nil,
 			wantImageUser: "",
-			wantInspect:   false,
+			wantInspect:   true,
 		},
 		{
 			name:          "command only with compose user set needs image entrypoint",
@@ -524,6 +524,27 @@ func TestResolveRuntimeMatrix(t *testing.T) {
 				t.Errorf("ImageInspect called %d times; expected 0", dc.inspectCalled)
 			}
 		})
+	}
+}
+
+func TestResolveRuntimeIncludesInheritedHealthcheckAndShell(t *testing.T) {
+	image := imageConfig([]string{"/app"}, nil, "1000:1000")
+	image.Config.Healthcheck = &dockerspec.HealthcheckConfig{Test: []string{"CMD-SHELL", "check-ready || exit 1"}}
+	image.Config.Shell = []string{"/bin/bash", "-o", "pipefail", "-c"}
+	ds := &dockerServices{c: &fakeDockerClient{inspectResult: image}, targetDesc: "test-context"}
+	got, err := ds.ResolveRuntime(context.Background(), "app", composetypes.ServiceConfig{
+		Image:      "app:latest",
+		Entrypoint: []string{"/app"},
+		User:       "1000:1000",
+	})
+	if err != nil {
+		t.Fatalf("ResolveRuntime: %v", err)
+	}
+	if !strEq(got.Healthcheck, image.Config.Healthcheck.Test) {
+		t.Fatalf("healthcheck = %v, want %v", got.Healthcheck, image.Config.Healthcheck.Test)
+	}
+	if !strEq(got.HealthcheckShell, image.Config.Shell) {
+		t.Fatalf("healthcheck shell = %v, want %v", got.HealthcheckShell, image.Config.Shell)
 	}
 }
 

@@ -32,7 +32,7 @@ func runRootCapturingExec(t *testing.T, argv []string) ([]composeExecCall, error
 	})
 	setDockerServicesFactoryForTest(t, &fakeBuilderDockerServices{})
 
-	root := newRootCmd(&RootInvocation{VakaFile: "vaka.yaml", VakaInitPresent: true, Rest: argv})
+	root := newRootCmd(&RootInvocation{VakaFile: "vaka.yaml", Rest: argv})
 	root.SetArgs(argv)
 	root.SetOut(io.Discard)
 	root.SetErr(io.Discard)
@@ -277,7 +277,7 @@ services:
 	}
 }
 
-func TestContainerCreatingAndUnknownComposeCommandsUseFullOverride(t *testing.T) {
+func TestContainerCreatingComposeCommandsUseFullOverride(t *testing.T) {
 	dir := t.TempDir()
 	chdirForTest(t, dir)
 	writeFixtureFiles(t, dir, `
@@ -300,7 +300,6 @@ services:
 	for _, args := range [][]string{
 		{"compose", "scale", "app=2"},
 		{"compose", "watch"},
-		{"compose", "future-container-command"},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			calls, err := runRootCapturingExec(t, args)
@@ -315,6 +314,16 @@ services:
 				t.Fatalf("command must receive full policy override:\n%s", calls[0].overrideYAML)
 			}
 		})
+	}
+}
+
+func TestUnknownComposeCommandFailsClosed(t *testing.T) {
+	calls, err := runRootCapturingExec(t, []string{"compose", "future-container-command"})
+	if err == nil || !strings.Contains(err.Error(), "has not been reviewed") {
+		t.Fatalf("unknown command error = %v", err)
+	}
+	if len(calls) != 0 {
+		t.Fatalf("unknown command must not execute Compose, got %+v", calls)
 	}
 }
 

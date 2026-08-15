@@ -26,7 +26,7 @@ func newShowComposeCmd(root *RootInvocation) *cobra.Command {
 		Short: "Print the generated compose override YAML used by vaka injection",
 		Long: `Print the generated compose override YAML used by vaka injection.
 
-Pass --vaka-file and --vaka-init-present before the command:
+Pass --vaka-file before the command:
   vaka --vaka-file=prod.yaml show-compose
 
 VAKA_<SERVICE>_CONF values are never printed.`,

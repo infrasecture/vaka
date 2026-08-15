@@ -210,6 +210,46 @@ func TestBadArgsPrintsUsage(t *testing.T) {
 	}
 }
 
+func TestParseInvocationModes(t *testing.T) {
+	tests := []struct {
+		name     string
+		args     []string
+		wantMode invocationMode
+		wantCmd  []string
+		wantUser string
+		wantErr  string
+	}{
+		{name: "probe noop", wantMode: modeNoop},
+		{name: "startup", args: []string{"--", "/app", "serve"}, wantMode: modeStartup, wantCmd: []string{"/app", "serve"}},
+		{name: "exec policy user", args: []string{"exec", "--", "sh", "-c", "id"}, wantMode: modeExec, wantCmd: []string{"sh", "-c", "id"}},
+		{name: "exec requested user", args: []string{"exec", "--user", "1001:1002", "--", "id"}, wantMode: modeExec, wantCmd: []string{"id"}, wantUser: "1001:1002"},
+		{name: "startup missing command", args: []string{"--"}, wantMode: modeStartup, wantErr: "no harness command"},
+		{name: "exec missing separator", args: []string{"exec", "id"}, wantMode: modeExec, wantErr: "usage"},
+		{name: "exec missing command", args: []string{"exec", "--"}, wantMode: modeExec, wantErr: "no command"},
+		{name: "exec missing user", args: []string{"exec", "--user"}, wantMode: modeExec, wantErr: "requires a value"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mode, cmd, user, err := parseInvocation(tc.args)
+			if mode != tc.wantMode {
+				t.Fatalf("mode = %v, want %v", mode, tc.wantMode)
+			}
+			if !reflect.DeepEqual(cmd, tc.wantCmd) {
+				t.Fatalf("command = %v, want %v", cmd, tc.wantCmd)
+			}
+			if user != tc.wantUser {
+				t.Fatalf("user = %q, want %q", user, tc.wantUser)
+			}
+			if tc.wantErr == "" && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
+				t.Fatalf("error = %v, want substring %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestResolveExecUserEmptySpec(t *testing.T) {
 	got, err := resolveExecUser("", "/does/not/matter", "/does/not/matter")
 	if err != nil {

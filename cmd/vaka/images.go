@@ -60,6 +60,11 @@ type ResolvedImage struct {
 type ResolvedRuntime struct {
 	Entrypoint []string
 	Command    []string
+	// Healthcheck is the effective image/Compose healthcheck test vector. It is
+	// wrapped through vaka-init's exec trampoline by the generated override.
+	Healthcheck []string
+	// HealthcheckShell is the image's SHELL vector used by CMD-SHELL probes.
+	HealthcheckShell []string
 	// ImageUser is the image config USER value. Compose `service.user` is
 	// intentionally not folded into this field so callers can apply explicit
 	// precedence rules (compose user first, image fallback second).
@@ -394,10 +399,15 @@ func (d *dockerServices) ResolveRuntime(ctx context.Context, svcName string, svc
 		Entrypoint: svc.Entrypoint,
 		Command:    svc.Command,
 	}
+	if svc.HealthCheck != nil && !svc.HealthCheck.Disable && len(svc.HealthCheck.Test) > 0 {
+		resolved.Healthcheck = append([]string{}, svc.HealthCheck.Test...)
+	}
 
 	needImageEntrypoint := len(svc.Entrypoint) == 0
 	needImageUser := strings.TrimSpace(svc.User) == ""
-	needInspect := needImageEntrypoint || needImageUser
+	needImageHealthcheck := svc.Image != "" && (svc.HealthCheck == nil || (!svc.HealthCheck.Disable && len(svc.HealthCheck.Test) == 0))
+	needImageHealthcheckShell := len(resolved.Healthcheck) > 0 && resolved.Healthcheck[0] == "CMD-SHELL"
+	needInspect := needImageEntrypoint || needImageUser || needImageHealthcheck || needImageHealthcheckShell
 	if !needInspect {
 		return resolved, nil
 	}
@@ -405,7 +415,7 @@ func (d *dockerServices) ResolveRuntime(ctx context.Context, svcName string, svc
 	if svc.Image == "" {
 		return ResolvedRuntime{}, fmt.Errorf(
 			"service %s: cannot resolve image defaults without image: (needed for %s)",
-			svcName, missingRuntimeFieldsHint(needImageEntrypoint, needImageUser),
+			svcName, missingRuntimeFieldsHint(needImageEntrypoint, needImageUser, needImageHealthcheck),
 		)
 	}
 	// A locally-absent image is fetched once through a pull when the policy
@@ -441,17 +451,31 @@ func (d *dockerServices) ResolveRuntime(ctx context.Context, svcName string, svc
 	if needImageUser {
 		resolved.ImageUser = inspect.Config.User
 	}
+	if needImageHealthcheck && inspect.Config.Healthcheck != nil {
+		resolved.Healthcheck = append([]string{}, inspect.Config.Healthcheck.Test...)
+	}
+	if len(inspect.Config.Shell) > 0 {
+		resolved.HealthcheckShell = append([]string{}, inspect.Config.Shell...)
+	}
 	return resolved, nil
 }
 
-func missingRuntimeFieldsHint(needImageEntrypoint, needImageUser bool) string {
+func missingRuntimeFieldsHint(needImageEntrypoint, needImageUser, needImageHealthcheck bool) string {
 	switch {
+	case needImageEntrypoint && needImageUser && needImageHealthcheck:
+		return "entrypoint/cmd, user, and healthcheck fallback"
 	case needImageEntrypoint && needImageUser:
 		return "entrypoint/cmd and user fallback"
+	case needImageEntrypoint && needImageHealthcheck:
+		return "entrypoint/cmd and healthcheck fallback"
+	case needImageUser && needImageHealthcheck:
+		return "user and healthcheck fallback"
 	case needImageEntrypoint:
 		return "entrypoint/cmd fallback"
 	case needImageUser:
 		return "user fallback"
+	case needImageHealthcheck:
+		return "healthcheck fallback"
 	default:
 		return "runtime fallback"
 	}

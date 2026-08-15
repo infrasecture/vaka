@@ -65,14 +65,12 @@ If `doctor` reports an old Docker client API while the Engine itself is current,
 check `DOCKER_API_VERSION`. Unset it, or set it to 1.48 or newer. Vaka checks the
 effective client API because Compose inherits the same override.
 
-## Baked Runtime Version Mismatch
+## Baked Runtime Mode Is Rejected
 
-Services using `--vaka-init-present` or `agent.vaka.init: present` must contain
-the exact runtime bundle required by the current Vaka CLI. Before upgrading
-such a deployment, rebuild the service image from the versioned
-`emsi/vaka-init:runtime-vX.Y.Z` image shown by `vaka doctor`. A helper baked from
-an older CLI-versioned image fails closed before nftables or the application is
-started.
+`--vaka-init-present` and `agent.vaka.init: present` are rejected for managed
+services. Remove them and let Vaka mount its verified runtime image read-only.
+For air-gapped targets, preload the exact runtime image reported by
+`vaka doctor` instead of baking the binaries into the service image.
 
 ## Legacy Helper Volume During Upgrade
 

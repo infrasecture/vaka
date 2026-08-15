@@ -29,6 +29,20 @@ vaka needs `NET_ADMIN` temporarily to load nftables rules. The normal path is:
 
 If the original Compose service already had `NET_ADMIN`, vaka treats that as intentional and leaves it in place unless you provide an explicit `runtime.dropCaps` list.
 
+Docker stores the startup user and capabilities on the container, so processes
+created later do not inherit the application's dropped process state. Vaka
+therefore wraps healthchecks and `vaka exec` commands with the verified
+read-only `vaka-init` runtime. The trampoline first verifies that the kernel
+nftables table exists, then drops policy capabilities from all capability sets,
+restores the service or requested exec identity, and starts the command. It
+does not repeat startup ownership changes.
+
+Compose `post_start`, `pre_stop`, and `develop.watch` `sync+exec` hooks are
+currently rejected on managed services. `run --entrypoint`, unsafe mounts over
+Vaka runtime/policy paths, protected-label overrides, and `up --no-recreate`
+are also rejected. These restrictions fail closed rather than guessing how a
+new process or command-line override interacts with the security boundary.
+
 ## What It Does Not Enforce
 
 - Inbound traffic and published ports.
@@ -37,6 +51,8 @@ If the original Compose service already had `NET_ADMIN`, vaka treats that as int
 - Filesystem secrecy inside mounted directories.
 - Protection from Docker, kernel, or hypervisor escapes.
 - A full hostile-code sandbox for root-level adversaries.
+- Commands run directly through Docker or Docker Compose instead of Vaka. Anyone
+  with Docker-daemon access already controls the container security boundary.
 
 For hostile code, use stronger isolation such as VMs, separate hosts, or host-network firewall controls.
 
@@ -102,9 +118,9 @@ create a helper container or helper volume; conservative cleanup exists only
 for volumes left by older releases.
 
 Compose verbs are classified explicitly. Verbs known to create containers use
-the full policy override; unknown future verbs also use that path until
-reviewed. This prevents Compose feature growth from silently introducing an
-unprotected container-creation path.
+the full policy override, `exec` uses its dedicated trampoline path, and unknown
+future verbs are rejected until reviewed. This prevents Compose feature growth
+from silently introducing an unprotected process-creation path.
 
 ## Kernel And nftables Compatibility
 

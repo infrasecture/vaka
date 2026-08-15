@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -12,9 +13,27 @@ import (
 )
 
 type fakeBuilderDockerServices struct {
-	imageExists map[string]bool
-	runtimes    map[string]ResolvedRuntime
-	ensureRefs  []string
+	imageExists    map[string]bool
+	runtimes       map[string]ResolvedRuntime
+	ensureRefs     []string
+	execTargets    map[string]execTarget
+	projectTargets map[string][]execTarget
+}
+
+func (f *fakeBuilderDockerServices) InspectManagedProject(_ context.Context, _ string) (map[string][]execTarget, error) {
+	return f.projectTargets, nil
+}
+
+func (f *fakeBuilderDockerServices) InspectExecTarget(_ context.Context, _ string, service string, index int) (execTarget, error) {
+	if target, ok := f.execTargets[fmt.Sprintf("%s:%d", service, index)]; ok {
+		return target, nil
+	}
+	return execTarget{
+		Managed:        true,
+		RuntimeVersion: runtimeBundleVersion,
+		RuntimeImage:   "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		RuntimeMounted: true,
+	}, nil
 }
 
 func (f *fakeBuilderDockerServices) CheckRuntimeCompatibility(context.Context) error { return nil }

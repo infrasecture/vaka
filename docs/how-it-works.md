@@ -61,20 +61,12 @@ runtime image. A read-only image mount preserves their execute bits; it does not
 make non-executable files executable. There is no helper container or helper
 volume in the normal path.
 
-Your application images are not modified.
-
-Air-gapped mode skips the image mount when binaries are already present in the service image. Use:
-
-```bash
-vaka --vaka-init-present up
-```
-
-or the per-service Compose label:
-
-```yaml
-labels:
-  agent.vaka.init: present
-```
+Your application images are not modified. Managed services always use this
+verified read-only runtime mount. Baked helper modes are rejected because a
+root workload could replace a helper in its writable container layer before a
+later healthcheck or `vaka exec` starts it with Vaka's temporary startup
+privileges. Air-gapped installations should preload the runtime image into the
+selected Docker target.
 
 ## Per-Service Policy Secret
 

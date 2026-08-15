@@ -67,7 +67,7 @@ services:
 			var gotFactoryArgs [][]string
 			setDockerServicesFactoryForTest(t, ds, &gotFactoryArgs)
 
-			root := newRootCmd(&RootInvocation{VakaFile: "vaka.yaml", VakaInitPresent: true})
+			root := newRootCmd(&RootInvocation{VakaFile: "vaka.yaml"})
 			root.SetArgs(tc.args)
 			root.SetOut(io.Discard)
 			root.SetErr(io.Discard)
@@ -126,7 +126,7 @@ services:
 	if err != nil {
 		t.Fatalf("ParseComposeInvocation: %v", err)
 	}
-	wantYAML, extraEnv, err := buildInjectionOverride(context.Background(), ds, "vaka.yaml", baseInv, true)
+	wantYAML, extraEnv, err := buildInjectionOverride(context.Background(), ds, "vaka.yaml", baseInv, false)
 	if err != nil {
 		t.Fatalf("buildInjectionOverride: %v", err)
 	}
@@ -136,7 +136,7 @@ services:
 		if parseErr != nil {
 			return parseErr
 		}
-		return runShowCompose("vaka.yaml", inv, true, PullNever, "")
+		return runShowCompose("vaka.yaml", inv, false, PullNever, "")
 	})
 	if err != nil {
 		t.Fatalf("runShowCompose: %v", err)
@@ -198,7 +198,7 @@ services:
 	if err != nil {
 		t.Fatalf("ParseComposeInvocation: %v", err)
 	}
-	wantYAML, _, err := buildInjectionOverride(context.Background(), ds, "vaka.yaml", baseInv, true)
+	wantYAML, _, err := buildInjectionOverride(context.Background(), ds, "vaka.yaml", baseInv, false)
 	if err != nil {
 		t.Fatalf("buildInjectionOverride: %v", err)
 	}
@@ -208,7 +208,7 @@ services:
 	if err != nil {
 		t.Fatalf("ParseComposeInvocation: %v", err)
 	}
-	if err := runShowCompose("vaka.yaml", inv, true, PullNever, outPath); err != nil {
+	if err := runShowCompose("vaka.yaml", inv, false, PullNever, outPath); err != nil {
 		t.Fatalf("runShowCompose: %v", err)
 	}
 

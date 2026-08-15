@@ -42,19 +42,12 @@ func main() {
 		return
 	}
 
-	// Retain the historical no-argument no-op for compatibility with tooling
-	// that probes the runtime image directly. Current service injection always
-	// passes "--" and uses a read-only image mount, not a helper container.
-	if len(os.Args) < 2 {
-		os.Exit(0)
+	mode, harness, execUser, err := parseInvocation(os.Args[1:])
+	if err != nil {
+		fatal("%v", err)
 	}
-	if os.Args[1] != "--" {
-		fmt.Fprintln(os.Stderr, "vaka-init: usage: vaka-init -- <entrypoint> [args...]")
-		os.Exit(0)
-	}
-	harness := os.Args[2:]
-	if len(harness) == 0 {
-		fatal("vaka-init: no harness command after --")
+	if mode == modeNoop {
+		return
 	}
 
 	// Step 1: Read and parse per-service policy from Docker secret.
@@ -82,48 +75,63 @@ func main() {
 	for k, v := range p.Services {
 		svcName, svc = k, v
 	}
-	if svc.Network == nil || svc.Network.Egress == nil {
-		fatal("service %s: no network.egress policy", svcName)
-	}
-	egress := svc.Network.Egress
-
-	// Step 2: Resolve dynamic values.
-	// Open /etc/resolv.conf only when the policy contains a dns: {} rule with
-	// no explicit servers. Policies that use dns.servers exclusively work fine
-	// without resolv.conf (e.g. scratch containers).
-	var resolveConf io.Reader
-	if nft.NeedsResolvConf(egress) {
-		f, err := os.Open("/etc/resolv.conf")
-		if err != nil {
-			fatal("open /etc/resolv.conf: %v", err)
+	if mode == modeStartup {
+		if svc.Network == nil || svc.Network.Egress == nil {
+			fatal("service %s: no network.egress policy", svcName)
 		}
-		defer f.Close()
-		resolveConf = f
-	}
-	resolved, err := nft.ResolvePolicy(context.Background(), egress, resolveConf, nil)
-	if err != nil {
-		fatal("resolve policy: %v", err)
-	}
+		egress := svc.Network.Egress
 
-	// Step 3: Generate nft ruleset.
-	ruleset, err := nft.Generate(resolved)
-	if err != nil {
-		fatal("generate ruleset: %v", err)
-	}
+		// Resolve dynamic values only during container startup. Exec mode uses
+		// the rules already installed in the shared network namespace.
+		var resolveConf io.Reader
+		if nft.NeedsResolvConf(egress) {
+			f, err := os.Open("/etc/resolv.conf")
+			if err != nil {
+				fatal("open /etc/resolv.conf: %v", err)
+			}
+			defer f.Close()
+			resolveConf = f
+		}
+		resolved, err := nft.ResolvePolicy(context.Background(), egress, resolveConf, nil)
+		if err != nil {
+			fatal("resolve policy: %v", err)
+		}
 
-	// Step 4: Apply ruleset atomically via nft -f /dev/stdin.
-	nftCmd := exec.Command(nftBin, "-f", "/dev/stdin")
-	nftCmd.Stdin = strings.NewReader(ruleset)
-	nftCmd.Stdout = os.Stderr // nft writes diagnostics to stdout
-	nftCmd.Stderr = os.Stderr
-	if err := nftCmd.Run(); err != nil {
-		fatal("nft -f /dev/stdin: %v\nruleset:\n%s", err, ruleset)
+		ruleset, err := nft.Generate(resolved)
+		if err != nil {
+			fatal("generate ruleset: %v", err)
+		}
+
+		// Apply ruleset atomically via nft -f /dev/stdin.
+		nftCmd := exec.Command(nftBin, "-f", "/dev/stdin")
+		nftCmd.Stdin = strings.NewReader(ruleset)
+		nftCmd.Stdout = os.Stderr // nft writes diagnostics to stdout
+		nftCmd.Stderr = os.Stderr
+		if err := nftCmd.Run(); err != nil {
+			fatal("nft -f /dev/stdin: %v\nruleset:\n%s", err, ruleset)
+		}
+	} else {
+		// Docker can accept execs and begin healthchecks as soon as the
+		// container is running, before its entrypoint has finished installing
+		// policy. The nftables table is a kernel-owned readiness marker that the
+		// unprivileged workload cannot forge. Fail closed rather than running a
+		// command in that startup window.
+		check := exec.Command(nftBin, "list", "table", "inet", "vaka")
+		check.Stdout = io.Discard
+		check.Stderr = io.Discard
+		if err := check.Run(); err != nil {
+			fatal("egress policy is not installed yet; retry the command after service startup: %v", err)
+		}
 	}
 
 	// Step 5: Resolve target service user (compose-compatible syntax).
-	targetUser, err := resolveExecUser(svc.User, passwdPath, groupPath)
+	targetUserSpec := svc.User
+	if mode == modeExec && execUser != "" {
+		targetUserSpec = execUser
+	}
+	targetUser, err := resolveExecUser(targetUserSpec, passwdPath, groupPath)
 	if err != nil {
-		fatal("resolve service user %q: %v", svc.User, err)
+		fatal("resolve service user %q: %v", targetUserSpec, err)
 	}
 
 	// Step 6: Apply optional runtime.chown ownership-fix actions. Paths are
@@ -134,8 +142,10 @@ func main() {
 		chownActions = svc.Runtime.Chown
 		dropCaps = svc.Runtime.DropCaps
 	}
-	if err := applyChownActions(chownActions, targetUser, passwdPath, groupPath); err != nil {
-		fatal("apply runtime.chown: %v", err)
+	if mode == modeStartup {
+		if err := applyChownActions(chownActions, targetUser, passwdPath, groupPath); err != nil {
+			fatal("apply runtime.chown: %v", err)
+		}
 	}
 
 	// Step 7: Drop capabilities. For identity transitions, SETUID/SETGID can be
@@ -160,7 +170,7 @@ func main() {
 	// Step 8: Restore original service identity when needed.
 	if switchNeeded {
 		if err := switchIdentity(targetUser); err != nil {
-			fatal("switch identity to user %q: %v", svc.User, err)
+			fatal("switch identity to user %q: %v", targetUserSpec, err)
 		}
 		// On 0->nonzero UID transitions, the kernel clears Effective/Permitted/
 		// Ambient automatically. When UID remains 0 (e.g. user "0:1000"),
@@ -182,6 +192,53 @@ func main() {
 	}
 	if err := syscall.Exec(argv0, harness, os.Environ()); err != nil {
 		fatal("execve %s: %v", argv0, err)
+	}
+}
+
+type invocationMode int
+
+const (
+	modeNoop invocationMode = iota
+	modeStartup
+	modeExec
+)
+
+// parseInvocation preserves the historical no-op for empty/unknown probes,
+// while making malformed supported modes fail closed. Exec mode is used for
+// processes Docker starts after the container entrypoint (Compose exec and
+// healthchecks), which otherwise inherit the container's temporary startup
+// privileges instead of vaka-init's dropped process state.
+func parseInvocation(args []string) (invocationMode, []string, string, error) {
+	if len(args) == 0 {
+		return modeNoop, nil, "", nil
+	}
+	switch args[0] {
+	case "--":
+		if len(args) == 1 {
+			return modeStartup, nil, "", fmt.Errorf("no harness command after --")
+		}
+		return modeStartup, args[1:], "", nil
+	case "exec":
+		i := 1
+		execUser := ""
+		if i < len(args) && args[i] == "--user" {
+			if i+1 >= len(args) || strings.TrimSpace(args[i+1]) == "" {
+				return modeExec, nil, "", fmt.Errorf("vaka-init exec --user requires a value")
+			}
+			execUser = args[i+1]
+			i += 2
+		}
+		if i >= len(args) || args[i] != "--" {
+			return modeExec, nil, "", fmt.Errorf("usage: vaka-init exec [--user <user>] -- <command> [args...]")
+		}
+		i++
+		if i >= len(args) {
+			return modeExec, nil, "", fmt.Errorf("no command after exec --")
+		}
+		return modeExec, args[i:], execUser, nil
+	default:
+		fmt.Fprintln(os.Stderr, "vaka-init: usage: vaka-init -- <entrypoint> [args...] | vaka-init exec -- <command> [args...]")
+		return modeNoop, nil, "", nil
 	}
 }
 

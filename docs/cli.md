@@ -200,13 +200,16 @@ vaka compose --project-directory srv logs -f app
 
 Commands that can create containers (`up`, `run`, `create`, `scale`, and
 `watch`) validate policy and generate the complete Vaka override. Unknown
-future Compose commands take this full path by default so a new creating command
-cannot bypass policy.
+future Compose commands fail closed until their process-creation behavior is
+reviewed in Vaka.
 
 Known non-creating commands use a metadata-only reference override. Examples
-include `logs`, `exec`, `ps`, `pull`, `down`, `start`, `stop`, `kill`, and `rm`.
-They do not load `vaka.yaml` or create helper resources. `pull` first resolves
-the Vaka runtime image unless baked-in helper mode is selected.
+include `logs`, `ps`, `pull`, `down`, `start`, `stop`, `kill`, and `rm`.
+`exec` is different: Vaka inspects the selected live container and wraps commands
+for managed services with the immutable runtime trampoline, which drops startup
+capabilities and restores the requested or service user before execution.
+Unmanaged services retain normal Compose behavior. `--privileged` is rejected
+for managed execs. Lifecycle commands reject hooks on live managed containers.
 
 `vaka compose version`, `vaka compose ls`, bare `vaka compose`, and help forms
 are proxied directly without loading a project.
@@ -329,7 +332,7 @@ to Docker Compose documentation.
 | Flag | Default | Description |
 | --- | --- | --- |
 | `--vaka-file=<path>` | `vaka.yaml` | Select the host policy file. |
-| `--vaka-init-present` | off | Skip the runtime image mount and require compatible helpers at `/opt/vaka/sbin/` in managed service images. |
+| `--vaka-init-present` | off | Deprecated compatibility flag; rejected when any service is managed because later execs require the verified read-only runtime mount. |
 | `--vaka-pull=<policy>` | `missing-pinned` | Control whether Vaka pulls a missing service image when it must inspect image defaults. Values: `missing-pinned`, `missing`, `never`. |
 
 `missing-pinned` pulls only missing digest-pinned service images.

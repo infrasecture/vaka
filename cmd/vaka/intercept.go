@@ -54,6 +54,8 @@ const (
 	verbRender    composeVerbClass = iota // full policy injection
 	verbReference                         // metadata-only override
 	verbMetadata                          // direct proxy; no project or override required
+	verbExec                              // live-target inspection + runtime trampoline
+	verbUnknown                           // unreviewed Compose surface; fail closed
 )
 
 type composeCommandSpec struct {
@@ -66,6 +68,7 @@ type composeCommandSpec struct {
 // that can create or recreate containers require a full policy render.
 var composeCommandSpecs = map[string]composeCommandSpec{
 	"attach":  {class: verbReference},
+	"bridge":  {class: verbMetadata},
 	"build":   {class: verbReference},
 	"commit":  {class: verbReference},
 	"config":  {class: verbReference},
@@ -73,7 +76,7 @@ var composeCommandSpecs = map[string]composeCommandSpec{
 	"create":  {class: verbRender},
 	"down":    {class: verbReference},
 	"events":  {class: verbReference},
-	"exec":    {class: verbReference},
+	"exec":    {class: verbExec},
 	"export":  {class: verbReference},
 	"help":    {class: verbMetadata},
 	"images":  {class: verbReference},
@@ -102,14 +105,14 @@ var composeCommandSpecs = map[string]composeCommandSpec{
 	"watch":   {class: verbRender},
 }
 
-// composeCommandSpecFor defaults unknown future verbs to full policy rendering.
-// This keeps forwarding extensible without allowing a newly introduced
-// container-creating command to bypass Vaka's entrypoint and firewall.
+// composeCommandSpecFor fails closed on unknown future verbs. Full rendering
+// protects container startup, but cannot make an unreviewed verb safe if it
+// creates an exec process inside an existing container.
 func composeCommandSpecFor(verb string) composeCommandSpec {
 	if spec, ok := composeCommandSpecs[verb]; ok {
 		return spec
 	}
-	return composeCommandSpec{class: verbRender}
+	return composeCommandSpec{class: verbUnknown}
 }
 
 func classifyComposeVerb(verb string) composeVerbClass {
@@ -230,6 +233,20 @@ func buildInjectionOverride(
 	if err != nil {
 		return "", nil, err
 	}
+	if err := validateManagedExecutionSurfaces(p, project); err != nil {
+		return "", nil, err
+	}
+	if vakaInitPresent && len(p.Services) > 0 {
+		return "", nil, fmt.Errorf("--vaka-init-present is not supported for managed services: the exec security boundary requires Vaka's verified read-only runtime mount")
+	}
+	if inv.Subcommand == "run" {
+		if err := validateRunInvocation(inv, p); err != nil {
+			return "", nil, err
+		}
+	}
+	if inv.Subcommand == "up" && hasComposeOption(inv.PostSubcommand, "--no-recreate") && len(p.Services) > 0 {
+		return "", nil, fmt.Errorf("compose up --no-recreate can reuse containers with an older unsafe runtime; remove --no-recreate so managed services are recreated")
+	}
 	inv.ResolvedProjectName = project.Name
 
 	// Pre-build any service whose image must be inspected for ENTRYPOINT/CMD
@@ -263,6 +280,9 @@ func buildInjectionOverride(
 		composeSvc, ok := project.Services[svcName]
 		if !ok {
 			return "", nil, fmt.Errorf("service %q: not found in compose files %v", svcName, composeInput.Files)
+		}
+		if composeSvc.Labels[vakaInitLabel] == "present" {
+			return "", nil, fmt.Errorf("service %s: label %s=present is not supported: the exec security boundary requires Vaka's verified read-only runtime mount", svcName, vakaInitLabel)
 		}
 
 		rt, err := ds.ResolveRuntime(ctx, svcName, composeSvc)
@@ -304,28 +324,24 @@ func buildInjectionOverride(
 		extraEnv = append(extraEnv, envKey+"="+base64.StdEncoding.EncodeToString(raw))
 
 		entries = append(entries, compose.ServiceEntry{
-			Name:           svcName,
-			Entrypoint:     rt.Entrypoint,
-			Command:        rt.Command,
-			CapDelta:       delta,
-			EnvVarName:     envKey,
-			PolicyRevision: policyRevision,
-			OptOut:         composeSvc.Labels[vakaInitLabel] == "present",
+			Name:             svcName,
+			Entrypoint:       rt.Entrypoint,
+			Command:          rt.Command,
+			CapDelta:         delta,
+			EnvVarName:       envKey,
+			PolicyRevision:   policyRevision,
+			Healthcheck:      rt.Healthcheck,
+			HealthcheckShell: rt.HealthcheckShell,
+			OptOut:           false,
 		})
 	}
 
 	// Resolve the runtime image only when at least one service needs it. The
 	// mutable tag is used for lookup and repair; Compose receives the exact local
 	// image ID or its compatibility prefix, never that tag.
-	needsInjection := false
-	for _, e := range entries {
-		if !e.OptOut {
-			needsInjection = true
-			break
-		}
-	}
+	needsInjection := len(entries) > 0
 	runtimeMount := compose.RuntimeMount{Version: runtimeBundleVersion}
-	if !vakaInitPresent && needsInjection {
+	if needsInjection {
 		resolvedImage, err := ds.ResolveRuntimeImage(ctx, vakaInitImageReference(), runtimeBundleVersion, true)
 		if err != nil {
 			return "", nil, err
@@ -339,6 +355,18 @@ func buildInjectionOverride(
 		return "", nil, fmt.Errorf("build override: %w", err)
 	}
 	return overrideYAML, extraEnv, nil
+}
+
+func hasComposeOption(args []string, option string) bool {
+	for _, arg := range args {
+		if arg == "--" {
+			return false
+		}
+		if arg == option || strings.HasPrefix(arg, option+"=") {
+			return true
+		}
+	}
+	return false
 }
 
 // referenceOverrideYAML returns the metadata-only override used by Compose
@@ -433,7 +461,8 @@ func servicesNeedingPrebuild(ctx context.Context, ds DockerServices, policySvcs 
 }
 
 func needsImageRuntimeFallback(svc composetypes.ServiceConfig) bool {
-	return len(svc.Entrypoint) == 0 || strings.TrimSpace(svc.User) == ""
+	needsHealthcheck := svc.Image != "" && (svc.HealthCheck == nil || (!svc.HealthCheck.Disable && len(svc.HealthCheck.Test) == 0))
+	return len(svc.Entrypoint) == 0 || strings.TrimSpace(svc.User) == "" || needsHealthcheck
 }
 
 // computeCapDelta returns capabilities vaka needs that are absent from Docker's

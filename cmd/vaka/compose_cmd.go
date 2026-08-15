@@ -55,12 +55,21 @@ func runComposeCLI(root *RootInvocation, argv []string) error {
 		printDeviationNotice(os.Stderr, inv.ProjectDirectory)
 		return runFull(root.VakaFile, inv, root.VakaInitPresent, root.PullPolicy)
 	case verbReference:
+		if referenceMayExecuteHook(inv.Subcommand) {
+			if err := validateReferenceExecutionSurfaces(root.VakaFile, inv); err != nil {
+				return err
+			}
+		}
 		if spec.ensureRuntime && !root.VakaInitPresent {
 			if err := ensureReferenceRuntime(inv); err != nil {
 				return err
 			}
 		}
 		return runReference(inv)
+	case verbExec:
+		return runSecureExec(inv)
+	case verbUnknown:
+		return fmt.Errorf("docker compose command %q has not been reviewed for Vaka's process security boundary; upgrade Vaka for support", inv.Subcommand)
 	default:
 		return fmt.Errorf("internal error: unhandled compose command class for %q", inv.Subcommand)
 	}

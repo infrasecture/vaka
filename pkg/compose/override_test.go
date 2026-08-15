@@ -27,7 +27,10 @@ type overrideDoc struct {
 		Volumes     []composetypes.ServiceVolumeConfig `yaml:"volumes"`
 		VolumesFrom []string                           `yaml:"volumes_from"`
 		DependsOn   map[string]any                     `yaml:"depends_on"`
-		Secrets     []struct {
+		Healthcheck struct {
+			Test []string `yaml:"test"`
+		} `yaml:"healthcheck"`
+		Secrets []struct {
 			Source string `yaml:"source"`
 			Target string `yaml:"target"`
 		} `yaml:"secrets"`
@@ -145,6 +148,55 @@ func TestBuildOverrideLabelsPolicyAndRuntimeIdentity(t *testing.T) {
 	}
 	if doc.Metadata.RuntimeVersion != testRuntime.Version || doc.Metadata.RuntimeImage != testImageID {
 		t.Errorf("x-vaka = %+v, want runtime identity", doc.Metadata)
+	}
+}
+
+func TestBuildOverrideWrapsHealthchecksThroughTrampoline(t *testing.T) {
+	tests := []struct {
+		name  string
+		test  []string
+		shell []string
+		want  []string
+	}{
+		{
+			name: "exec form",
+			test: []string{"CMD", "curl", "-f", "http://localhost"},
+			want: []string{"CMD", "/opt/vaka/sbin/vaka-init", "exec", "--", "curl", "-f", "http://localhost"},
+		},
+		{
+			name: "shell form default shell",
+			test: []string{"CMD-SHELL", "curl -f http://localhost || exit 1"},
+			want: []string{"CMD", "/opt/vaka/sbin/vaka-init", "exec", "--", "/bin/sh", "-c", "curl -f http://localhost || exit 1"},
+		},
+		{
+			name:  "shell form image shell",
+			test:  []string{"CMD-SHELL", "Test-Path C:\\ready"},
+			shell: []string{"pwsh", "-Command"},
+			want:  []string{"CMD", "/opt/vaka/sbin/vaka-init", "exec", "--", "pwsh", "-Command", "Test-Path C:\\ready"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			entries := singleEntry("app")
+			entries[0].Healthcheck = tc.test
+			entries[0].HealthcheckShell = tc.shell
+			out, err := compose.BuildOverride(entries, testRuntime)
+			if err != nil {
+				t.Fatalf("BuildOverride: %v", err)
+			}
+			got := parseOverride(t, out).Services["app"].Healthcheck.Test
+			if strings.Join(got, "\x00") != strings.Join(tc.want, "\x00") {
+				t.Fatalf("healthcheck = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBuildOverrideRejectsMalformedHealthcheck(t *testing.T) {
+	entries := singleEntry("app")
+	entries[0].Healthcheck = []string{"CMD"}
+	if _, err := compose.BuildOverride(entries, testRuntime); err == nil || !strings.Contains(err.Error(), "has no command") {
+		t.Fatalf("malformed healthcheck error = %v", err)
 	}
 }
 

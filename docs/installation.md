@@ -191,45 +191,11 @@ vaka doctor --fix
 Development CLI builds use the same committed runtime bundle version and can
 therefore use `vaka doctor --fix` normally.
 
-## Air-Gapped Or Baked-In Helper Mode
+## Air-Gapped Runtime
 
-If containers cannot use the runtime image, copy its binaries into your service image:
-
-```dockerfile
-ARG VAKA_RUNTIME_VERSION=v0.1.1
-FROM emsi/vaka-init:runtime-${VAKA_RUNTIME_VERSION} AS vaka
-FROM ubuntu:24.04
-COPY --from=vaka --chmod=0555 /opt/vaka/sbin/vaka-init /opt/vaka/sbin/vaka-init
-COPY --from=vaka --chmod=0555 /opt/vaka/sbin/nft       /opt/vaka/sbin/nft
-```
-
-The default above is the runtime required by the current Vaka release. For
-another Vaka build, use the version from the `runtime-vX.Y.Z` image tag reported
-by `vaka doctor`:
-
-```bash
-docker build --build-arg VAKA_RUNTIME_VERSION=vX.Y.Z .
-```
-
-Replace `vX.Y.Z` before running the command. The injected policy requires an
-exact runtime-version match and fails closed if a baked-in helper is stale.
-
-Then pass `--vaka-init-present` before the subcommand:
-
-```bash
-vaka --vaka-init-present up
-vaka --vaka-init-present down
-```
-
-You can also mark individual services in `docker-compose.yaml`:
-
-```yaml
-services:
-  app:
-    labels:
-      agent.vaka.init: present
-```
-
-Services with that label use the baked-in `/opt/vaka/sbin/vaka-init` and
-`/opt/vaka/sbin/nft`; other services receive the runtime through a read-only
-image mount.
+Managed services require Vaka's verified read-only runtime image mount. The
+former baked-helper modes are not safe for later exec processes because files
+in a service image can be replaced in the writable container layer. In an
+air-gapped environment, transfer and load the exact architecture-specific
+`emsi/vaka-init:runtime-vX.Y.Z-<arch>` image into the selected Docker target,
+then verify it with `vaka doctor` before starting services.
