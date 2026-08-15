@@ -37,11 +37,26 @@ nftables table exists, then drops policy capabilities from all capability sets,
 restores the service or requested exec identity, and starts the command. It
 does not repeat startup ownership changes.
 
+After upgrading from an affected Vaka release, refresh the runtime and recreate
+every managed project:
+
+```bash
+vaka doctor --fix
+vaka up --force-recreate
+```
+
+Run the second command from each project's directory (and with its usual Vaka
+and Compose options). Restarting, starting, or unpausing an existing container
+is not sufficient because Docker retains that container's original user,
+capabilities, healthcheck, and runtime mount. Fixed Vaka releases block these
+resume operations when they detect an older or mutable managed runtime.
+
 Compose `post_start`, `pre_stop`, and `develop.watch` `sync+exec` hooks are
 currently rejected on managed services. `run --entrypoint`, unsafe mounts over
 Vaka runtime/policy paths, protected-label overrides, and `up --no-recreate`
-are also rejected. These restrictions fail closed rather than guessing how a
-new process or command-line override interacts with the security boundary.
+and `watch --no-up` are also rejected. These restrictions fail closed rather
+than guessing how a new process or command-line override interacts with the
+security boundary.
 
 ## What It Does Not Enforce
 

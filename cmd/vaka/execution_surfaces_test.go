@@ -126,7 +126,7 @@ services:
 	}
 }
 
-func TestLifecycleStartRejectsOldRuntime(t *testing.T) {
+func TestLifecycleResumeRejectsOldRuntime(t *testing.T) {
 	dir := t.TempDir()
 	chdirForTest(t, dir)
 	writeFixtureFiles(t, dir, `
@@ -142,9 +142,13 @@ services:
 		"app": {{Managed: true, RuntimeVersion: "v0.1.1", RuntimeMounted: true}},
 	}}
 	setDockerServicesFactoryForTest(t, ds)
-	inv, _ := ParseComposeInvocation([]string{"start"})
-	err := validateReferenceExecutionSurfaces("unused.yaml", inv)
-	if err == nil || !strings.Contains(err.Error(), "force-recreate") {
-		t.Fatalf("old runtime error = %v", err)
+	for _, verb := range []string{"start", "restart", "unpause"} {
+		t.Run(verb, func(t *testing.T) {
+			inv, _ := ParseComposeInvocation([]string{verb})
+			err := validateReferenceExecutionSurfaces("unused.yaml", inv)
+			if err == nil || !strings.Contains(err.Error(), "force-recreate") {
+				t.Fatalf("old runtime error = %v", err)
+			}
+		})
 	}
 }

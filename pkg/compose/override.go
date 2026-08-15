@@ -46,8 +46,8 @@ type ServiceEntry struct {
 	PolicyRevision   string
 	Healthcheck      []string
 	HealthcheckShell []string
-	// OptOut is true when the service carries the agent.vaka.init: present label,
-	// meaning vaka-init is already baked into the image at /opt/vaka/sbin/.
+	// OptOut is retained for legacy callers. Managed-service validation rejects
+	// this mutable baked-runtime mode before building an override.
 	OptOut bool
 }
 

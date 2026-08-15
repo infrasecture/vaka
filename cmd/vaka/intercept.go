@@ -247,6 +247,9 @@ func buildInjectionOverride(
 	if inv.Subcommand == "up" && hasComposeOption(inv.PostSubcommand, "--no-recreate") && len(p.Services) > 0 {
 		return "", nil, fmt.Errorf("compose up --no-recreate can reuse containers with an older unsafe runtime; remove --no-recreate so managed services are recreated")
 	}
+	if inv.Subcommand == "watch" && hasComposeOption(inv.PostSubcommand, "--no-up") && len(p.Services) > 0 {
+		return "", nil, fmt.Errorf("compose watch --no-up can reuse containers with an older unsafe runtime; remove --no-up so managed services are recreated")
+	}
 	inv.ResolvedProjectName = project.Name
 
 	// Pre-build any service whose image must be inspected for ENTRYPOINT/CMD

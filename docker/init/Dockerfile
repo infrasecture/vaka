@@ -3,12 +3,8 @@
 # The build context contains a normalized rootfs/ tree assembled by build.sh:
 #   rootfs/opt/vaka/sbin/vaka-init — static vaka-init binary
 #   rootfs/opt/vaka/sbin/nft       — static nft binary
-#
-# Usage when baking into a harness image:
-#   FROM emsi/vaka-init:runtime-v0.1.1 AS vaka
-#   FROM ubuntu:24.04
-#   COPY --from=vaka /opt/vaka/sbin/vaka-init /opt/vaka/sbin/vaka-init
-#   COPY --from=vaka /opt/vaka/sbin/nft       /opt/vaka/sbin/nft
+# Managed services receive this image as a verified read-only Compose image
+# mount. Copying these files into a writable service image is unsupported.
 
 ARG RUNTIME_VERSION=dev
 ARG NFTABLES_VERSION=unknown

@@ -238,12 +238,14 @@ func validateReferenceExecutionSurfaces(_ string, inv *ComposeInvocation) error 
 		return err
 	}
 	for name, targets := range live {
-		if svc, ok := project.Services[name]; ok {
-			if err := validateServiceExecutionSurfaces(name, svc); err != nil {
-				return err
+		if inv.Subcommand != "unpause" {
+			if svc, ok := project.Services[name]; ok {
+				if err := validateServiceExecutionSurfaces(name, svc); err != nil {
+					return err
+				}
 			}
 		}
-		if inv.Subcommand == "start" || inv.Subcommand == "restart" {
+		if inv.Subcommand == "start" || inv.Subcommand == "restart" || inv.Subcommand == "unpause" {
 			for _, target := range targets {
 				if target.RuntimeVersion != runtimeBundleVersion || target.RuntimeImage == "" || !target.RuntimeMounted {
 					return fmt.Errorf("service %s uses an older or mutable Vaka runtime; recreate it with `vaka up --force-recreate` before %s", name, inv.Subcommand)
@@ -254,9 +256,9 @@ func validateReferenceExecutionSurfaces(_ string, inv *ComposeInvocation) error 
 	return nil
 }
 
-func referenceMayExecuteHook(verb string) bool {
+func referenceRequiresExecutionValidation(verb string) bool {
 	switch verb {
-	case "start", "restart", "stop", "down":
+	case "start", "restart", "stop", "down", "unpause":
 		return true
 	default:
 		return false

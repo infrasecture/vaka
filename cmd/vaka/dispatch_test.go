@@ -317,6 +317,32 @@ services:
 	}
 }
 
+func TestComposeWatchNoUpRejectsManagedContainerReuse(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	writeFixtureFiles(t, dir, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+`, `
+services:
+  app:
+    image: alpine:3.20
+`)
+
+	calls, err := runRootCapturingExec(t, []string{"compose", "watch", "--no-up"})
+	if err == nil || !strings.Contains(err.Error(), "older unsafe runtime") {
+		t.Fatalf("watch --no-up error = %v", err)
+	}
+	if len(calls) != 0 {
+		t.Fatalf("watch --no-up must not execute Compose for managed services, got %+v", calls)
+	}
+}
+
 func TestUnknownComposeCommandFailsClosed(t *testing.T) {
 	calls, err := runRootCapturingExec(t, []string{"compose", "future-container-command"})
 	if err == nil || !strings.Contains(err.Error(), "has not been reviewed") {

@@ -54,8 +54,8 @@ Host-authored policy files must not set `generatedBy`,
 internally for the per-service policy consumed by `vaka-init`.
 
 `generatedBy` is diagnostic and records the host CLI build.
-`requiredRuntimeVersion` is checked exactly against the mounted or baked-in
-runtime bundle before nftables is modified. Neither field is part of the public
+`requiredRuntimeVersion` is checked exactly against the mounted runtime bundle
+before nftables is modified. Neither field is part of the public
 host-authored policy schema.
 
 ## Rule Evaluation Order

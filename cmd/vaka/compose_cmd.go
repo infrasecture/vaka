@@ -55,7 +55,7 @@ func runComposeCLI(root *RootInvocation, argv []string) error {
 		printDeviationNotice(os.Stderr, inv.ProjectDirectory)
 		return runFull(root.VakaFile, inv, root.VakaInitPresent, root.PullPolicy)
 	case verbReference:
-		if referenceMayExecuteHook(inv.Subcommand) {
+		if referenceRequiresExecutionValidation(inv.Subcommand) {
 			if err := validateReferenceExecutionSurfaces(root.VakaFile, inv); err != nil {
 				return err
 			}
