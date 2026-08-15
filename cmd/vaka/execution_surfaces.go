@@ -156,7 +156,8 @@ func validateRunInvocation(inv *ComposeInvocation, p *policy.ServicePolicy) erro
 		if before, _, ok := strings.Cut(label, "="); ok {
 			key = before
 		}
-		if strings.HasPrefix(strings.TrimSpace(key), "agent.vaka.") {
+		key = strings.TrimSpace(key)
+		if strings.HasPrefix(key, "agent.vaka.") || strings.HasPrefix(key, "com.docker.compose.") {
 			return fmt.Errorf("compose run label %q overrides Vaka security metadata for managed service %s", label, parsed.service)
 		}
 	}

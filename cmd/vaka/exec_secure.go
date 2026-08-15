@@ -51,11 +51,15 @@ func (d *dockerServices) InspectExecTarget(ctx context.Context, project, service
 		return execTarget{}, fmt.Errorf("find running container for service %s in project %s on %s: %w", service, project, d.targetDesc, err)
 	}
 	sort.SliceStable(containers, func(i, j int) bool {
+		leftOneoff, rightOneoff := isComposeOneoff(containers[i]), isComposeOneoff(containers[j])
+		if leftOneoff != rightOneoff {
+			return !leftOneoff
+		}
 		left, right := containerNumber(containers[i]), containerNumber(containers[j])
 		if left != right {
 			return left < right
 		}
-		return isComposeOneoff(containers[j]) && !isComposeOneoff(containers[i])
+		return false
 	})
 	for _, ctr := range containers {
 		if ctr.Labels[composeProjectLabel] != project || ctr.Labels[composeServiceLabel] != service {
@@ -106,7 +110,10 @@ func (d *dockerServices) InspectManagedProject(ctx context.Context, project stri
 	}
 	targets := make(map[string][]execTarget)
 	for _, ctr := range containers {
-		if ctr.Labels[compose.ManagedLabel] != "true" {
+		// Compose lifecycle verbs operate on regular service containers, not
+		// one-offs left by `compose run`; stale one-offs must not block start or
+		// restart of the declared service.
+		if ctr.Labels[compose.ManagedLabel] != "true" || isComposeOneoff(ctr) {
 			continue
 		}
 		service := ctr.Labels[composeServiceLabel]

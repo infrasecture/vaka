@@ -37,8 +37,8 @@ func TestInspectExecTargetMatchesComposeReplicaSelection(t *testing.T) {
 	containers := []containertypes.Summary{
 		execContainer("oneoff", "1", true),
 		execContainer("replica-2", "2", false),
-		execContainer("replica-1", "1", false),
 	}
+	containers[0].Labels[compose.ManagedLabel] = "false"
 	containers[0].Labels[compose.RuntimeVersionLabel] = "v0.0.1"
 	ds := &dockerServices{
 		legacy: &fakeLegacyRuntimeClient{listFn: func(containertypes.ListOptions) ([]containertypes.Summary, error) {

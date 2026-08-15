@@ -25,6 +25,7 @@ func TestValidateRunInvocationRejectsSecurityOverrides(t *testing.T) {
 		{name: "root mount", args: []string{"run", "-v", "scratch:/", "app"}, want: "protected runtime"},
 		{name: "secret mount", args: []string{"run", "-v", "scratch:/run/secrets/vaka.yaml", "app"}, want: "policy mounts"},
 		{name: "protected label", args: []string{"run", "--label", "agent.vaka.managed=false", "app"}, want: "security metadata"},
+		{name: "compose identity label", args: []string{"run", "--label", "com.docker.compose.oneoff=false", "app"}, want: "security metadata"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

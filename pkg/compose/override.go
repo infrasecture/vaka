@@ -187,7 +187,7 @@ func wrapHealthcheck(test, imageShell []string) ([]string, error) {
 		}
 		out := []string{"CMD", vakaInitPath, "exec", "--"}
 		out = append(out, shell...)
-		return append(out, strings.Join(test[1:], " ")), nil
+		return append(out, test[1:]...), nil
 	default:
 		return nil, fmt.Errorf("unsupported healthcheck test type %q", test[0])
 	}
