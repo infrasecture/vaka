@@ -144,6 +144,100 @@ func TestApplyChownActionsExplicitOwnerSuccess(t *testing.T) {
 	}
 }
 
+func TestApplyChownActionsRejectsIntermediateSymlinkToRootMount(t *testing.T) {
+	root := t.TempDir()
+	volume := filepath.Join(root, "volume")
+	outside := filepath.Join(root, "rootfs")
+	if err := os.MkdirAll(filepath.Join(outside, "dir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(volume, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "dir", "file"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "dir"), filepath.Join(volume, "alias")); err != nil {
+		t.Fatal(err)
+	}
+
+	var calls int
+	withChownStubs(t, []mountInfoEntry{
+		{MountPoint: "/", MountOpts: map[string]bool{"rw": true}},
+		{MountPoint: volume, MountOpts: map[string]bool{"rw": true}},
+	}, func(string, int, int) error {
+		calls++
+		return nil
+	})
+	err := applyChownActions(
+		[]policy.ChownAction{{Path: filepath.Join(volume, "alias", "file"), Owner: "1000:1000"}},
+		nil, "/does/not/exist", "/does/not/exist",
+	)
+	if err == nil || !strings.Contains(err.Error(), "root filesystem mount") {
+		t.Fatalf("intermediate symlink error = %v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("lchown calls = %d, want zero", calls)
+	}
+}
+
+func TestApplyChownActionsAllowsResolvedWritableMount(t *testing.T) {
+	root := t.TempDir()
+	declared := filepath.Join(root, "declared")
+	actual := filepath.Join(root, "actual")
+	if err := os.MkdirAll(actual, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(declared, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(actual, "file"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(actual, filepath.Join(declared, "alias")); err != nil {
+		t.Fatal(err)
+	}
+
+	var got string
+	withChownStubs(t, []mountInfoEntry{
+		{MountPoint: "/", MountOpts: map[string]bool{"rw": true}},
+		{MountPoint: declared, MountOpts: map[string]bool{"rw": true}},
+		{MountPoint: actual, MountOpts: map[string]bool{"rw": true}},
+	}, func(path string, _, _ int) error {
+		got = path
+		return nil
+	})
+	err := applyChownActions(
+		[]policy.ChownAction{{Path: filepath.Join(declared, "alias", "file"), Owner: "1000:1000"}},
+		nil, "/does/not/exist", "/does/not/exist",
+	)
+	if err != nil {
+		t.Fatalf("applyChownActions: %v", err)
+	}
+	if got != filepath.Join(actual, "file") {
+		t.Fatalf("lchown path = %q, want resolved path %q", got, filepath.Join(actual, "file"))
+	}
+}
+
+func TestResolveChownPathDoesNotResolveFinalSymlink(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	link := filepath.Join(root, "link")
+	if err := os.WriteFile(target, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	got, err := resolveChownPath(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != link {
+		t.Fatalf("resolved final symlink = %q, want %q", got, link)
+	}
+}
+
 func TestFindMountUsesLongestPrefix(t *testing.T) {
 	mounts := []mountInfoEntry{
 		{MountPoint: "/tmp", MountOpts: map[string]bool{"rw": true}},

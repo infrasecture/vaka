@@ -46,11 +46,15 @@ func applyChownActions(actions []policy.ChownAction, defaultOwner *execIdentity,
 		if path == "" || !filepath.IsAbs(path) {
 			return fmt.Errorf("%s.path: must be an absolute path, got %q", idx, action.Path)
 		}
-		if _, err := os.Lstat(path); err != nil {
+		effectivePath, err := resolveChownPath(path)
+		if err != nil {
+			return fmt.Errorf("%s.path %q: resolve parent directory: %w", idx, path, err)
+		}
+		if _, err := os.Lstat(effectivePath); err != nil {
 			return fmt.Errorf("%s.path %q: %w", idx, path, err)
 		}
 
-		mount := findMount(path, mounts)
+		mount := findMount(effectivePath, mounts)
 		if mount == nil {
 			return fmt.Errorf("%s.path %q: no matching mount found", idx, path)
 		}
@@ -65,11 +69,22 @@ func applyChownActions(actions []policy.ChownAction, defaultOwner *execIdentity,
 		if err != nil {
 			return fmt.Errorf("%s: %w", idx, err)
 		}
-		if err := chownPath(path, owner.UID, owner.GID, action.Recursive); err != nil {
+		if err := chownPath(effectivePath, owner.UID, owner.GID, action.Recursive); err != nil {
 			return fmt.Errorf("%s.path %q: %w", idx, path, err)
 		}
 	}
 	return nil
+}
+
+// resolveChownPath resolves symlinks in every intermediate component before
+// mount validation. The final component remains unresolved so Lchown and
+// WalkDir retain their documented no-follow behavior for a symlink target.
+func resolveChownPath(path string) (string, error) {
+	resolvedParent, err := filepath.EvalSymlinks(filepath.Dir(path))
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(resolvedParent, filepath.Base(path)), nil
 }
 
 func resolveChownOwner(spec string, defaultOwner *execIdentity, passwd, group string) (*execIdentity, error) {
