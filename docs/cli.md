@@ -207,9 +207,17 @@ Known non-creating commands use a metadata-only reference override. Examples
 include `logs`, `ps`, `pull`, `down`, `start`, `stop`, `kill`, and `rm`.
 `exec` is different: Vaka inspects the selected live container and wraps commands
 for managed services with the immutable runtime trampoline, which drops startup
-capabilities and restores the requested or service user before execution.
-Unmanaged services retain normal Compose behavior. `--privileged` is rejected
-for managed execs. Lifecycle commands reject hooks on live managed containers.
+capabilities before running the command as the service's effective Compose/image
+user, or as the identity explicitly selected with `exec --user`. Unmanaged
+services retain normal Compose behavior.
+
+For managed services, Vaka rejects `exec --privileged`; `run --entrypoint`,
+`run --user`, protected mount or label overrides; `post_start` and `pre_stop`
+hooks; and Watch actions `sync`, `sync+restart`, and `sync+exec`. It also rejects
+`up --no-recreate` and `watch --no-up`, and requires old or mutable managed
+containers to be recreated before `start`, `restart`, `unpause`, or `exec`.
+Watch actions that do not synchronize files or execute commands remain
+available.
 
 `vaka compose version`, `vaka compose ls`, bare `vaka compose`, and help forms
 are proxied directly without loading a project.
@@ -243,10 +251,10 @@ vaka stop
 vaka down --volumes
 ```
 
-`up` and `run` use full policy rendering. The other examples above use the
-reference path. `down` also performs conservative cleanup when it finds the
-exact anonymous helper volume left by an older Vaka release; it never removes
-named or in-use volumes.
+`up` and `run` use full policy rendering, `exec` uses the guarded live-container
+path, and the remaining examples use the reference path. `down` also performs
+conservative cleanup when it finds the exact anonymous helper volume left by an
+older Vaka release; it never removes named or in-use volumes.
 
 ## Native Commands
 

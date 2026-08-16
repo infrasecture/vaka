@@ -98,6 +98,21 @@ The policy is mounted inside the container at:
 
 If any step fails, the container exits before the application starts.
 
+## Later Exec And Healthcheck Sequence
+
+Docker creates exec and healthcheck processes from the stored container user
+and capability configuration; they are not descendants of the application and
+cannot inherit the capability drop performed by startup `vaka-init`. Managed
+execs and healthchecks therefore use the immutable runtime trampoline. It
+validates the injected policy and runtime, requires the kernel `inet vaka` table
+to exist, drops policy capabilities from every capability set, switches to the
+service's effective Compose/image user or explicit `exec --user` identity, and
+then starts the command.
+
+This readiness check closes the startup race but is not a complete ruleset
+audit. Exec mode does not reload policy or repeat `runtime.chown`. Direct Docker
+exec/API access remains outside Vaka's enforcement boundary.
+
 ## Upgrade From Legacy Helper Volumes
 
 Older Vaka releases used a `__vaka-init` container and an anonymous

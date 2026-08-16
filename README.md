@@ -99,13 +99,16 @@ workflow.
 
 ## Mental Model
 
-Think of vaka as Docker Compose plus one extra startup step:
+Think of vaka as Docker Compose with guarded startup and later-process paths:
 
 1. Compose still defines the containers.
 2. `vaka.yaml` defines outbound network policy.
-3. vaka injects a tiny `vaka-init` helper at container startup.
-4. `vaka-init` loads nftables rules inside the container.
-5. The original app starts under that policy.
+3. vaka mounts a verified, read-only `vaka-init` runtime.
+4. At startup, `vaka-init` loads nftables rules, drops Vaka-added capabilities,
+   switches to the service's effective Compose/image user, and starts the app.
+5. Later Vaka execs and healthchecks re-enter the immutable helper, require the
+   nftables table to exist, drop capabilities, select the intended user, and
+   only then start their command.
 
 If the firewall cannot be installed, the app does not start.
 
@@ -115,7 +118,9 @@ If the firewall cannot be installed, the app does not start.
 - Linux containers. Docker Desktop on macOS is supported because containers run inside Docker's Linux VM.
 - A Compose project and matching `vaka.yaml` when protecting your own stack;
   published recipes supply their own Compose and policy files.
-- Network access to pull the versioned `emsi/vaka-init:runtime-vX.Y.Z` runtime image on first use, unless you bake the helper binaries into your image.
+- Network access to pull the versioned `emsi/vaka-init:runtime-vX.Y.Z` runtime
+  image on first use, or an exact runtime image preloaded into the selected
+  Docker target for air-gapped operation.
 
 ## Limits
 

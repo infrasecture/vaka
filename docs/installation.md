@@ -25,7 +25,7 @@ the block for your distribution; each one is self-contained.
 ### Debian Or Ubuntu
 
 ```bash
-VAKA_VERSION=0.3.2
+VAKA_VERSION=0.3.3
 vaka_arch="$(dpkg --print-architecture)"
 case "${vaka_arch}" in
   amd64|arm64) ;;
@@ -38,7 +38,7 @@ sudo dpkg -i "vaka_${VAKA_VERSION}_${vaka_arch}.deb"
 ### Fedora, RHEL, Or CentOS
 
 ```bash
-VAKA_VERSION=0.3.2
+VAKA_VERSION=0.3.3
 vaka_arch="$(uname -m)"
 case "${vaka_arch}" in
   x86_64|aarch64) ;;
@@ -51,7 +51,7 @@ sudo rpm -i "vaka-${VAKA_VERSION}-1.${vaka_arch}.rpm"
 ### Arch Linux
 
 ```bash
-VAKA_VERSION=0.3.2
+VAKA_VERSION=0.3.3
 vaka_arch="$(uname -m)"
 case "${vaka_arch}" in
   x86_64|aarch64) ;;

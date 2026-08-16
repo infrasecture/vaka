@@ -59,6 +59,23 @@ source expansion was introduced by
 The runtime version is independent of `vaka version`, so development CLI builds
 do not require a special `:dev` runtime image.
 
+## Exec Says The Egress Policy Is Not Installed Yet
+
+Vaka refuses to start a managed exec or healthcheck until the kernel `inet vaka`
+table exists. Immediately after container creation, retry once startup
+has completed. If the error persists, inspect the service logs: startup
+`vaka-init` may have failed before installing policy. The check only establishes
+readiness; it does not compare the complete live ruleset with `vaka.yaml`.
+
+If Vaka instead reports an older or mutable runtime, refresh the required image
+and recreate the container; restart or unpause cannot change stored container
+capabilities, healthchecks, or mounts:
+
+```bash
+vaka doctor --fix
+vaka up --force-recreate
+```
+
 ## Docker API Is Pinned Too Old
 
 If `doctor` reports an old Docker client API while the Engine itself is current,

@@ -24,7 +24,7 @@ vaka needs `NET_ADMIN` temporarily to load nftables rules. The normal path is:
 1. vaka adds the required capability for startup.
 2. `vaka-init` loads the firewall.
 3. `vaka-init` drops the capabilities vaka added.
-4. `vaka-init` restores the service user when one is configured.
+4. `vaka-init` switches to the service's effective Compose/image user.
 5. The application starts.
 
 If the original Compose service already had `NET_ADMIN`, vaka treats that as intentional and leaves it in place unless you provide an explicit `runtime.dropCaps` list.
@@ -34,8 +34,16 @@ created later do not inherit the application's dropped process state. Vaka
 therefore wraps healthchecks and `vaka exec` commands with the verified
 read-only `vaka-init` runtime. The trampoline first verifies that the kernel
 nftables table exists, then drops policy capabilities from all capability sets,
-restores the service or requested exec identity, and starts the command. It
-does not repeat startup ownership changes.
+runs as the service's effective Compose/image user or the identity explicitly
+selected with `exec --user`, and starts the command. A service intended to run
+as root remains root, but without Vaka-added capabilities. The trampoline does
+not repeat startup ownership changes.
+
+The table query is a fail-closed readiness gate: Docker can accept an exec or
+begin a healthcheck after the container is running but before startup policy
+installation has completed. It confirms that the `inet vaka` table exists; it
+does not compare the complete ruleset with policy and is not a security audit.
+It performs no DNS resolution, rule generation, or ownership changes.
 
 After upgrading from an affected Vaka release, refresh the runtime and recreate
 every managed project:
@@ -51,12 +59,13 @@ is not sufficient because Docker retains that container's original user,
 capabilities, healthcheck, and runtime mount. Fixed Vaka releases block these
 resume operations when they detect an older or mutable managed runtime.
 
-Compose `post_start`, `pre_stop`, and `develop.watch` `sync+exec` hooks are
-currently rejected on managed services. `run --entrypoint`, unsafe mounts over
-Vaka runtime/policy paths, protected-label overrides, and `up --no-recreate`
-and `watch --no-up` are also rejected. These restrictions fail closed rather
-than guessing how a new process or command-line override interacts with the
-security boundary.
+Compose `post_start` and `pre_stop` hooks and `develop.watch` actions `sync`,
+`sync+restart`, and `sync+exec` are currently rejected on managed services.
+Compose implements watched-file deletion with an internal container exec, even
+for plain `sync`. `run --entrypoint`, unsafe mounts over Vaka runtime/policy
+paths, protected-label overrides, `up --no-recreate`, and `watch --no-up` are
+also rejected. These restrictions fail closed rather than guessing how a new
+process or command-line override interacts with the security boundary.
 
 ## What It Does Not Enforce
 
