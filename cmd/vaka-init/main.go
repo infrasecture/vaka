@@ -144,6 +144,10 @@ func main() {
 	if err != nil {
 		fatal("resolve service user %q: %v", targetUserSpec, err)
 	}
+	targetUser, err = withAdditionalGroups(targetUser, svc.GroupAdd, groupPath)
+	if err != nil {
+		fatal("resolve Compose group_add %v: %v", svc.GroupAdd, err)
+	}
 
 	// Step 6: Apply optional runtime.chown ownership-fix actions. Paths are
 	// restricted to writable non-root mounted filesystems.
@@ -447,6 +451,43 @@ func resolveExecUser(userSpec, passwd, group string) (*execIdentity, error) {
 		GID:               execUser.Gid,
 		SupplementaryGIDs: dedup,
 	}, nil
+}
+
+func withAdditionalGroups(identity *execIdentity, groupAdd []string, group string) (*execIdentity, error) {
+	if len(groupAdd) == 0 {
+		return identity, nil
+	}
+	uniqueSpecs := make([]string, 0, len(groupAdd))
+	seenSpecs := make(map[string]bool, len(groupAdd))
+	for _, spec := range groupAdd {
+		if !seenSpecs[spec] {
+			seenSpecs[spec] = true
+			uniqueSpecs = append(uniqueSpecs, spec)
+		}
+	}
+	additional, err := mobyuser.GetAdditionalGroupsPath(uniqueSpecs, group)
+	if err != nil {
+		return nil, err
+	}
+	if identity == nil {
+		identity = &execIdentity{}
+	} else {
+		identity = &execIdentity{
+			UID:               identity.UID,
+			GID:               identity.GID,
+			SupplementaryGIDs: append([]int(nil), identity.SupplementaryGIDs...),
+		}
+	}
+	identity.SupplementaryGIDs = append(identity.SupplementaryGIDs, additional...)
+	sort.Ints(identity.SupplementaryGIDs)
+	dedup := identity.SupplementaryGIDs[:0]
+	for _, gid := range identity.SupplementaryGIDs {
+		if len(dedup) == 0 || dedup[len(dedup)-1] != gid {
+			dedup = append(dedup, gid)
+		}
+	}
+	identity.SupplementaryGIDs = dedup
+	return identity, nil
 }
 
 func needsIdentitySwitch(u *execIdentity) bool {

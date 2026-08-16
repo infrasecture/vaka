@@ -343,6 +343,42 @@ func TestResolveExecUserNamedDedupsAndSortsSupplementaryGroups(t *testing.T) {
 	}
 }
 
+func TestWithAdditionalGroupsMergesAndDeduplicates(t *testing.T) {
+	dir := t.TempDir()
+	group := filepath.Join(dir, "group")
+	if err := os.WriteFile(group, []byte("shared:x:3000:\nextra:x:4000:\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	base := &execIdentity{UID: 1001, GID: 1000, SupplementaryGIDs: []int{2000, 3000}}
+	got, err := withAdditionalGroups(base, []string{"shared", "4000", "shared"}, group)
+	if err != nil {
+		t.Fatalf("withAdditionalGroups: %v", err)
+	}
+	if got.UID != 1001 || got.GID != 1000 || !reflect.DeepEqual(got.SupplementaryGIDs, []int{2000, 3000, 4000}) {
+		t.Fatalf("identity = %+v", got)
+	}
+	if !reflect.DeepEqual(base.SupplementaryGIDs, []int{2000, 3000}) {
+		t.Fatalf("input identity was mutated: %+v", base)
+	}
+}
+
+func TestWithAdditionalGroupsUsesRootForEmptyServiceUser(t *testing.T) {
+	got, err := withAdditionalGroups(nil, []string{"2000"}, filepath.Join(t.TempDir(), "missing-group"))
+	if err != nil {
+		t.Fatalf("numeric group_add without group database: %v", err)
+	}
+	if got == nil || got.UID != 0 || got.GID != 0 || !reflect.DeepEqual(got.SupplementaryGIDs, []int{2000}) {
+		t.Fatalf("identity = %+v", got)
+	}
+}
+
+func TestWithAdditionalGroupsRejectsMissingNamedGroup(t *testing.T) {
+	if _, err := withAdditionalGroups(nil, []string{"missing"}, filepath.Join(t.TempDir(), "missing-group")); err == nil {
+		t.Fatal("missing named group unexpectedly resolved")
+	}
+}
+
 func TestSwitchIdentityUsesSetgroupsBeforeUidGidSwitch(t *testing.T) {
 	oldSetgroups, oldSetresgid, oldSetresuid := setgroupsFn, setresgidFn, setresuidFn
 	defer func() {

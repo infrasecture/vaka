@@ -740,20 +740,24 @@ kind: ServicePolicy
 services:
   s:
     user: "1000:1000"
+    groupAdd: [2000]
 `)
 	errs := policy.ValidateHost(p, nil)
 	if len(errs) == 0 {
 		t.Fatal("expected error for user-supplied services.<name>.user in host vaka.yaml, got none")
 	}
-	found := false
+	foundUser := false
+	foundGroupAdd := false
 	for _, e := range errs {
 		if strings.Contains(e.Error(), ".user") {
-			found = true
-			break
+			foundUser = true
+		}
+		if strings.Contains(e.Error(), ".groupAdd") {
+			foundGroupAdd = true
 		}
 	}
-	if !found {
-		t.Errorf("expected error mentioning services.<name>.user, got: %v", errs)
+	if !foundUser || !foundGroupAdd {
+		t.Errorf("expected errors mentioning generated user and groupAdd, got: %v", errs)
 	}
 }
 
@@ -766,6 +770,7 @@ requiredRuntimeVersion: v0.1.0
 services:
   s:
     user: "1000:1000"
+    groupAdd: [2000, shared]
 `)
 	if errs := policy.ValidateInjected(ok); len(errs) != 0 {
 		t.Fatalf("expected injected policy with generated user to validate, got: %v", errs)

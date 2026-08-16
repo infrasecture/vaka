@@ -137,6 +137,9 @@ func validateWithMode(p *ServicePolicy, networkModes map[string]string, mode val
 		if mode == validationHost && svc.User != "" {
 			add("%s.user: must not be set in vaka.yaml (it is generated from compose/image user)", prefix)
 		}
+		if mode == validationHost && len(svc.GroupAdd) > 0 {
+			add("%s.groupAdd: must not be set in vaka.yaml (it is generated from compose group_add)", prefix)
+		}
 
 		// Validate network egress rules.
 		if svc.Network != nil && svc.Network.Egress != nil {

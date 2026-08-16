@@ -50,7 +50,8 @@ services:
 ```
 
 Host-authored policy files must not set `generatedBy`,
-`requiredRuntimeVersion`, or `services.<name>.user`. Those fields are generated
+`requiredRuntimeVersion`, `services.<name>.user`, or
+`services.<name>.groupAdd`. Those fields are generated
 internally for the per-service policy consumed by `vaka-init`.
 
 `generatedBy` is diagnostic and records the host CLI build.

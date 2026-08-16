@@ -118,6 +118,7 @@ services:
   app:
     image: alpine:3.20
     user: "1000:1000"
+    group_add: [2000, shared]
     entrypoint: ["sleep"]
     command: ["infinity"]
 `)
@@ -145,6 +146,9 @@ services:
 	}
 	if !strings.Contains(policyYAML, "requiredRuntimeVersion: "+runtimeBundleVersion) {
 		t.Errorf("generated policy missing runtime requirement:\n%s", policyYAML)
+	}
+	if !strings.Contains(policyYAML, "groupAdd:") || !strings.Contains(policyYAML, "- \"2000\"") || !strings.Contains(policyYAML, "- shared") {
+		t.Errorf("generated policy missing Compose group_add:\n%s", policyYAML)
 	}
 	if !strings.Contains(override, "agent.vaka.policy-revision:") {
 		t.Errorf("override missing policy revision label:\n%s", override)

@@ -375,6 +375,7 @@ func buildInjectionOverride(
 		sliced.GeneratedBy = "vaka/" + version
 		sliced.RequiredRuntimeVersion = runtimeBundleVersion
 		sliced.Services[svcName].User = restoreUser
+		sliced.Services[svcName].GroupAdd = append([]string(nil), composeSvc.GroupAdd...)
 		policyRevision, err := policy.Revision(sliced)
 		if err != nil {
 			return "", nil, fmt.Errorf("compute policy revision for %s: %w", svcName, err)
