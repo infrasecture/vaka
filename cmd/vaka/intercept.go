@@ -293,13 +293,15 @@ func buildInjectionOverride(
 			return "", nil, err
 		}
 
-		delta := computeCapDelta(composeSvc)
 		if svc.Runtime == nil {
 			svc.Runtime = &policy.RuntimeConfig{}
 		}
-		if len(svc.Runtime.DropCaps) == 0 {
-			svc.Runtime.DropCaps = delta
+		restoreUser := strings.TrimSpace(composeSvc.User)
+		if restoreUser == "" {
+			restoreUser = strings.TrimSpace(rt.ImageUser)
 		}
+		capPlan := computeCapabilityPlan(composeSvc, svc.Runtime, restoreUser)
+		svc.Runtime.DropCaps = capPlan.Drop
 		fmt.Fprintf(os.Stderr, "vaka: service %s: dropCaps: %v\n", svcName, svc.Runtime.DropCaps)
 
 		sliced, err := policy.SliceService(p, svcName)
@@ -308,10 +310,6 @@ func buildInjectionOverride(
 		}
 		sliced.GeneratedBy = "vaka/" + version
 		sliced.RequiredRuntimeVersion = runtimeBundleVersion
-		restoreUser := strings.TrimSpace(composeSvc.User)
-		if restoreUser == "" {
-			restoreUser = strings.TrimSpace(rt.ImageUser)
-		}
 		sliced.Services[svcName].User = restoreUser
 		policyRevision, err := policy.Revision(sliced)
 		if err != nil {
@@ -330,7 +328,7 @@ func buildInjectionOverride(
 			Name:             svcName,
 			Entrypoint:       rt.Entrypoint,
 			Command:          rt.Command,
-			CapDelta:         delta,
+			CapDelta:         capPlan.Add,
 			EnvVarName:       envKey,
 			PolicyRevision:   policyRevision,
 			Healthcheck:      rt.Healthcheck,
@@ -468,24 +466,129 @@ func needsImageRuntimeFallback(svc composetypes.ServiceConfig) bool {
 	return len(svc.Entrypoint) == 0 || strings.TrimSpace(svc.User) == "" || needsHealthcheck
 }
 
-// computeCapDelta returns capabilities vaka needs that are absent from Docker's
-// default set and not already in the merged compose service's cap_add. Both
-// short-form (NET_ADMIN) and prefixed-form (CAP_NET_ADMIN) user entries are
-// recognised, along with the ALL catch-all.
-func computeCapDelta(svc composetypes.ServiceConfig) []string {
-	existing := map[string]bool{}
-	for _, cap := range svc.CapAdd {
-		u := strings.ToUpper(cap)
-		existing[strings.TrimPrefix(u, "CAP_")] = true
+type capabilityPlan struct {
+	// Add is the minimum set Vaka must add to the container configuration for
+	// initialization. Drop contains the policy-requested capabilities plus every
+	// capability in Add, so none of Vaka's temporary privileges reach the
+	// workload.
+	Add  []string
+	Drop []string
+}
+
+// computeCapabilityPlan derives Vaka's temporary capabilities from the merged
+// Compose service. Docker applies cap_drop first and cap_add second, including
+// the ALL token, so an explicit add wins. Capabilities already granted by the
+// service remain intentional unless runtime.dropCaps requests their removal.
+func computeCapabilityPlan(svc composetypes.ServiceConfig, runtime *policy.RuntimeConfig, restoreUser string) capabilityPlan {
+	drop := []string{}
+	if runtime != nil {
+		drop = append(drop, runtime.DropCaps...)
 	}
-	if existing["ALL"] {
-		return nil
+	drop = uniqueCapabilityNames(drop)
+
+	required := []string{"NET_ADMIN"}
+	needSetUID, needSetGID := identityTransitionCapabilities(restoreUser)
+	if needSetUID {
+		required = append(required, "SETUID")
 	}
-	var delta []string
-	for _, cap := range []string{"NET_ADMIN"} {
-		if !existing[cap] && !defaultDockerCaps["CAP_"+cap] {
-			delta = append(delta, cap)
+	if needSetGID {
+		required = append(required, "SETGID")
+	}
+	if runtime != nil && len(runtime.Chown) > 0 {
+		required = append(required, "CHOWN", "DAC_OVERRIDE")
+	}
+
+	add := []string{}
+	for _, cap := range required {
+		if containerHasCapability(svc, cap) {
+			continue
+		}
+		add = append(add, cap)
+		drop = appendUniqueCapability(drop, cap)
+	}
+
+	// Bounding-set removal requires CAP_SETPCAP in the effective set. Docker's
+	// cap_drop may remove it (including via ALL), so add it temporarily whenever
+	// any post-initialization capability removal is required.
+	if len(drop) > 0 && !containerHasCapabilityWithAdds(svc, add, "SETPCAP") {
+		add = append(add, "SETPCAP")
+		drop = appendUniqueCapability(drop, "SETPCAP")
+	}
+
+	return capabilityPlan{Add: add, Drop: drop}
+}
+
+func normalizeCapabilityName(name string) string {
+	return strings.TrimPrefix(strings.ToUpper(strings.TrimSpace(name)), "CAP_")
+}
+
+func uniqueCapabilityNames(names []string) []string {
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		normalized := normalizeCapabilityName(name)
+		if normalized != "" {
+			out = appendUniqueCapability(out, normalized)
 		}
 	}
-	return delta
+	return out
+}
+
+func appendUniqueCapability(names []string, name string) []string {
+	normalized := normalizeCapabilityName(name)
+	for _, existing := range names {
+		if normalizeCapabilityName(existing) == normalized {
+			return names
+		}
+	}
+	return append(names, normalized)
+}
+
+func containerHasCapability(svc composetypes.ServiceConfig, name string) bool {
+	want := normalizeCapabilityName(name)
+	for _, added := range svc.CapAdd {
+		cap := normalizeCapabilityName(added)
+		if cap == "ALL" || cap == want {
+			return true
+		}
+	}
+	for _, dropped := range svc.CapDrop {
+		cap := normalizeCapabilityName(dropped)
+		if cap == "ALL" || cap == want {
+			return false
+		}
+	}
+	return defaultDockerCaps["CAP_"+want]
+}
+
+func containerHasCapabilityWithAdds(svc composetypes.ServiceConfig, adds []string, name string) bool {
+	want := normalizeCapabilityName(name)
+	for _, added := range adds {
+		if normalizeCapabilityName(added) == want {
+			return true
+		}
+	}
+	return containerHasCapability(svc, want)
+}
+
+// identityTransitionCapabilities is deliberately conservative for names: the
+// container's passwd/group database is not available on the host, so a named
+// non-root identity may require both uid and group transitions.
+func identityTransitionCapabilities(user string) (setUID, setGID bool) {
+	spec := strings.TrimSpace(user)
+	if spec == "" || spec == "0" || strings.EqualFold(spec, "root") || spec == "0:0" || strings.EqualFold(spec, "root:root") {
+		return false, false
+	}
+	uid, gid, hasGroup := spec, "", false
+	if before, after, ok := strings.Cut(spec, ":"); ok {
+		uid, gid, hasGroup = before, after, true
+	}
+	uidIsRoot := uid == "0" || strings.EqualFold(uid, "root")
+	if !uidIsRoot {
+		// switchIdentity always calls setgroups before changing uid.
+		return true, true
+	}
+	if hasGroup && gid != "" && gid != "0" && !strings.EqualFold(gid, "root") {
+		return false, true
+	}
+	return false, false
 }

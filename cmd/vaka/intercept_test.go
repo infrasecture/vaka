@@ -236,27 +236,34 @@ func TestParseComposeInvocationComposeGlobals(t *testing.T) {
 	}
 }
 
-func TestComputeCapDelta(t *testing.T) {
+func TestComputeCapabilityPlan(t *testing.T) {
 	tests := []struct {
-		name   string
-		capAdd []string
-		want   []string
+		name     string
+		capAdd   []string
+		capDrop  []string
+		user     string
+		runtime  *policy.RuntimeConfig
+		wantAdd  []string
+		wantDrop []string
 	}{
-		{"no cap_add", nil, []string{"NET_ADMIN"}},
-		{"unrelated cap", []string{"SYS_PTRACE"}, []string{"NET_ADMIN"}},
-		{"short form present", []string{"NET_ADMIN"}, nil},
-		{"prefixed form present", []string{"CAP_NET_ADMIN"}, nil},
-		{"lowercase prefixed", []string{"cap_net_admin"}, nil},
-		{"ALL catch-all", []string{"ALL"}, nil},
-		{"lowercase all", []string{"all"}, nil},
-		{"mixed prefixed + unrelated", []string{"CAP_NET_ADMIN", "SYS_PTRACE"}, nil},
+		{name: "default root", wantAdd: []string{"NET_ADMIN"}, wantDrop: []string{"NET_ADMIN"}},
+		{name: "setpcap explicitly dropped", capDrop: []string{"SETPCAP"}, wantAdd: []string{"NET_ADMIN", "SETPCAP"}, wantDrop: []string{"NET_ADMIN", "SETPCAP"}},
+		{name: "all dropped for nonroot", capDrop: []string{"ALL"}, user: "1000:1000", wantAdd: []string{"NET_ADMIN", "SETUID", "SETGID", "SETPCAP"}, wantDrop: []string{"NET_ADMIN", "SETUID", "SETGID", "SETPCAP"}},
+		{name: "root with nonroot group", capDrop: []string{"ALL"}, user: "0:1000", wantAdd: []string{"NET_ADMIN", "SETGID", "SETPCAP"}, wantDrop: []string{"NET_ADMIN", "SETGID", "SETPCAP"}},
+		{name: "runtime drops are unioned", runtime: &policy.RuntimeConfig{DropCaps: []string{"NET_RAW"}}, wantAdd: []string{"NET_ADMIN"}, wantDrop: []string{"NET_RAW", "NET_ADMIN"}},
+		{name: "chown gets missing setup caps", capDrop: []string{"ALL"}, runtime: &policy.RuntimeConfig{Chown: []policy.ChownAction{{Path: "/data"}}}, wantAdd: []string{"NET_ADMIN", "CHOWN", "DAC_OVERRIDE", "SETPCAP"}, wantDrop: []string{"NET_ADMIN", "CHOWN", "DAC_OVERRIDE", "SETPCAP"}},
+		{name: "user supplied net admin remains intentional", capAdd: []string{"CAP_NET_ADMIN"}},
+		{name: "cap add wins over cap drop", capAdd: []string{"NET_ADMIN", "SETPCAP"}, capDrop: []string{"ALL"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			svc := composetypes.ServiceConfig{CapAdd: tc.capAdd}
-			got := computeCapDelta(svc)
-			if strings.Join(got, ",") != strings.Join(tc.want, ",") {
-				t.Errorf("got %v, want %v", got, tc.want)
+			svc := composetypes.ServiceConfig{CapAdd: tc.capAdd, CapDrop: tc.capDrop}
+			got := computeCapabilityPlan(svc, tc.runtime, tc.user)
+			if strings.Join(got.Add, ",") != strings.Join(tc.wantAdd, ",") {
+				t.Errorf("add = %v, want %v", got.Add, tc.wantAdd)
+			}
+			if strings.Join(got.Drop, ",") != strings.Join(tc.wantDrop, ",") {
+				t.Errorf("drop = %v, want %v", got.Drop, tc.wantDrop)
 			}
 		})
 	}

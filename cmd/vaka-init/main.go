@@ -184,6 +184,11 @@ func main() {
 			}
 		}
 	}
+	if len(dropCaps) > 0 {
+		if err := verifyCapsAbsent(dropCaps, nil); err != nil {
+			fatal("verify dropped capabilities before exec: %v", err)
+		}
+	}
 
 	// Step 9: execve — replace vaka-init with the harness.
 	argv0, err := exec.LookPath(harness[0])
@@ -290,6 +295,7 @@ func dropCapsPreservingTransition(caps []string, deferSetUID, deferSetGID bool) 
 }
 
 func applyCapDrop(capNums []capability.Cap, deferred map[capability.Cap]bool) error {
+	capNums = uniqueCaps(capNums)
 	c, err := capability.NewPid2(0)
 	if err != nil {
 		return fmt.Errorf("capability.NewPid2: %w", err)
@@ -298,9 +304,23 @@ func applyCapDrop(capNums []capability.Cap, deferred map[capability.Cap]bool) er
 		return fmt.Errorf("load caps: %w", err)
 	}
 
+	// gocapability silently skips bounding-set removal when CAP_SETPCAP is not
+	// effective. Use the kernel operation directly and fail before changing any
+	// other set if a requested bounding drop cannot be guaranteed.
+	for _, cap := range capNums {
+		if !c.Get(capability.BOUNDS, cap) {
+			continue
+		}
+		if !c.Get(capability.EFFECTIVE, capability.CAP_SETPCAP) {
+			return fmt.Errorf("drop %s from bounding set: CAP_SETPCAP is not effective", strings.ToUpper(cap.String()))
+		}
+		if err := unix.Prctl(unix.PR_CAPBSET_DROP, uintptr(cap), 0, 0, 0); err != nil {
+			return fmt.Errorf("drop %s from bounding set: %w", strings.ToUpper(cap.String()), err)
+		}
+	}
+
 	for _, cap := range capNums {
 		c.Unset(capability.INHERITABLE, cap)
-		c.Unset(capability.BOUNDS, cap)
 		if deferred == nil || !deferred[cap] {
 			c.Unset(capability.EFFECTIVE, cap)
 			c.Unset(capability.PERMITTED, cap)
@@ -310,8 +330,8 @@ func applyCapDrop(capNums []capability.Cap, deferred map[capability.Cap]bool) er
 	// Inheritable must be applied before clearing Ambient (kernel requires
 	// that an Ambient cap is present in Inheritable; clearing I first ensures
 	// the Ambient clear-all succeeds cleanly).
-	if err := c.Apply(capability.INHERITABLE | capability.BOUNDS | capability.EFFECTIVE | capability.PERMITTED); err != nil {
-		return fmt.Errorf("apply caps (requires CAP_SETPCAP in Effective — is CAP_SETPCAP present?): %w", err)
+	if err := c.Apply(capability.INHERITABLE | capability.EFFECTIVE | capability.PERMITTED); err != nil {
+		return fmt.Errorf("apply effective, permitted, and inheritable capabilities: %w", err)
 	}
 
 	// Clear all Ambient caps (must be done after Inheritable is updated).
@@ -319,6 +339,57 @@ func applyCapDrop(capNums []capability.Cap, deferred map[capability.Cap]bool) er
 		return fmt.Errorf("prctl ambient clear: %w", err)
 	}
 
+	return verifyCapNumsAbsent(capNums, deferred)
+}
+
+func uniqueCaps(caps []capability.Cap) []capability.Cap {
+	seen := map[capability.Cap]bool{}
+	out := make([]capability.Cap, 0, len(caps))
+	for _, cap := range caps {
+		if !seen[cap] {
+			seen[cap] = true
+			out = append(out, cap)
+		}
+	}
+	return out
+}
+
+func verifyCapsAbsent(names []string, deferred map[capability.Cap]bool) error {
+	capNums, err := parseCaps(names)
+	if err != nil {
+		return err
+	}
+	return verifyCapNumsAbsent(uniqueCaps(capNums), deferred)
+}
+
+func verifyCapNumsAbsent(capNums []capability.Cap, deferred map[capability.Cap]bool) error {
+	c, err := capability.NewPid2(0)
+	if err != nil {
+		return fmt.Errorf("capability.NewPid2: %w", err)
+	}
+	if err := c.Load(); err != nil {
+		return fmt.Errorf("load caps for verification: %w", err)
+	}
+	types := []struct {
+		kind capability.CapType
+		name string
+	}{
+		{capability.EFFECTIVE, "effective"},
+		{capability.PERMITTED, "permitted"},
+		{capability.INHERITABLE, "inheritable"},
+		{capability.AMBIENT, "ambient"},
+		{capability.BOUNDS, "bounding"},
+	}
+	for _, cap := range capNums {
+		for _, set := range types {
+			if deferred != nil && deferred[cap] && (set.kind == capability.EFFECTIVE || set.kind == capability.PERMITTED) {
+				continue
+			}
+			if c.Get(set.kind, cap) {
+				return fmt.Errorf("%s remains in %s set", strings.ToUpper(cap.String()), set.name)
+			}
+		}
+	}
 	return nil
 }
 

@@ -20,6 +20,8 @@ func TestValidateRunInvocationRejectsSecurityOverrides(t *testing.T) {
 	}{
 		{name: "entrypoint", args: []string{"run", "--entrypoint", "sh", "app"}, want: "--entrypoint bypasses"},
 		{name: "user", args: []string{"run", "-u1000", "app"}, want: "--user is incompatible"},
+		{name: "cap drop", args: []string{"run", "--cap-drop", "SETPCAP", "app"}, want: "--cap-add/--cap-drop"},
+		{name: "cap add", args: []string{"run", "--cap-add=NET_ADMIN", "app"}, want: "--cap-add/--cap-drop"},
 		{name: "runtime child mount", args: []string{"run", "-v", "scratch:/opt/vaka/sbin", "app"}, want: "protected runtime"},
 		{name: "runtime ancestor mount", args: []string{"run", "--volume=scratch:/opt", "app"}, want: "protected runtime"},
 		{name: "root mount", args: []string{"run", "-v", "scratch:/", "app"}, want: "protected runtime"},

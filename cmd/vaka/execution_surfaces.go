@@ -42,11 +42,12 @@ var runBooleanOptions = map[string]bool{
 }
 
 type parsedRun struct {
-	service    string
-	entrypoint bool
-	user       bool
-	volumes    []string
-	labels     []string
+	service            string
+	entrypoint         bool
+	user               bool
+	capabilityOverride bool
+	volumes            []string
+	labels             []string
 }
 
 func parseRun(args []string) (parsedRun, error) {
@@ -70,6 +71,8 @@ func parseRun(args []string) (parsedRun, error) {
 				return parsedRun{}, fmt.Errorf("compose run: %s requires a value", flag)
 			}
 			switch flag {
+			case "--cap-add", "--cap-drop":
+				parsed.capabilityOverride = true
 			case "--entrypoint":
 				parsed.entrypoint = true
 			case "-u", "--user":
@@ -140,6 +143,9 @@ func validateRunInvocation(inv *ComposeInvocation, p *policy.ServicePolicy) erro
 	}
 	if parsed.user {
 		return fmt.Errorf("compose run --user is incompatible with Vaka's privileged startup and identity restoration for managed service %s", parsed.service)
+	}
+	if parsed.capabilityOverride {
+		return fmt.Errorf("compose run --cap-add/--cap-drop cannot safely alter Vaka's temporary capability plan for managed service %s; declare capabilities in Compose instead", parsed.service)
 	}
 	for _, raw := range parsed.volumes {
 		volume, err := composeformat.ParseVolume(raw)
