@@ -242,7 +242,10 @@ func TestPlanManagedImagePreparationUsesManagedServicesOnly(t *testing.T) {
 	if strings.Join(got.pullMissing, ",") != "missing" {
 		t.Errorf("missing pulls = %v", got.pullMissing)
 	}
-	if !got.forceBuild["build"] || !got.forceBuild["missingbuild"] || got.forceBuild["unmanaged"] {
+	if len(got.pullOrBuild) != 1 || got.pullOrBuild[0] != (managedPullOrBuild{service: "missingbuild", policy: "missing"}) {
+		t.Errorf("pull/build fallbacks = %v", got.pullOrBuild)
+	}
+	if !got.forceBuild["build"] || got.forceBuild["missingbuild"] || got.forceBuild["unmanaged"] {
 		t.Errorf("forced builds = %v", got.forceBuild)
 	}
 }
@@ -258,7 +261,7 @@ func TestPlanManagedImagePreparationCLIOverridesFilePolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(never.pullAlways) != 0 || len(never.pullMissing) != 0 {
+	if len(never.pullAlways) != 0 || len(never.pullMissing) != 0 || len(never.pullOrBuild) != 0 {
 		t.Fatalf("--pull=never plan = %+v", never)
 	}
 
@@ -268,6 +271,32 @@ func TestPlanManagedImagePreparationCLIOverridesFilePolicy(t *testing.T) {
 	}
 	if strings.Join(always.pullAlways, ",") != "app" {
 		t.Fatalf("--pull=always plan = %+v", always)
+	}
+
+	buildSvc := project.Services["app"]
+	buildSvc.Build = &composetypes.BuildConfig{Context: "."}
+	project.Services["app"] = buildSvc
+	build, err := planManagedImagePreparation(context.Background(), ds, policySvcs, project, "build", true, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !build.forceBuild["app"] {
+		t.Fatalf("--pull=build plan = %+v", build)
+	}
+}
+
+func TestImageUsesLatestTag(t *testing.T) {
+	tests := map[string]bool{
+		"alpine":                      true,
+		"alpine:latest":               true,
+		"registry.example/app:latest": true,
+		"registry.example/app:stable": false,
+		"alpine@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": false,
+	}
+	for image, want := range tests {
+		if got := imageUsesLatestTag(image); got != want {
+			t.Errorf("imageUsesLatestTag(%q) = %t, want %t", image, got, want)
+		}
 	}
 }
 

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -257,5 +258,57 @@ services:
 	}
 	if strings.Contains(joined, "unmanaged") {
 		t.Fatalf("pre-pull args include unmanaged service: %v", pullArgs)
+	}
+}
+
+func TestBuildInjectionOverrideFallsBackFromPullToManagedBuild(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	writeFixtureFiles(t, dir, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+`, `
+services:
+  app:
+    image: local-app:latest
+    pull_policy: missing
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM scratch
+    user: "1000:1000"
+    entrypoint: ["sleep"]
+`)
+
+	ds := &fakeBuilderDockerServices{imageExists: map[string]bool{"local-app:latest": false}}
+	var pullCalls, buildCalls int
+	setExecDockerComposeForTest(t, func(inv *ComposeInvocation, overrideYAML string, extraEnv []string) error {
+		if overrideYAML != "" || len(inv.Args) == 0 {
+			return nil
+		}
+		switch inv.Args[0] {
+		case "pull":
+			pullCalls++
+			return errors.New("image is not available")
+		case "build":
+			buildCalls++
+		}
+		return nil
+	})
+
+	inv, err := ParseComposeInvocation([]string{"show-compose"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := buildInjectionOverride(context.Background(), ds, "vaka.yaml", inv, false); err != nil {
+		t.Fatal(err)
+	}
+	if pullCalls != 1 || buildCalls != 1 {
+		t.Fatalf("pull calls = %d, build calls = %d; want one of each", pullCalls, buildCalls)
 	}
 }

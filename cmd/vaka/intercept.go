@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	composetypes "github.com/compose-spec/compose-go/v2/types"
+	"github.com/distribution/reference"
 	"gopkg.in/yaml.v3"
 	"vaka.dev/vaka/internal/runtimebundle"
 	"vaka.dev/vaka/pkg/compose"
@@ -283,6 +284,18 @@ func buildInjectionOverride(
 			return "", nil, fmt.Errorf("pre-pull (%s): %w", pull.policy, err)
 		}
 	}
+	for _, pull := range preparation.pullOrBuild {
+		fmt.Fprintf(os.Stderr, "vaka: pre-pulling managed buildable service %s with policy %s before exact-image inspection\n", pull.service, pull.policy)
+		pullArgs := append([]string{}, inv.ComposeGlobals...)
+		pullArgs = append(pullArgs, "pull", "--policy", pull.policy, pull.service)
+		if err := execDockerComposeFn(&ComposeInvocation{Args: pullArgs}, "", nil); err != nil {
+			if noBuild {
+				return "", nil, fmt.Errorf("pre-pull %s (%s): %w", pull.service, pull.policy, err)
+			}
+			fmt.Fprintf(os.Stderr, "vaka: pull failed for buildable managed service %s; building it before inspection\n", pull.service)
+			preparation.forceBuild[pull.service] = true
+		}
+	}
 
 	// Build-only managed services must always be built so they have an exact
 	// inspectable image. --build is consumed for every buildable managed service
@@ -507,7 +520,13 @@ func servicesNeedingPrebuild(
 type managedImagePreparation struct {
 	pullAlways  []string
 	pullMissing []string
+	pullOrBuild []managedPullOrBuild
 	forceBuild  map[string]bool
+}
+
+type managedPullOrBuild struct {
+	service string
+	policy  string
 }
 
 // planManagedImagePreparation applies explicit Compose pull policies only to
@@ -526,7 +545,7 @@ func planManagedImagePreparation(
 ) (managedImagePreparation, error) {
 	plan := managedImagePreparation{forceBuild: map[string]bool{}}
 	cliPull = strings.ToLower(strings.TrimSpace(cliPull))
-	if cliPullSet && cliPull != "policy" && cliPull != composetypes.PullPolicyAlways && cliPull != composetypes.PullPolicyMissing && cliPull != composetypes.PullPolicyNever {
+	if cliPullSet && cliPull != "policy" && cliPull != composetypes.PullPolicyAlways && cliPull != composetypes.PullPolicyMissing && cliPull != composetypes.PullPolicyNever && cliPull != composetypes.PullPolicyBuild {
 		return managedImagePreparation{}, fmt.Errorf("unsupported Compose --pull value %q for Vaka-managed services", cliPull)
 	}
 	names := make([]string, 0, len(policySvcs))
@@ -551,21 +570,27 @@ func planManagedImagePreparation(
 		case effective == composetypes.PullPolicyNever:
 		case effective == composetypes.PullPolicyAlways:
 			if strings.TrimSpace(svc.Image) != "" {
-				plan.pullAlways = append(plan.pullAlways, name)
+				if svc.Build != nil {
+					plan.pullOrBuild = append(plan.pullOrBuild, managedPullOrBuild{service: name, policy: "always"})
+				} else {
+					plan.pullAlways = append(plan.pullAlways, name)
+				}
 			}
 		case effective == composetypes.PullPolicyMissing || effective == composetypes.PullPolicyIfNotPresent:
 			if strings.TrimSpace(svc.Image) == "" {
 				continue
 			}
-			exists, err := ds.ImageExists(ctx, svc.Image)
-			if err != nil {
-				return managedImagePreparation{}, err
-			}
-			if exists {
-				continue
+			if !imageUsesLatestTag(svc.Image) {
+				exists, err := ds.ImageExists(ctx, svc.Image)
+				if err != nil {
+					return managedImagePreparation{}, err
+				}
+				if exists {
+					continue
+				}
 			}
 			if svc.Build != nil {
-				plan.forceBuild[name] = true
+				plan.pullOrBuild = append(plan.pullOrBuild, managedPullOrBuild{service: name, policy: "missing"})
 			} else {
 				plan.pullMissing = append(plan.pullMissing, name)
 			}
@@ -585,6 +610,18 @@ func planManagedImagePreparation(
 		return managedImagePreparation{}, fmt.Errorf("--no-build conflicts with a requested build for Vaka-managed services")
 	}
 	return plan, nil
+}
+
+func imageUsesLatestTag(image string) bool {
+	named, err := reference.ParseNormalizedNamed(strings.TrimSpace(image))
+	if err != nil {
+		return false
+	}
+	if _, immutable := named.(reference.Digested); immutable {
+		return false
+	}
+	tagged, ok := named.(reference.Tagged)
+	return !ok || tagged.Tag() == "latest"
 }
 
 func composePullAlwaysRequested(inv *ComposeInvocation) bool {
