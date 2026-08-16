@@ -205,3 +205,27 @@ func TestComposeBoolOptionFalseIsDisabled(t *testing.T) {
 		t.Fatal("--no-up=false treated as enabled")
 	}
 }
+
+func TestComposeBoolOptionUsesLastValue(t *testing.T) {
+	tests := []struct {
+		name  string
+		args  []string
+		long  string
+		short string
+		want  bool
+	}{
+		{name: "long false then true", args: []string{"--no-recreate=false", "--no-recreate"}, long: "--no-recreate", want: true},
+		{name: "long true then false", args: []string{"--no-recreate", "--no-recreate=false"}, long: "--no-recreate", want: false},
+		{name: "long true then zero", args: []string{"--build", "--build=0"}, long: "--build", want: false},
+		{name: "short false then true", args: []string{"-s=false", "-s"}, long: "--stop", short: "s", want: true},
+		{name: "short true then zero", args: []string{"-s", "-s=0"}, long: "--stop", short: "s", want: false},
+		{name: "short cluster false", args: []string{"-fs=0"}, long: "--stop", short: "s", want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := composeBoolOptionEnabled(tc.args, tc.long, tc.short); got != tc.want {
+				t.Fatalf("composeBoolOptionEnabled(%v) = %t, want %t", tc.args, got, tc.want)
+			}
+		})
+	}
+}

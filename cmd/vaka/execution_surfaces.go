@@ -103,6 +103,11 @@ func parseRun(args []string) (parsedRun, error) {
 			i += consumed
 			continue
 		}
+		if value, ok := strings.CutPrefix(tok, "--build="); ok {
+			parsed.build = composeBoolValue(value)
+			i++
+			continue
+		}
 		if tok == "--build" {
 			parsed.build = true
 		}
@@ -349,19 +354,43 @@ func referenceRequiresExecutionValidation(inv *ComposeInvocation) bool {
 }
 
 func composeBoolOptionEnabled(args []string, long, short string) bool {
+	enabled := false
 	for _, arg := range args {
 		if arg == "--" {
 			break
 		}
-		if arg == long || arg == "-"+short {
-			return true
+		if arg == long || (short != "" && arg == "-"+short) {
+			enabled = true
+			continue
 		}
 		if value, ok := strings.CutPrefix(arg, long+"="); ok {
-			return !strings.EqualFold(strings.TrimSpace(value), "false") && strings.TrimSpace(value) != "0"
+			enabled = composeBoolValue(value)
+			continue
 		}
-		if short != "" && len(arg) > 2 && arg[0] == '-' && arg[1] != '-' && strings.Contains(arg[1:], short) {
-			return true
+		if short != "" && len(arg) > 2 && arg[0] == '-' && arg[1] != '-' {
+			cluster := arg[1:]
+			if value, ok := strings.CutPrefix(cluster, short+"="); ok {
+				enabled = composeBoolValue(value)
+				continue
+			}
+			if marker := short + "="; strings.Contains(cluster, marker) {
+				enabled = composeBoolValue(cluster[strings.Index(cluster, marker)+len(marker):])
+				continue
+			}
+			if strings.Contains(cluster, short) {
+				enabled = true
+			}
 		}
 	}
-	return false
+	return enabled
+}
+
+// composeBoolValue follows the values accepted by Compose's pflag booleans
+// for the forms Vaka must interpret. Invalid values remain conservatively
+// enabled; Compose will report the invalid value before executing the command.
+func composeBoolValue(value string) bool {
+	value = strings.TrimSpace(value)
+	return !strings.EqualFold(value, "false") &&
+		!strings.EqualFold(value, "f") &&
+		value != "0"
 }

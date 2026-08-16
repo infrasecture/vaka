@@ -242,6 +242,50 @@ func TestComposeBuildTrueIsConsumedBeforeExactImageExecution(t *testing.T) {
 	}
 }
 
+func TestComposeImageRefreshOptionsUseLastValue(t *testing.T) {
+	tests := []struct {
+		name      string
+		args      []string
+		wantBuild bool
+		wantPull  bool
+	}{
+		{name: "build false then true", args: []string{"up", "--build=false", "--build"}, wantBuild: true},
+		{name: "build true then false", args: []string{"up", "--build", "--build=0"}},
+		{name: "pull never then always", args: []string{"up", "--pull=never", "--pull", "always"}, wantPull: true},
+		{name: "pull always then never", args: []string{"up", "--pull=always", "--pull", "never"}},
+		{name: "run build false then true", args: []string{"run", "--build=false", "--build", "app"}, wantBuild: true},
+		{name: "run build true then false", args: []string{"run", "--build", "--build=0", "app"}},
+		{name: "run pull always then never", args: []string{"run", "--pull=always", "--pull", "never", "app"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			inv, err := ParseComposeInvocation(tc.args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := composeBuildRequested(inv); got != tc.wantBuild {
+				t.Errorf("composeBuildRequested(%v) = %t, want %t", tc.args, got, tc.wantBuild)
+			}
+			if got := composePullAlwaysRequested(inv); got != tc.wantPull {
+				t.Errorf("composePullAlwaysRequested(%v) = %t, want %t", tc.args, got, tc.wantPull)
+			}
+		})
+	}
+}
+
+func TestConsumeComposePullRemovesEarlierValues(t *testing.T) {
+	inv, err := ParseComposeInvocation([]string{"up", "--pull=never", "--pull", "always", "app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := consumeComposeImageRefreshOptions(inv, false, true); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(inv.Args, " "), "up app"; got != want {
+		t.Fatalf("rewritten invocation = %q, want %q", got, want)
+	}
+}
+
 func TestParseComposeInvocationComposeGlobals(t *testing.T) {
 	tests := []struct {
 		name string

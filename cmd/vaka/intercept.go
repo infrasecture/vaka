@@ -498,16 +498,22 @@ func composePullAlwaysRequested(inv *ComposeInvocation) bool {
 		parsed, err := parseRun(inv.PostSubcommand)
 		return err == nil && parsed.pullAlways
 	}
+	pull := ""
 	for i := 0; i < len(inv.PostSubcommand); i++ {
 		tok := inv.PostSubcommand[i]
 		if tok == "--" {
 			break
 		}
-		if tok == "--pull=always" || (tok == "--pull" && i+1 < len(inv.PostSubcommand) && inv.PostSubcommand[i+1] == "always") {
-			return true
+		if value, ok := strings.CutPrefix(tok, "--pull="); ok {
+			pull = value
+			continue
+		}
+		if tok == "--pull" && i+1 < len(inv.PostSubcommand) {
+			pull = inv.PostSubcommand[i+1]
+			i++
 		}
 	}
-	return false
+	return pull == "always"
 }
 
 func composeBuildRequested(inv *ComposeInvocation) bool {
@@ -542,10 +548,10 @@ func consumeComposeImageRefreshOptions(inv *ComposeInvocation, consumeBuild, con
 		if consumeBuild && (tok == "--build" || strings.HasPrefix(tok, "--build=")) {
 			continue
 		}
-		if consumePull && tok == "--pull=always" {
+		if consumePull && strings.HasPrefix(tok, "--pull=") {
 			continue
 		}
-		if consumePull && tok == "--pull" && i+1 < len(post) && post[i+1] == "always" {
+		if consumePull && tok == "--pull" && i+1 < len(post) {
 			i++
 			continue
 		}
