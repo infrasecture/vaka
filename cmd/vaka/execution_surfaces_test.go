@@ -1,6 +1,7 @@
 package main
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -172,6 +173,65 @@ services:
 				t.Fatalf("old runtime error = %v", err)
 			}
 		})
+	}
+}
+
+func TestLifecycleValidationIgnoresUnrelatedContainers(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	writeFixtureFiles(t, dir, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services: {}
+`, `
+services:
+  app:
+    image: alpine:3.20
+  stale:
+    image: alpine:3.20
+`)
+	current := execTarget{
+		Managed: true, RuntimeVersion: runtimeBundleVersion,
+		RuntimeImage:   "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		RuntimeMounted: true,
+	}
+	setDockerServicesFactoryForTest(t, &fakeBuilderDockerServices{projectTargets: map[string][]execTarget{
+		"app":   {current},
+		"stale": {{Managed: true, RuntimeVersion: "v0.1.0", RuntimeMounted: true}},
+	}})
+
+	inv, _ := ParseComposeInvocation([]string{"start", "app"})
+	if err := validateReferenceExecutionSurfaces("vaka.yaml", inv); err != nil {
+		t.Fatalf("targeted start was blocked by unrelated container: %v", err)
+	}
+	inv, _ = ParseComposeInvocation([]string{"start"})
+	if err := validateReferenceExecutionSurfaces("vaka.yaml", inv); err == nil || !strings.Contains(err.Error(), "force-recreate") {
+		t.Fatalf("project-wide start did not reject stale container: %v", err)
+	}
+}
+
+func TestReferenceValidationServiceTargets(t *testing.T) {
+	project := &composetypes.Project{Services: map[string]composetypes.ServiceConfig{
+		"app": {Name: "app", DependsOn: map[string]composetypes.ServiceDependency{"db": {Condition: "service_started"}}},
+		"db":  {Name: "db"},
+	}}
+	for _, tc := range []struct {
+		args []string
+		want map[string]bool
+	}{
+		{args: []string{"restart", "app"}, want: map[string]bool{"app": true, "db": true}},
+		{args: []string{"restart", "--no-deps", "app"}, want: map[string]bool{"app": true}},
+		{args: []string{"rm", "-fsv", "app"}, want: map[string]bool{"app": true}},
+		{args: []string{"stop", "--timeout=5", "app"}, want: map[string]bool{"app": true}},
+	} {
+		inv, _ := ParseComposeInvocation(tc.args)
+		got, err := referenceValidationServices(project, inv)
+		if err != nil {
+			t.Fatalf("referenceValidationServices(%v): %v", tc.args, err)
+		}
+		if !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("referenceValidationServices(%v) = %v, want %v", tc.args, got, tc.want)
+		}
 	}
 }
 

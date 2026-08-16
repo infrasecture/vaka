@@ -338,6 +338,10 @@ func validateReferenceExecutionSurfaces(vakaFile string, inv *ComposeInvocation)
 	if project == nil {
 		return fmt.Errorf("load compose project: no Compose project was loaded")
 	}
+	selected, err := referenceValidationServices(project, inv)
+	if err != nil {
+		return err
+	}
 	ds, err := newDockerServices(inv, PullNever)
 	if err != nil {
 		return err
@@ -351,6 +355,9 @@ func validateReferenceExecutionSurfaces(vakaFile string, inv *ComposeInvocation)
 		return err
 	}
 	for name, targets := range live {
+		if selected != nil && !selected[name] {
+			continue
+		}
 		_, policyManaged := p.Services[name]
 		if inv.Subcommand != "unpause" {
 			if svc, ok := project.Services[name]; ok {
@@ -375,6 +382,114 @@ func validateReferenceExecutionSurfaces(vakaFile string, inv *ComposeInvocation)
 		}
 	}
 	return nil
+}
+
+func referenceValidationServices(project *composetypes.Project, inv *ComposeInvocation) (map[string]bool, error) {
+	if inv.Subcommand == "down" {
+		return nil, nil
+	}
+	valueOptions := map[string]bool{}
+	booleanOptions := map[string]bool{"--dry-run": true}
+	shortBooleans := ""
+	switch inv.Subcommand {
+	case "start":
+		valueOptions["--wait-timeout"] = true
+		booleanOptions["--wait"] = true
+	case "restart":
+		valueOptions["-t"] = true
+		valueOptions["--timeout"] = true
+		booleanOptions["--no-deps"] = true
+	case "stop":
+		valueOptions["-t"] = true
+		valueOptions["--timeout"] = true
+	case "rm":
+		booleanOptions["-f"] = true
+		booleanOptions["--force"] = true
+		booleanOptions["-s"] = true
+		booleanOptions["--stop"] = true
+		booleanOptions["-v"] = true
+		booleanOptions["--volumes"] = true
+		shortBooleans = "fsv"
+	case "unpause":
+	default:
+		return nil, nil
+	}
+
+	var targets []string
+	for i := 0; i < len(inv.PostSubcommand); {
+		tok := inv.PostSubcommand[i]
+		if tok == "--" {
+			targets = append(targets, inv.PostSubcommand[i+1:]...)
+			break
+		}
+		if !strings.HasPrefix(tok, "-") || tok == "-" {
+			targets = append(targets, tok)
+			i++
+			continue
+		}
+		if flag, value, consumed, _, ok := parseValueTakingToken(inv.PostSubcommand, i, valueOptions); ok {
+			if value == "" {
+				return nil, fmt.Errorf("compose %s: %s requires a value", inv.Subcommand, flag)
+			}
+			i += consumed
+			continue
+		}
+		if booleanOptions[tok] {
+			i++
+			continue
+		}
+		if strings.HasPrefix(tok, "--") {
+			name, _, hasValue := strings.Cut(tok, "=")
+			if booleanOptions[name] && hasValue {
+				i++
+				continue
+			}
+		}
+		if shortBooleans != "" && len(tok) > 2 && tok[0] == '-' && tok[1] != '-' {
+			cluster, _, _ := strings.Cut(tok[1:], "=")
+			valid := true
+			for _, flag := range cluster {
+				if !strings.ContainsRune(shortBooleans, flag) {
+					valid = false
+					break
+				}
+			}
+			if valid {
+				i++
+				continue
+			}
+		}
+		return nil, fmt.Errorf("compose %s: unknown option %q before lifecycle validation; upgrade Vaka if this is a new Docker Compose option", inv.Subcommand, tok)
+	}
+	if len(targets) == 0 {
+		return nil, nil
+	}
+	enabled, err := project.WithServicesEnabled(targets...)
+	if err != nil {
+		return nil, err
+	}
+	var selected *composetypes.Project
+	if inv.Subcommand == "start" || inv.Subcommand == "restart" {
+		noDeps, err := composeBoolOptionEnabled(inv.PostSubcommand, "--no-deps", "")
+		if err != nil {
+			return nil, err
+		}
+		if noDeps {
+			selected, err = enabled.WithSelectedServices(targets, composetypes.IgnoreDependencies)
+		} else {
+			selected, err = enabled.WithSelectedServices(targets)
+		}
+	} else {
+		selected, err = enabled.WithSelectedServices(targets, composetypes.IgnoreDependencies)
+	}
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]bool, len(selected.Services))
+	for name := range selected.Services {
+		out[name] = true
+	}
+	return out, nil
 }
 
 func referenceRequiresExecutionValidation(inv *ComposeInvocation) (bool, error) {
