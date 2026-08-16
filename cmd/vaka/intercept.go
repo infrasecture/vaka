@@ -580,21 +580,19 @@ type capabilityPlan struct {
 // Compose service. Docker applies cap_drop first and cap_add second, including
 // the ALL token, so an explicit add wins. Capabilities already granted by the
 // service remain intentional unless runtime.dropCaps requests their removal.
-func computeCapabilityPlan(svc composetypes.ServiceConfig, runtime *policy.RuntimeConfig, restoreUser string) capabilityPlan {
+func computeCapabilityPlan(svc composetypes.ServiceConfig, runtime *policy.RuntimeConfig, _ string) capabilityPlan {
 	drop := []string{}
 	if runtime != nil {
 		drop = append(drop, runtime.DropCaps...)
 	}
 	drop = uniqueCapabilityNames(drop)
 
-	required := []string{"NET_ADMIN"}
-	needSetUID, needSetGID := identityTransitionCapabilities(restoreUser)
-	if needSetUID {
-		required = append(required, "SETUID")
-	}
-	if needSetGID {
-		required = append(required, "SETGID")
-	}
+	// SETUID and SETGID are also temporary exec-trampoline requirements. The
+	// container's startup identity cannot predict a later `vaka exec --user`,
+	// so ensure both are present in the stored container configuration. Any
+	// capability Vaka restores is added to Drop below and never reaches the
+	// workload.
+	required := []string{"NET_ADMIN", "SETUID", "SETGID"}
 	if runtime != nil && len(runtime.Chown) > 0 {
 		required = append(required, "CHOWN", "DAC_OVERRIDE")
 	}
@@ -669,27 +667,4 @@ func containerHasCapabilityWithAdds(svc composetypes.ServiceConfig, adds []strin
 		}
 	}
 	return containerHasCapability(svc, want)
-}
-
-// identityTransitionCapabilities is deliberately conservative for names: the
-// container's passwd/group database is not available on the host, so a named
-// non-root identity may require both uid and group transitions.
-func identityTransitionCapabilities(user string) (setUID, setGID bool) {
-	spec := strings.TrimSpace(user)
-	if spec == "" || spec == "0" || strings.EqualFold(spec, "root") || spec == "0:0" || strings.EqualFold(spec, "root:root") {
-		return false, false
-	}
-	uid, gid, hasGroup := spec, "", false
-	if before, after, ok := strings.Cut(spec, ":"); ok {
-		uid, gid, hasGroup = before, after, true
-	}
-	uidIsRoot := uid == "0" || strings.EqualFold(uid, "root")
-	if !uidIsRoot {
-		// switchIdentity always calls setgroups before changing uid.
-		return true, true
-	}
-	if hasGroup && gid != "" && gid != "0" && !strings.EqualFold(gid, "root") {
-		return false, true
-	}
-	return false, false
 }

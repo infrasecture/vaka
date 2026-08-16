@@ -103,6 +103,21 @@ func TestInspectExecTargetMatchesComposeReplicaSelection(t *testing.T) {
 	}
 }
 
+func TestInspectExecTargetExcludesOneoffs(t *testing.T) {
+	ds := &dockerServices{
+		legacy: &fakeLegacyRuntimeClient{listFn: func(containertypes.ListOptions) ([]containertypes.Summary, error) {
+			return []containertypes.Summary{execContainer("oneoff", "1", true)}, nil
+		}},
+		targetDesc: "test-context",
+	}
+	if _, err := ds.InspectExecTarget(context.Background(), "demo", "app", 0); err == nil || !strings.Contains(err.Error(), "no running container") {
+		t.Fatalf("one-off-only selection error = %v", err)
+	}
+	if _, err := ds.InspectExecTarget(context.Background(), "demo", "app", 1); err == nil || !strings.Contains(err.Error(), "no running container at index 1") {
+		t.Fatalf("indexed one-off-only selection error = %v", err)
+	}
+}
+
 func execContainer(id, number string, oneoff bool) containertypes.Summary {
 	return containertypes.Summary{
 		ID: id,

@@ -326,11 +326,12 @@ func TestComputeCapabilityPlan(t *testing.T) {
 		{name: "default root", wantAdd: []string{"NET_ADMIN"}, wantDrop: []string{"NET_ADMIN"}},
 		{name: "setpcap explicitly dropped", capDrop: []string{"SETPCAP"}, wantAdd: []string{"NET_ADMIN", "SETPCAP"}, wantDrop: []string{"NET_ADMIN", "SETPCAP"}},
 		{name: "all dropped for nonroot", capDrop: []string{"ALL"}, user: "1000:1000", wantAdd: []string{"NET_ADMIN", "SETUID", "SETGID", "SETPCAP"}, wantDrop: []string{"NET_ADMIN", "SETUID", "SETGID", "SETPCAP"}},
-		{name: "root with nonroot group", capDrop: []string{"ALL"}, user: "0:1000", wantAdd: []string{"NET_ADMIN", "SETGID", "SETPCAP"}, wantDrop: []string{"NET_ADMIN", "SETGID", "SETPCAP"}},
+		{name: "root with nonroot group", capDrop: []string{"ALL"}, user: "0:1000", wantAdd: []string{"NET_ADMIN", "SETUID", "SETGID", "SETPCAP"}, wantDrop: []string{"NET_ADMIN", "SETUID", "SETGID", "SETPCAP"}},
+		{name: "root stores exec identity caps", capDrop: []string{"SETUID", "SETGID"}, wantAdd: []string{"NET_ADMIN", "SETUID", "SETGID"}, wantDrop: []string{"NET_ADMIN", "SETUID", "SETGID"}},
 		{name: "runtime drops are unioned", runtime: &policy.RuntimeConfig{DropCaps: []string{"NET_RAW"}}, wantAdd: []string{"NET_ADMIN"}, wantDrop: []string{"NET_RAW", "NET_ADMIN"}},
-		{name: "chown gets missing setup caps", capDrop: []string{"ALL"}, runtime: &policy.RuntimeConfig{Chown: []policy.ChownAction{{Path: "/data"}}}, wantAdd: []string{"NET_ADMIN", "CHOWN", "DAC_OVERRIDE", "SETPCAP"}, wantDrop: []string{"NET_ADMIN", "CHOWN", "DAC_OVERRIDE", "SETPCAP"}},
+		{name: "chown gets missing setup caps", capDrop: []string{"ALL"}, runtime: &policy.RuntimeConfig{Chown: []policy.ChownAction{{Path: "/data"}}}, wantAdd: []string{"NET_ADMIN", "SETUID", "SETGID", "CHOWN", "DAC_OVERRIDE", "SETPCAP"}, wantDrop: []string{"NET_ADMIN", "SETUID", "SETGID", "CHOWN", "DAC_OVERRIDE", "SETPCAP"}},
 		{name: "user supplied net admin remains intentional", capAdd: []string{"CAP_NET_ADMIN"}},
-		{name: "cap add wins over cap drop", capAdd: []string{"NET_ADMIN", "SETPCAP"}, capDrop: []string{"ALL"}},
+		{name: "cap add wins over cap drop", capAdd: []string{"NET_ADMIN", "SETPCAP"}, capDrop: []string{"ALL"}, wantAdd: []string{"SETUID", "SETGID"}, wantDrop: []string{"SETUID", "SETGID"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

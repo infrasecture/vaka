@@ -74,6 +74,9 @@ func (d *dockerServices) InspectExecTarget(ctx context.Context, project, service
 		return false
 	})
 	for _, ctr := range containers {
+		if isComposeOneoff(ctr) {
+			continue
+		}
 		if ctr.Labels[composeProjectLabel] != project || ctr.Labels[composeServiceLabel] != service {
 			continue
 		}
