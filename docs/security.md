@@ -21,7 +21,8 @@ If service A needs to reach service B, allow service B's Compose hostname or IP 
 
 vaka needs `NET_ADMIN` temporarily to load nftables rules. The normal path is:
 
-1. vaka adds the required capability for startup.
+1. vaka computes and adds any capability missing for startup, including
+   temporary `SETPCAP` when bounding-set removal requires it.
 2. `vaka-init` loads the firewall.
 3. `vaka-init` drops the capabilities vaka added.
 4. `vaka-init` switches to the service's effective Compose/image user.
@@ -33,7 +34,8 @@ Docker stores the startup user and capabilities on the container, so processes
 created later do not inherit the application's dropped process state. Vaka
 therefore wraps healthchecks and `vaka exec` commands with the verified
 read-only `vaka-init` runtime. The trampoline first verifies that the kernel
-nftables table exists, then drops policy capabilities from all capability sets,
+nftables table exists, then drops policy capabilities from all five capability
+sets and verifies their absence,
 runs as the service's effective Compose/image user or the identity explicitly
 selected with `exec --user`, and starts the command. A service intended to run
 as root remains root, but without Vaka-added capabilities. The trampoline does
@@ -60,7 +62,8 @@ capabilities, healthcheck, and runtime mount. Fixed Vaka releases block these
 resume operations when they detect an older or mutable managed runtime.
 
 Compose `post_start` and `pre_stop` hooks and `develop.watch` actions `sync`,
-`sync+restart`, and `sync+exec` are currently rejected on managed services.
+`sync+restart`, `sync+exec`, and `rebuild` are currently rejected on managed
+services.
 Compose implements watched-file deletion with an internal container exec, even
 for plain `sync`. `run --entrypoint`, unsafe mounts over Vaka runtime/policy
 paths, protected-label overrides, `up --no-recreate`, and `watch --no-up` are
@@ -126,7 +129,10 @@ modes `host`, `service:...`, and `container:...`.
 
 ## No Host Policy File
 
-vaka never writes the generated per-service policy to disk on the host. The policy is encoded into environment passed to `docker compose`; Docker materializes it as a secret mounted inside the container at `/run/secrets/vaka.yaml` on tmpfs.
+vaka never writes the generated per-service policy to disk on the host. The
+policy and its semantic revision are encoded into the immutable container
+configuration. `vaka-init` verifies that revision on every startup,
+healthcheck, and managed exec before trusting the policy.
 
 The Compose override is streamed through an inherited `/dev/fd/3` pipe instead of being written to `/tmp` or the project directory.
 
@@ -135,6 +141,11 @@ the selected Docker target, and mounted by immutable local image ID. The mount
 is read-only. `vaka-init` also requires the generated policy's exact runtime
 bundle version before loading nftables, so an incorrectly tagged or stale
 runtime fails closed.
+
+Service images are also inspected and executed by exact local image ID. Vaka
+consumes requested build or forced-pull operations before inspection, rejects
+protected image-declared volumes, explicitly disables an absent healthcheck,
+and prevents Compose from refreshing the image again during container creation.
 
 Normal Docker state still exists where Docker keeps it: containers, images,
 volumes, and Docker-managed metadata. Vaka's current delivery path does not

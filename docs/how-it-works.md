@@ -9,7 +9,7 @@ flowchart LR
     vf["vaka.yaml"] --> cli["vaka up"]
     cf["docker-compose.yaml"] --> cli
     cli -- "override via /dev/fd/3" --> dc["docker compose"]
-    dc -- "secret + read-only image mount" --> c["service container"]
+    dc -- "policy environment + read-only image mount" --> c["service container"]
     c --> init["vaka-init"]
     init --> app["original application"]
 ```
@@ -18,14 +18,15 @@ flowchart LR
 
 For `vaka compose up`, `run`, `create`, `scale`, and `watch`, Vaka generates a
 Compose override in memory and streams it to `docker compose` through
-`/dev/fd/3`. Unknown future Compose verbs use this full path until explicitly
-classified as non-creating. `up` and `run` also have equivalent top-level
+`/dev/fd/3`. Unknown future Compose verbs fail closed until their execution
+behavior is reviewed. `up` and `run` also have equivalent top-level
 shorthands.
 
 The override:
 
 - mounts the exact resolved runtime image into each managed service,
-- mounts the per-service policy as a Docker secret,
+- stores the per-service policy and its revision in the container configuration,
+- pins the service to the exact image ID whose metadata Vaka inspected,
 - runs `vaka-init` as the entrypoint,
 - preserves the original entrypoint and command,
 - adds the temporary capability needed to load nftables rules,
@@ -68,7 +69,7 @@ later healthcheck or `vaka exec` starts it with Vaka's temporary startup
 privileges. Air-gapped installations should preload the runtime image into the
 selected Docker target.
 
-## Per-Service Policy Secret
+## Per-Service Policy
 
 vaka generates one policy document per managed service. The service-specific document includes generated runtime metadata, such as the original service user when available.
 
@@ -77,17 +78,17 @@ The generated document records `generatedBy` for diagnostics and an exact
 `agent.vaka.policy-revision` label hashes the effective semantic policy but
 excludes `generatedBy`, so a host-CLI-only upgrade does not restart services.
 
-The policy is mounted inside the container at:
-
-```text
-/run/secrets/vaka.yaml
-```
+The base64-encoded document and its revision are stored in reserved environment
+variables in the immutable container configuration. Startup, healthchecks, and
+managed execs inherit the same values; `vaka-init` recomputes and verifies the
+revision before using the policy. Managed `run` and `exec` reject overrides of
+these reserved variables.
 
 ## `vaka-init` Startup Sequence
 
 `vaka-init` runs before the application:
 
-1. Parse `/run/secrets/vaka.yaml`.
+1. Parse and verify the policy inherited from the container configuration.
 2. Resolve `dns: {}` and hostnames using the container resolver.
 3. Generate and load nftables rules atomically.
 4. Resolve the target service user.
@@ -105,9 +106,11 @@ and capability configuration; they are not descendants of the application and
 cannot inherit the capability drop performed by startup `vaka-init`. Managed
 execs and healthchecks therefore use the immutable runtime trampoline. It
 validates the injected policy and runtime, requires the kernel `inet vaka` table
-to exist, drops policy capabilities from every capability set, switches to the
-service's effective Compose/image user or explicit `exec --user` identity, and
-then starts the command.
+to exist, drops policy capabilities from every capability set and verifies the
+postcondition, switches to the service's effective Compose/image user or
+explicit `exec --user` identity, and
+then starts the command. Managed exec addresses the inspected container ID
+directly; concurrent replacement cannot redirect it to another replica.
 
 This readiness check closes the startup race but is not a complete ruleset
 audit. Exec mode does not reload policy or repeat `runtime.chown`. Direct Docker

@@ -124,7 +124,9 @@ Use a normal bridge network or move enforcement to a host/VM firewall layer.
 
 ## Build-Only Services
 
-If a service uses `build:` with no `image:`, vaka may not be able to inspect the runtime entrypoint or user before build.
+If a managed service uses `build:` with no `image:`, Vaka builds it before
+inspection when the Compose-generated project image is missing. A previously
+built image is reused unless `--build` requests a refresh.
 
 Fix by adding an image name:
 
@@ -135,15 +137,8 @@ services:
     image: app:local
 ```
 
-or explicitly declare runtime metadata:
-
-```yaml
-services:
-  app:
-    build: .
-    user: "1000:1000"
-    entrypoint: ["/usr/local/bin/app"]
-```
+Adding an explicit image name remains useful for predictable external tooling,
+but is not required for Vaka's image inspection.
 
 ## DNS Or Hostname Surprises
 
@@ -151,41 +146,23 @@ Hostnames in policy are resolved inside the container when it starts. This is in
 
 If an endpoint changes, restart the service so `vaka-init` resolves it again.
 
-## Inspected Image May Differ From The Running Image
+## Exact Image Inspection And Execution
 
-To build its egress override, vaka reads a service's default `ENTRYPOINT`/`CMD`/
-`USER` from the image — but only when the Compose file leaves them unset. That
-inspection happens **before** vaka hands off to `docker compose`, so if Compose
-then pulls or rebuilds a *different* image, vaka can inject metadata from an image
-that is not the one that actually runs.
+Vaka consumes `--build` and `--pull=always` before inspecting managed service
+images. It then runs each managed service by the exact local image ID it
+inspected, with pulling disabled in the generated override. This covers
+inherited entrypoints, users, healthchecks, shells, and image-declared volumes.
 
-This only happens with a **mutable tag** plus an explicit refresh:
+For example, this refreshes `app:latest` first and then pins the resulting ID:
 
 ```bash
 # local app:latest is image A; the registry now serves image B
 vaka --vaka-pull=missing compose up --pull=always
 ```
 
-vaka inspects the local A (present, so `--vaka-pull=missing` does not refresh it),
-while Compose's `--pull=always` fetches and runs B. If A and B differ in
-`ENTRYPOINT`/`USER`, the wrapped command or restored user is wrong.
-
-**Digest-pinned images are immune.** `repo@sha256:…` is immutable, so a forced
-pull re-verifies the same digest — inspected == executed. Pinning is the
-recommended practice for reproducible Compose projects and recipes.
-
-Two ways to avoid it:
-
-- **Pin the image by digest** (`image: repo@sha256:…`). Correct regardless of any
-  `--pull` / `pull_policy` flags.
-- **Declare `user:` and `entrypoint:` explicitly** on the service. vaka then never
-  inspects the image — it wraps the *declared* entrypoint and applies it to
-  whatever image Compose runs, so there is nothing stale to read. This also
-  removes the "image not available locally" preflight for that service entirely.
-
-Without a forced pull, or with either fix above, the inspected and executed
-images match. This is a tracked known issue — see
-[issue #85](https://github.com/infrasecture/vaka/issues/85).
+If the exact image is concurrently removed after inspection, creation fails
+closed instead of falling back to a mutable tag. Digest-pinned image references
+remain recommended for reproducible projects and recipes.
 
 ## External DNS Fails On User-Defined Networks (Docker Engine < 28)
 

@@ -198,7 +198,7 @@ Covered endpoints:
 
 vaka adds `NET_ADMIN` so `vaka-init` can load nftables rules. By default, `vaka-init` drops the capabilities vaka added before it starts your app. If the service already had `NET_ADMIN` in `cap_add`, vaka treats that as intentional and does not remove it automatically.
 
-Set `runtime.dropCaps` only when you want to control the complete drop list yourself:
+Use `runtime.dropCaps` to remove additional capabilities:
 
 ```yaml
 runtime:
@@ -206,6 +206,8 @@ runtime:
 ```
 
 Both `NET_ADMIN` and `CAP_NET_ADMIN` forms are accepted.
+Vaka always unions this list with every capability it had to add temporarily;
+the policy cannot accidentally suppress cleanup of Vaka-added privileges.
 
 ## `runtime.chown`
 

@@ -205,19 +205,22 @@ reviewed in Vaka.
 
 Known non-creating commands use a metadata-only reference override. Examples
 include `logs`, `ps`, `pull`, `down`, `start`, `stop`, `kill`, and `rm`.
-`exec` is different: Vaka inspects the selected live container and wraps commands
-for managed services with the immutable runtime trampoline, which drops startup
-capabilities before running the command as the service's effective Compose/image
-user, or as the identity explicitly selected with `exec --user`. Unmanaged
-services retain normal Compose behavior.
+`exec` is different: Vaka inspects the selected live container, verifies its
+exact service/runtime image identities and protected mounts, and executes the
+trampoline against that container ID rather than resolving the service again.
+It wraps commands for managed services with the immutable runtime trampoline,
+which drops startup capabilities before running the command as the service's
+effective Compose/image user, or as the identity explicitly selected with
+`exec --user`. Unmanaged services retain normal Compose behavior.
 
 For managed services, Vaka rejects `exec --privileged`; `run --entrypoint`,
-`run --user`, protected mount or label overrides; `post_start` and `pre_stop`
-hooks; and Watch actions `sync`, `sync+restart`, and `sync+exec`. It also rejects
+`run --user`, capability or reserved-environment overrides, protected mount or
+label overrides; `post_start` and `pre_stop` hooks; and Watch actions `sync`,
+`sync+restart`, `sync+exec`, and `rebuild`. It also rejects
 `up --no-recreate` and `watch --no-up`, and requires old or mutable managed
 containers to be recreated before `start`, `restart`, `unpause`, or `exec`.
-Watch actions that do not synchronize files or execute commands remain
-available.
+`rm --stop` receives the same hook validation. Watch actions without those
+process or filesystem mutation surfaces remain available.
 
 `vaka compose version`, `vaka compose ls`, bare `vaka compose`, and help forms
 are proxied directly without loading a project.
