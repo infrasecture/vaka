@@ -131,7 +131,7 @@ services:
 		t.Fatal(err)
 	}
 	if len(extraEnv) != 1 {
-		t.Fatalf("extraEnv = %v, want one policy secret", extraEnv)
+		t.Fatalf("extraEnv = %v, want one policy payload", extraEnv)
 	}
 	encoded := strings.TrimPrefix(extraEnv[0], "VAKA_APP_CONF=")
 	raw, err := base64.StdEncoding.DecodeString(encoded)

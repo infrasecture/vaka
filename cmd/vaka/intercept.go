@@ -515,7 +515,7 @@ func composeBuildRequested(inv *ComposeInvocation) bool {
 		parsed, err := parseRun(inv.PostSubcommand)
 		return err == nil && parsed.build
 	}
-	return inv.BuildRequested
+	return composeBoolOptionEnabled(inv.PostSubcommand, "--build", "")
 }
 
 func consumeComposeImageRefreshOptions(inv *ComposeInvocation, consumeBuild, consumePull bool) error {
@@ -539,7 +539,7 @@ func consumeComposeImageRefreshOptions(inv *ComposeInvocation, consumeBuild, con
 			args = append(args, post[i:]...)
 			break
 		}
-		if consumeBuild && tok == "--build" {
+		if consumeBuild && (tok == "--build" || strings.HasPrefix(tok, "--build=")) {
 			continue
 		}
 		if consumePull && tok == "--pull=always" {

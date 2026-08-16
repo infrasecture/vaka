@@ -226,6 +226,22 @@ func TestComposeImageRefreshOptionsStopAtRunService(t *testing.T) {
 	}
 }
 
+func TestComposeBuildTrueIsConsumedBeforeExactImageExecution(t *testing.T) {
+	inv, err := ParseComposeInvocation([]string{"up", "--build=true", "-d"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !composeBuildRequested(inv) {
+		t.Fatal("--build=true was not detected")
+	}
+	if err := consumeComposeImageRefreshOptions(inv, true, false); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.Join(inv.Args, " "), "--build") {
+		t.Fatalf("consumed build option remains: %v", inv.Args)
+	}
+}
+
 func TestParseComposeInvocationComposeGlobals(t *testing.T) {
 	tests := []struct {
 		name string

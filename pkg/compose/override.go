@@ -54,12 +54,6 @@ type ServiceEntry struct {
 	OptOut bool
 }
 
-// secretKey returns the compose secret key for a service name.
-// "llm-gateway" -> "vaka_llm_gateway_conf"
-func secretKey(serviceName string) string {
-	return "vaka_" + strings.ReplaceAll(strings.ToLower(serviceName), "-", "_") + "_conf"
-}
-
 type composeOverride struct {
 	Metadata *runtimeMetadata           `yaml:"x-vaka,omitempty"`
 	Services map[string]serviceOverride `yaml:"services,omitempty"`
