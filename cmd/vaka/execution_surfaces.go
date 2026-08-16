@@ -201,8 +201,9 @@ func validateServiceExecutionSurfaces(name string, svc composetypes.ServiceConfi
 	}
 	if svc.Develop != nil {
 		for _, trigger := range svc.Develop.Watch {
-			if trigger.Action == composetypes.WatchActionSyncExec {
-				return fmt.Errorf("service %s: develop.watch sync+exec is not supported on Vaka-managed services because Compose executes it outside vaka-init", name)
+			switch trigger.Action {
+			case composetypes.WatchActionSync, composetypes.WatchActionSyncRestart, composetypes.WatchActionSyncExec:
+				return fmt.Errorf("service %s: develop.watch action %s is not supported on Vaka-managed services because Compose can execute file-deletion or hook commands outside vaka-init", name, trigger.Action)
 			}
 			if trigger.Target != "" && (pathsOverlap(trigger.Target, "/opt/vaka") || pathsOverlap(trigger.Target, "/run/secrets")) {
 				return fmt.Errorf("service %s: develop.watch target %q overlaps Vaka's protected runtime or policy mounts", name, trigger.Target)

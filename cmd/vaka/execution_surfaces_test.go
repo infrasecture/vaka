@@ -68,8 +68,9 @@ func TestValidateManagedExecutionSurfaces(t *testing.T) {
 	}{
 		{name: "post start", svc: composetypes.ServiceConfig{PostStart: []composetypes.ServiceHook{{Command: []string{"id"}}}}, want: "post_start"},
 		{name: "pre stop", svc: composetypes.ServiceConfig{PreStop: []composetypes.ServiceHook{{Command: []string{"id"}}}}, want: "pre_stop"},
-		{name: "sync exec", svc: composetypes.ServiceConfig{Develop: &composetypes.DevelopConfig{Watch: []composetypes.Trigger{{Action: composetypes.WatchActionSyncExec}}}}, want: "sync+exec"},
-		{name: "sync protected ancestor", svc: composetypes.ServiceConfig{Develop: &composetypes.DevelopConfig{Watch: []composetypes.Trigger{{Action: composetypes.WatchActionSync, Target: "/opt"}}}}, want: "protected runtime"},
+		{name: "sync", svc: composetypes.ServiceConfig{Develop: &composetypes.DevelopConfig{Watch: []composetypes.Trigger{{Action: composetypes.WatchActionSync}}}}, want: "action sync"},
+		{name: "sync restart", svc: composetypes.ServiceConfig{Develop: &composetypes.DevelopConfig{Watch: []composetypes.Trigger{{Action: composetypes.WatchActionSyncRestart}}}}, want: "action sync+restart"},
+		{name: "sync exec", svc: composetypes.ServiceConfig{Develop: &composetypes.DevelopConfig{Watch: []composetypes.Trigger{{Action: composetypes.WatchActionSyncExec}}}}, want: "action sync+exec"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
