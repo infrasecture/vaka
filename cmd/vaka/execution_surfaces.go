@@ -266,6 +266,9 @@ func validateManagedExecutionSurfaces(p *policy.ServicePolicy, project *composet
 }
 
 func validateServiceExecutionSurfaces(name string, svc composetypes.ServiceConfig) error {
+	if svc.Labels[vakaInitLabel] == "present" {
+		return fmt.Errorf("service %s: label %s=present is not supported: the exec security boundary requires Vaka's verified read-only runtime mount", name, vakaInitLabel)
+	}
 	if len(svc.PostStart) > 0 {
 		return fmt.Errorf("service %s: post_start hooks are not supported on Vaka-managed services because Compose executes them outside vaka-init", name)
 	}

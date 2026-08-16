@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -347,9 +348,6 @@ func buildInjectionOverride(
 		if !ok {
 			return "", nil, fmt.Errorf("service %q: not found in compose files %v", svcName, composeInput.Files)
 		}
-		if composeSvc.Labels[vakaInitLabel] == "present" {
-			return "", nil, fmt.Errorf("service %s: label %s=present is not supported: the exec security boundary requires Vaka's verified read-only runtime mount", svcName, vakaInitLabel)
-		}
 		if strings.TrimSpace(composeSvc.Image) == "" && composeSvc.Build != nil {
 			composeSvc.Image = project.Name + "-" + svcName
 		}
@@ -387,7 +385,7 @@ func buildInjectionOverride(
 			return "", nil, fmt.Errorf("marshal policy for %s: %w", svcName, err)
 		}
 
-		envKey := "VAKA_" + strings.ToUpper(strings.ReplaceAll(svcName, "-", "_")) + "_CONF"
+		envKey := policyPayloadEnvironmentName(svcName)
 		extraEnv = append(extraEnv, envKey+"="+base64.StdEncoding.EncodeToString(raw))
 
 		entries = append(entries, compose.ServiceEntry{
@@ -428,6 +426,13 @@ func buildInjectionOverride(
 		}
 	}
 	return overrideYAML, extraEnv, nil
+}
+
+// policyPayloadEnvironmentName encodes the exact service name instead of
+// normalizing it. Compose permits names such as foo-bar and foo_bar in the
+// same project, so normalization would make their policy payloads collide.
+func policyPayloadEnvironmentName(service string) string {
+	return "VAKA_SERVICE_" + strings.ToUpper(hex.EncodeToString([]byte(service))) + "_CONF"
 }
 
 // referenceOverrideYAML returns the metadata-only override used by Compose

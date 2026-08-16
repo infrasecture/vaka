@@ -134,7 +134,7 @@ services:
 	if len(extraEnv) != 1 {
 		t.Fatalf("extraEnv = %v, want one policy payload", extraEnv)
 	}
-	encoded := strings.TrimPrefix(extraEnv[0], "VAKA_APP_CONF=")
+	encoded := strings.TrimPrefix(extraEnv[0], policyPayloadEnvironmentName("app")+"=")
 	raw, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
 		t.Fatalf("decode policy: %v", err)
@@ -148,6 +148,55 @@ services:
 	}
 	if !strings.Contains(override, "agent.vaka.policy-revision:") {
 		t.Errorf("override missing policy revision label:\n%s", override)
+	}
+}
+
+func TestPolicyPayloadEnvironmentNamesDoNotCollide(t *testing.T) {
+	left := policyPayloadEnvironmentName("foo-bar")
+	right := policyPayloadEnvironmentName("foo_bar")
+	if left == right {
+		t.Fatalf("policy environment names collide: %q", left)
+	}
+	if left != "VAKA_SERVICE_666F6F2D626172_CONF" || right != "VAKA_SERVICE_666F6F5F626172_CONF" {
+		t.Fatalf("unexpected policy environment names: %q, %q", left, right)
+	}
+}
+
+func TestBakedHelperLabelRejectedBeforeImagePreparation(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	writeFixtureFiles(t, dir, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+`, `
+services:
+  app:
+    image: app:latest
+    pull_policy: always
+    labels:
+      agent.vaka.init: present
+`)
+
+	var composeCalls int
+	setExecDockerComposeForTest(t, func(*ComposeInvocation, string, []string) error {
+		composeCalls++
+		return nil
+	})
+	inv, err := ParseComposeInvocation([]string{"show-compose"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = buildInjectionOverride(context.Background(), &fakeBuilderDockerServices{}, "vaka.yaml", inv, false)
+	if err == nil || !strings.Contains(err.Error(), "verified read-only runtime mount") {
+		t.Fatalf("error = %v, want baked-helper rejection", err)
+	}
+	if composeCalls != 0 {
+		t.Fatalf("compose calls = %d, want zero before rejection", composeCalls)
 	}
 }
 

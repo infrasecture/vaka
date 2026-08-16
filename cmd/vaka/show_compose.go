@@ -29,7 +29,7 @@ func newShowComposeCmd(root *RootInvocation) *cobra.Command {
 Pass --vaka-file before the command:
   vaka --vaka-file=prod.yaml show-compose
 
-VAKA_<SERVICE>_CONF values are never printed.`,
+Internal per-service policy payload values are never printed.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			argv := make([]string, 0, 2*(len(files)+len(profiles)+len(envFiles))+8)
