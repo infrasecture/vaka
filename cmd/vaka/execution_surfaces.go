@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path"
+	"strconv"
 	"strings"
 
 	composeformat "github.com/compose-spec/compose-go/v2/format"
@@ -52,6 +53,8 @@ type parsedRun struct {
 	entrypoint         bool
 	user               bool
 	build              bool
+	dryRun             bool
+	dryRunSet          bool
 	pull               string
 	pullSet            bool
 	pullAlways         bool
@@ -108,12 +111,30 @@ func parseRun(args []string) (parsedRun, error) {
 			continue
 		}
 		if value, ok := strings.CutPrefix(tok, "--build="); ok {
-			parsed.build = composeBoolValue(value)
+			enabled, err := composeBoolValue("--build", value)
+			if err != nil {
+				return parsedRun{}, err
+			}
+			parsed.build = enabled
+			i++
+			continue
+		}
+		if value, ok := strings.CutPrefix(tok, "--dry-run="); ok {
+			enabled, err := composeBoolValue("--dry-run", value)
+			if err != nil {
+				return parsedRun{}, err
+			}
+			parsed.dryRun = enabled
+			parsed.dryRunSet = true
 			i++
 			continue
 		}
 		if tok == "--build" {
 			parsed.build = true
+		}
+		if tok == "--dry-run" {
+			parsed.dryRun = true
+			parsed.dryRunSet = true
 		}
 		if runBooleanOptions[tok] || isRunShortBooleanCluster(tok) {
 			i++
@@ -346,55 +367,83 @@ func validateReferenceExecutionSurfaces(_ string, inv *ComposeInvocation) error 
 	return nil
 }
 
-func referenceRequiresExecutionValidation(inv *ComposeInvocation) bool {
+func referenceRequiresExecutionValidation(inv *ComposeInvocation) (bool, error) {
 	switch inv.Subcommand {
 	case "start", "restart", "stop", "down", "unpause":
-		return true
+		return true, nil
 	case "rm":
 		return composeBoolOptionEnabled(inv.PostSubcommand, "--stop", "s")
 	default:
-		return false
+		return false, nil
 	}
 }
 
-func composeBoolOptionEnabled(args []string, long, short string) bool {
-	enabled := false
+type composeBoolOptionState struct {
+	present bool
+	enabled bool
+}
+
+func composeBoolOptionEnabled(args []string, long, short string) (bool, error) {
+	state, err := scanComposeBoolOption(args, long, short)
+	return state.enabled, err
+}
+
+func scanComposeBoolOption(args []string, long, short string) (composeBoolOptionState, error) {
+	state := composeBoolOptionState{}
 	for _, arg := range args {
 		if arg == "--" {
 			break
 		}
 		if arg == long || (short != "" && arg == "-"+short) {
-			enabled = true
+			state.present = true
+			state.enabled = true
 			continue
 		}
 		if value, ok := strings.CutPrefix(arg, long+"="); ok {
-			enabled = composeBoolValue(value)
+			enabled, err := composeBoolValue(long, value)
+			if err != nil {
+				return composeBoolOptionState{}, err
+			}
+			state.present = true
+			state.enabled = enabled
 			continue
 		}
 		if short != "" && len(arg) > 2 && arg[0] == '-' && arg[1] != '-' {
 			cluster := arg[1:]
 			if value, ok := strings.CutPrefix(cluster, short+"="); ok {
-				enabled = composeBoolValue(value)
+				enabled, err := composeBoolValue("-"+short, value)
+				if err != nil {
+					return composeBoolOptionState{}, err
+				}
+				state.present = true
+				state.enabled = enabled
 				continue
 			}
 			if marker := short + "="; strings.Contains(cluster, marker) {
-				enabled = composeBoolValue(cluster[strings.Index(cluster, marker)+len(marker):])
+				enabled, err := composeBoolValue("-"+short, cluster[strings.Index(cluster, marker)+len(marker):])
+				if err != nil {
+					return composeBoolOptionState{}, err
+				}
+				state.present = true
+				state.enabled = enabled
 				continue
 			}
 			if strings.Contains(cluster, short) {
-				enabled = true
+				state.present = true
+				state.enabled = true
 			}
 		}
 	}
-	return enabled
+	return state, nil
 }
 
 // composeBoolValue follows the values accepted by Compose's pflag booleans
-// for the forms Vaka must interpret. Invalid values remain conservatively
-// enabled; Compose will report the invalid value before executing the command.
-func composeBoolValue(value string) bool {
-	value = strings.TrimSpace(value)
-	return !strings.EqualFold(value, "false") &&
-		!strings.EqualFold(value, "f") &&
-		value != "0"
+// for the forms Vaka must interpret. Vaka must reject malformed values before
+// consuming an option; otherwise Compose never gets a chance to validate it.
+func composeBoolValue(option, value string) (bool, error) {
+	enabled, err := strconv.ParseBool(value)
+	if err != nil {
+		return false, fmt.Errorf("compose option %s has invalid boolean value %q", option, value)
+	}
+	return enabled, nil
 }

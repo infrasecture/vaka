@@ -359,6 +359,69 @@ func TestUnknownComposeCommandFailsClosed(t *testing.T) {
 	}
 }
 
+func TestComposeDryRunRejectedBeforeDockerAction(t *testing.T) {
+	tests := [][]string{
+		{"compose", "--dry-run", "up", "--build"},
+		{"up", "--dry-run", "--build"},
+		{"compose", "--dry-run", "exec", "app", "id"},
+		{"exec", "--dry-run", "app", "id"},
+		{"compose", "--dry-run", "exec", "--help"},
+	}
+	for _, args := range tests {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			calls, err := runRootCapturingExec(t, args)
+			if err == nil || !strings.Contains(err.Error(), "raw `docker compose --dry-run`") {
+				t.Fatalf("dry-run error = %v", err)
+			}
+			if len(calls) != 0 {
+				t.Fatalf("dry-run executed Docker action: %+v", calls)
+			}
+		})
+	}
+}
+
+func TestComposeDryRunRespectsOptionBoundaryAndLastValue(t *testing.T) {
+	tests := []struct {
+		args    []string
+		wantErr bool
+	}{
+		{args: []string{"--dry-run", "exec", "--dry-run=false", "app", "id"}},
+		{args: []string{"--dry-run=false", "exec", "--dry-run", "app", "id"}, wantErr: true},
+		{args: []string{"run", "app", "sh", "--dry-run"}},
+		{args: []string{"exec", "app", "sh", "--dry-run"}},
+	}
+	for _, tc := range tests {
+		inv, err := ParseComposeInvocation(tc.args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = rejectComposeDryRun(inv)
+		if tc.wantErr && err == nil {
+			t.Errorf("rejectComposeDryRun(%v) returned nil", tc.args)
+		}
+		if !tc.wantErr && err != nil {
+			t.Errorf("rejectComposeDryRun(%v) = %v", tc.args, err)
+		}
+	}
+}
+
+func TestMalformedConsumedBooleanRejectedBeforeDockerAction(t *testing.T) {
+	for _, args := range [][]string{
+		{"compose", "up", "--build=garbage"},
+		{"up", "--no-recreate=garbage"},
+		{"compose", "run", "--build=garbage", "app"},
+		{"compose", "rm", "--stop=garbage"},
+	} {
+		calls, err := runRootCapturingExec(t, args)
+		if err == nil || !strings.Contains(err.Error(), "invalid boolean value") {
+			t.Errorf("malformed boolean %v error = %v", args, err)
+		}
+		if len(calls) != 0 {
+			t.Errorf("malformed boolean %v executed Docker action: %+v", args, calls)
+		}
+	}
+}
+
 func TestComposePullEnsuresRuntimeBeforeReferenceProxy(t *testing.T) {
 	dir := t.TempDir()
 	chdirForTest(t, dir)

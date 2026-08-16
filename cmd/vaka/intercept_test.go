@@ -332,7 +332,11 @@ func TestComposeImageRefreshOptionsStopAtRunService(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if composePullAlwaysRequested(inv) || composeBuildRequested(inv) {
+	buildRequested, err := composeBuildRequested(inv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if composePullAlwaysRequested(inv) || buildRequested {
 		t.Fatal("run command payload was interpreted as Compose image options")
 	}
 	original := append([]string{}, inv.Args...)
@@ -349,7 +353,11 @@ func TestComposeBuildTrueIsConsumedBeforeExactImageExecution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !composeBuildRequested(inv) {
+	buildRequested, err := composeBuildRequested(inv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !buildRequested {
 		t.Fatal("--build=true was not detected")
 	}
 	if err := consumeComposeImageRefreshOptions(inv, true, false); err != nil {
@@ -381,7 +389,11 @@ func TestComposeImageRefreshOptionsUseLastValue(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := composeBuildRequested(inv); got != tc.wantBuild {
+			got, err := composeBuildRequested(inv)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.wantBuild {
 				t.Errorf("composeBuildRequested(%v) = %t, want %t", tc.args, got, tc.wantBuild)
 			}
 			if got := composePullAlwaysRequested(inv); got != tc.wantPull {

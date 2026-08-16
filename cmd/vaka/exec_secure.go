@@ -266,6 +266,7 @@ type parsedExec struct {
 	detach     bool
 	noTTY      bool
 	dryRun     bool
+	dryRunSet  bool
 }
 
 var execDockerContainerFn = func(args []string) error {
@@ -317,6 +318,17 @@ func parseExec(args []string) (parsedExec, error) {
 		}
 		if tok == "--privileged" {
 			parsed.privileged = true
+			parsed.prefix = append(parsed.prefix, tok)
+			i++
+			continue
+		}
+		if value, ok := strings.CutPrefix(tok, "--dry-run="); ok {
+			enabled, err := composeBoolValue("--dry-run", value)
+			if err != nil {
+				return parsedExec{}, err
+			}
+			parsed.dryRun = enabled
+			parsed.dryRunSet = true
 			parsed.prefix = append(parsed.prefix, tok)
 			i++
 			continue
@@ -388,6 +400,7 @@ func (p *parsedExec) recordExecBoolean(flag string) {
 		p.noTTY = true
 	case "--dry-run":
 		p.dryRun = true
+		p.dryRunSet = true
 	}
 }
 
@@ -435,7 +448,7 @@ func secureDockerExecArgs(containerID string, parsed parsedExec) ([]string, erro
 		case tok == "--index":
 			i++
 		case strings.HasPrefix(tok, "--index="):
-		case tok == "-T" || tok == "--no-tty" || tok == "-i" || tok == "--interactive" || tok == "-t" || tok == "--tty" || tok == "--dry-run":
+		case tok == "-T" || tok == "--no-tty" || tok == "-i" || tok == "--interactive" || tok == "-t" || tok == "--tty" || tok == "--dry-run" || strings.HasPrefix(tok, "--dry-run="):
 		case isExecShortBooleanCluster(tok):
 			if strings.Contains(tok, "d") {
 				args = append(args, "-d")

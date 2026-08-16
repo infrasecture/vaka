@@ -245,11 +245,23 @@ func buildInjectionOverride(
 			return "", nil, err
 		}
 	}
-	if inv.Subcommand == "up" && composeBoolOptionEnabled(inv.PostSubcommand, "--no-recreate", "") && len(p.Services) > 0 {
-		return "", nil, fmt.Errorf("compose up --no-recreate can reuse containers with an older unsafe runtime; remove --no-recreate so managed services are recreated")
+	if inv.Subcommand == "up" {
+		noRecreate, err := composeBoolOptionEnabled(inv.PostSubcommand, "--no-recreate", "")
+		if err != nil {
+			return "", nil, err
+		}
+		if noRecreate && len(p.Services) > 0 {
+			return "", nil, fmt.Errorf("compose up --no-recreate can reuse containers with an older unsafe runtime; remove --no-recreate so managed services are recreated")
+		}
 	}
-	if inv.Subcommand == "watch" && composeBoolOptionEnabled(inv.PostSubcommand, "--no-up", "") && len(p.Services) > 0 {
-		return "", nil, fmt.Errorf("compose watch --no-up can reuse containers with an older unsafe runtime; remove --no-up so managed services are recreated")
+	if inv.Subcommand == "watch" {
+		noUp, err := composeBoolOptionEnabled(inv.PostSubcommand, "--no-up", "")
+		if err != nil {
+			return "", nil, err
+		}
+		if noUp && len(p.Services) > 0 {
+			return "", nil, fmt.Errorf("compose watch --no-up can reuse containers with an older unsafe runtime; remove --no-up so managed services are recreated")
+		}
 	}
 	inv.ResolvedProjectName = project.Name
 
@@ -257,8 +269,17 @@ func buildInjectionOverride(
 	// invocation receives exact image IDs, so it must not rebuild or repull a
 	// different image after Vaka has validated healthchecks and image volumes.
 	pullValue, pullRequested := composePullOption(inv)
-	forceRebuild := composeBuildRequested(inv)
-	noBuild := inv.Subcommand != "run" && composeBoolOptionEnabled(inv.PostSubcommand, "--no-build", "")
+	forceRebuild, err := composeBuildRequested(inv)
+	if err != nil {
+		return "", nil, err
+	}
+	noBuild := false
+	if inv.Subcommand != "run" {
+		noBuild, err = composeBoolOptionEnabled(inv.PostSubcommand, "--no-build", "")
+		if err != nil {
+			return "", nil, err
+		}
+	}
 	if forceRebuild && noBuild {
 		return "", nil, fmt.Errorf("compose options --build and --no-build cannot both be enabled")
 	}
@@ -658,10 +679,13 @@ func composePullOption(inv *ComposeInvocation) (string, bool) {
 	return pull, present
 }
 
-func composeBuildRequested(inv *ComposeInvocation) bool {
+func composeBuildRequested(inv *ComposeInvocation) (bool, error) {
 	if inv.Subcommand == "run" {
 		parsed, err := parseRun(inv.PostSubcommand)
-		return err == nil && parsed.build
+		if err != nil {
+			return false, err
+		}
+		return parsed.build, nil
 	}
 	return composeBoolOptionEnabled(inv.PostSubcommand, "--build", "")
 }

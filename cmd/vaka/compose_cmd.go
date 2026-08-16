@@ -37,6 +37,9 @@ func runComposeCLI(root *RootInvocation, argv []string) error {
 	if err != nil {
 		return err
 	}
+	if err := rejectComposeDryRun(inv); err != nil {
+		return err
+	}
 
 	// No subcommand (`vaka compose`, `vaka compose --help`, globals only) and
 	// explicit `<verb> --help` forms proxy straight to docker compose without
@@ -45,6 +48,9 @@ func runComposeCLI(root *RootInvocation, argv []string) error {
 		return execDockerComposeFn(inv, "", nil)
 	}
 	spec := composeCommandSpecFor(inv.Subcommand)
+	if err := validateConsumedComposeBooleans(inv, spec); err != nil {
+		return err
+	}
 	switch spec.class {
 	case verbMetadata:
 		return execDockerComposeFn(inv, "", nil)
@@ -55,7 +61,11 @@ func runComposeCLI(root *RootInvocation, argv []string) error {
 		printDeviationNotice(os.Stderr, inv.ProjectDirectory)
 		return runFull(root.VakaFile, inv, root.VakaInitPresent, root.PullPolicy)
 	case verbReference:
-		if referenceRequiresExecutionValidation(inv) {
+		requiresValidation, err := referenceRequiresExecutionValidation(inv)
+		if err != nil {
+			return err
+		}
+		if requiresValidation {
 			if err := validateReferenceExecutionSurfaces(root.VakaFile, inv); err != nil {
 				return err
 			}
@@ -73,6 +83,82 @@ func runComposeCLI(root *RootInvocation, argv []string) error {
 	default:
 		return fmt.Errorf("internal error: unhandled compose command class for %q", inv.Subcommand)
 	}
+}
+
+func rejectComposeDryRun(inv *ComposeInvocation) error {
+	state, err := scanComposeBoolOption(inv.PreSubcommand, "--dry-run", "")
+	if err != nil {
+		return err
+	}
+
+	if isProxySubcommandHelp(inv) {
+		if state.enabled {
+			return unsupportedComposeDryRunError()
+		}
+		return nil
+	}
+
+	local := composeBoolOptionState{}
+	switch inv.Subcommand {
+	case "exec":
+		parsed, err := parseExec(inv.PostSubcommand)
+		if err != nil {
+			return err
+		}
+		local = composeBoolOptionState{present: parsed.dryRunSet, enabled: parsed.dryRun}
+	case "run":
+		parsed, err := parseRun(inv.PostSubcommand)
+		if err != nil {
+			return err
+		}
+		local = composeBoolOptionState{present: parsed.dryRunSet, enabled: parsed.dryRun}
+	default:
+		local, err = scanComposeBoolOption(inv.PostSubcommand, "--dry-run", "")
+		if err != nil {
+			return err
+		}
+	}
+	if local.present {
+		state = local
+	}
+	if state.enabled {
+		return unsupportedComposeDryRunError()
+	}
+	return nil
+}
+
+func unsupportedComposeDryRunError() error {
+	return fmt.Errorf("compose --dry-run is not supported by Vaka-controlled commands because Vaka performs security preparation outside Compose; use raw `docker compose --dry-run` for an explicit simulation")
+}
+
+func validateConsumedComposeBooleans(inv *ComposeInvocation, spec composeCommandSpec) error {
+	if spec.class == verbRender {
+		if inv.Subcommand == "run" {
+			_, err := parseRun(inv.PostSubcommand)
+			return err
+		}
+		for _, option := range []string{"--build", "--no-build"} {
+			if _, err := composeBoolOptionEnabled(inv.PostSubcommand, option, ""); err != nil {
+				return err
+			}
+		}
+	}
+	if inv.Subcommand == "up" || inv.Subcommand == "create" {
+		if _, err := composeBoolOptionEnabled(inv.PostSubcommand, "--no-recreate", ""); err != nil {
+			return err
+		}
+	}
+	if inv.Subcommand == "watch" {
+		if _, err := composeBoolOptionEnabled(inv.PostSubcommand, "--no-up", ""); err != nil {
+			return err
+		}
+	}
+	if inv.Subcommand == "rm" {
+		if _, err := composeBoolOptionEnabled(inv.PostSubcommand, "--stop", "s"); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // isProxySubcommandHelp reports whether the invocation is `<subcommand> --help`

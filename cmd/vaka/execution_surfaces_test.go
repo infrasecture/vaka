@@ -191,17 +191,29 @@ func TestReferenceRequiresExecutionValidationForRmStop(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := referenceRequiresExecutionValidation(inv); got != tc.want {
+		got, err := referenceRequiresExecutionValidation(inv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != tc.want {
 			t.Errorf("referenceRequiresExecutionValidation(%v) = %t, want %t", tc.args, got, tc.want)
 		}
 	}
 }
 
 func TestComposeBoolOptionFalseIsDisabled(t *testing.T) {
-	if composeBoolOptionEnabled([]string{"--no-recreate=false"}, "--no-recreate", "") {
+	got, err := composeBoolOptionEnabled([]string{"--no-recreate=false"}, "--no-recreate", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got {
 		t.Fatal("--no-recreate=false treated as enabled")
 	}
-	if composeBoolOptionEnabled([]string{"--no-up=false"}, "--no-up", "") {
+	got, err = composeBoolOptionEnabled([]string{"--no-up=false"}, "--no-up", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got {
 		t.Fatal("--no-up=false treated as enabled")
 	}
 }
@@ -223,9 +235,26 @@ func TestComposeBoolOptionUsesLastValue(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := composeBoolOptionEnabled(tc.args, tc.long, tc.short); got != tc.want {
+			got, err := composeBoolOptionEnabled(tc.args, tc.long, tc.short)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
 				t.Fatalf("composeBoolOptionEnabled(%v) = %t, want %t", tc.args, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestComposeBoolOptionRejectsMalformedValues(t *testing.T) {
+	for _, args := range [][]string{
+		{"--build=garbage"},
+		{"--build= false "},
+		{"-s=garbage"},
+		{"--build=garbage", "--build"},
+	} {
+		if _, err := composeBoolOptionEnabled(args, "--build", "s"); err == nil {
+			t.Errorf("composeBoolOptionEnabled(%v) accepted malformed value", args)
+		}
 	}
 }
