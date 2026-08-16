@@ -31,7 +31,9 @@ vaka compose pull  # correct
 
 A shorthand and its `vaka compose` form use the same Vaka dispatch and security
 checks. Running `docker compose` directly bypasses Vaka and retains raw Compose
-behavior.
+behavior. Vaka rejects Compose `--dry-run` because secured exec and image
+preparation do not map safely to Compose's global dry-run mode; use raw
+`docker compose --dry-run` when that deliberate bypass is intended.
 
 ## Recipe Commands
 
@@ -210,10 +212,15 @@ reviewed in Vaka.
 Before inspecting and pinning service images, Vaka applies the final requested
 `--build`/`--pull` behavior and supported Compose-file `pull_policy` values to
 all Vaka-managed services in the project, even when the Compose command targets
-one service. It never performs this preparation for unmanaged services. An
-absent `pull_policy` uses `--vaka-pull`; `never`, `missing`, `always`, and
-`build` are supported. Timed policies fail with guidance to pull explicitly so
-Vaka does not inspect one image and execute another.
+one service. When a mixed-project `up` or `create` must consume
+`--build`, `--pull=always`, or `--pull=build`, Vaka also prepares only the
+selected unmanaged services (and their Compose dependencies) so their native
+result is preserved. `run` leaves these flags entirely to Compose when its
+target is unmanaged. Safe `--pull=missing`, `if_not_present`, and `never`
+remain on the final Compose invocation. An absent service `pull_policy` uses
+`--vaka-pull`; explicit Compose policies take precedence. Timed policies fail
+with guidance to pull explicitly so Vaka does not inspect one image and execute
+another.
 
 Known non-creating commands use a metadata-only reference override. Examples
 include `logs`, `ps`, `pull`, `down`, `start`, `stop`, `kill`, and `rm`.
@@ -229,8 +236,9 @@ For managed services, Vaka rejects `exec --privileged`; `run --entrypoint`,
 `run --user`, capability or reserved-environment overrides, protected mount or
 label overrides; `post_start` and `pre_stop` hooks; and Watch actions `sync`,
 `sync+restart`, `sync+exec`, and `rebuild`. It also rejects
-`up --no-recreate` and `watch --no-up`, and requires old or mutable managed
-containers to be recreated before `start`, `restart`, `unpause`, or `exec`.
+`up/create --no-recreate` and `watch --no-up`, and requires old, mutable, or
+policy-managed-but-unlabeled containers to be recreated before Vaka-controlled
+resume or exec operations.
 `rm --stop` receives the same hook validation. Watch actions without those
 process or filesystem mutation surfaces remain available.
 

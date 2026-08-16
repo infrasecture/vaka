@@ -76,7 +76,8 @@ services.
 Compose implements watched-file deletion with an internal container exec, even
 for plain `sync`. `run --entrypoint`, unsafe mounts over Vaka runtime/policy
 paths, protected-label overrides, `up --no-recreate`, and `watch --no-up` are
-also rejected. These restrictions fail closed rather than guessing how a new
+also rejected; the reuse restriction applies to `create --no-recreate` too.
+These restrictions fail closed rather than guessing how a new
 process or command-line override interacts with the security boundary.
 
 ## What It Does Not Enforce

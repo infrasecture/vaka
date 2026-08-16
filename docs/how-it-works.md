@@ -35,9 +35,11 @@ The override:
 
 Before image inspection, Vaka performs requested pull or build preparation for
 the complete set of services managed by `vaka.yaml`, even when the command
-targets one service. Unmanaged services are not prepared. Vaka then pins every
-managed service to the exact local image ID it inspected, preventing Compose
-from refreshing the image between inspection and container creation.
+targets one service. If Vaka must consume a project-wide refresh option during
+mixed-project `up` or `create`, it also prepares only the selected unmanaged
+services; unmanaged `run` targets retain native Compose handling. Vaka then
+pins every managed service to the exact local image ID it inspected, preventing
+Compose from refreshing the image between inspection and container creation.
 
 ## Runtime Injection
 

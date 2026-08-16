@@ -148,10 +148,13 @@ If an endpoint changes, restart the service so `vaka-init` resolves it again.
 
 ## Exact Image Inspection And Execution
 
-Vaka consumes `--build` and `--pull=always` before inspecting managed service
+Vaka applies `--build` and forced pulls before inspecting managed service
 images. It then runs each managed service by the exact local image ID it
-inspected, with pulling disabled in the generated override. This covers
-inherited entrypoints, users, healthchecks, shells, and image-declared volumes.
+inspected, with pulling disabled in the generated override. In a mixed project,
+selected unmanaged services are prepared only when a project-wide refresh flag
+must be consumed; an unmanaged `run` target retains native Compose handling.
+This covers inherited entrypoints, users, healthchecks, shells, and
+image-declared volumes.
 
 For example, this refreshes `app:latest` first and then pins the resulting ID:
 
