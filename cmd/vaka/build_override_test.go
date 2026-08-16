@@ -169,6 +169,9 @@ services:
     image: app:latest
     build: .
     user: "1000:1000"
+  unmanaged:
+    image: unmanaged:latest
+    build: .
 `
 	writeFixtureFiles(t, dir, policyYAML, composeYAML)
 
@@ -203,5 +206,56 @@ services:
 	}
 	if !strings.Contains(strings.Join(prebuildArgs, " "), "app") {
 		t.Fatalf("prebuild args %v do not include service name", prebuildArgs)
+	}
+	if strings.Contains(strings.Join(prebuildArgs, " "), "unmanaged") {
+		t.Fatalf("prebuild args %v include unmanaged service", prebuildArgs)
+	}
+}
+
+func TestBuildInjectionOverridePrePullsManagedPolicyOnly(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	writeFixtureFiles(t, dir, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+`, `
+services:
+  app:
+    image: app:latest
+    pull_policy: always
+    user: "1000:1000"
+    entrypoint: ["sleep"]
+  unmanaged:
+    image: unmanaged:latest
+    pull_policy: always
+`)
+
+	ds := &fakeBuilderDockerServices{}
+	var pullArgs []string
+	setExecDockerComposeForTest(t, func(inv *ComposeInvocation, overrideYAML string, extraEnv []string) error {
+		if overrideYAML == "" && len(inv.Args) > 0 && inv.Args[0] == "pull" {
+			pullArgs = append([]string{}, inv.Args...)
+		}
+		return nil
+	})
+
+	inv, err := ParseComposeInvocation([]string{"show-compose"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := buildInjectionOverride(context.Background(), ds, "vaka.yaml", inv, false); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(pullArgs, " ")
+	if !strings.Contains(joined, "--policy always app") {
+		t.Fatalf("pre-pull args = %v", pullArgs)
+	}
+	if strings.Contains(joined, "unmanaged") {
+		t.Fatalf("pre-pull args include unmanaged service: %v", pullArgs)
 	}
 }

@@ -149,7 +149,7 @@ func TestServicesNeedingPrebuild(t *testing.T) {
 		"external:latest":  false,
 	}}
 
-	got, err := servicesNeedingPrebuild(context.Background(), ds, policySvcs, project, false)
+	got, err := servicesNeedingPrebuild(context.Background(), ds, policySvcs, project, false, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -192,6 +192,10 @@ func TestServicesNeedingPrebuildForceRebuild(t *testing.T) {
 				Entrypoint: []string{"/bin/run"},
 				User:       "1000:1000",
 			},
+			"unmanaged": {
+				Image: "unmanaged:latest",
+				Build: &composetypes.BuildConfig{Context: "."},
+			},
 		},
 	}
 	ds := &fakeDS{exists: map[string]bool{
@@ -199,13 +203,98 @@ func TestServicesNeedingPrebuildForceRebuild(t *testing.T) {
 		"external:latest": false,
 	}}
 
-	got, err := servicesNeedingPrebuild(context.Background(), ds, policySvcs, project, true)
+	got, err := servicesNeedingPrebuild(context.Background(), ds, policySvcs, project, true, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	want := []string{"buildonly", "hasentry", "prebuilt"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+func TestPlanManagedImagePreparationUsesManagedServicesOnly(t *testing.T) {
+	policySvcs := map[string]*policy.ServiceConfig{
+		"always":       {},
+		"build":        {},
+		"missing":      {},
+		"missingbuild": {},
+	}
+	project := &composetypes.Project{Services: map[string]composetypes.ServiceConfig{
+		"always":       {Image: "always:latest", PullPolicy: composetypes.PullPolicyAlways},
+		"build":        {Image: "build:latest", Build: &composetypes.BuildConfig{Context: "."}, PullPolicy: composetypes.PullPolicyBuild},
+		"missing":      {Image: "missing:latest", PullPolicy: composetypes.PullPolicyMissing},
+		"missingbuild": {Image: "missingbuild:latest", Build: &composetypes.BuildConfig{Context: "."}, PullPolicy: composetypes.PullPolicyMissing},
+		"unmanaged":    {Image: "unmanaged:latest", PullPolicy: composetypes.PullPolicyAlways},
+	}}
+	ds := &fakeDS{exists: map[string]bool{
+		"missing:latest":      false,
+		"missingbuild:latest": false,
+	}}
+
+	got, err := planManagedImagePreparation(context.Background(), ds, policySvcs, project, "", false, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got.pullAlways, ",") != "always" {
+		t.Errorf("always pulls = %v", got.pullAlways)
+	}
+	if strings.Join(got.pullMissing, ",") != "missing" {
+		t.Errorf("missing pulls = %v", got.pullMissing)
+	}
+	if !got.forceBuild["build"] || !got.forceBuild["missingbuild"] || got.forceBuild["unmanaged"] {
+		t.Errorf("forced builds = %v", got.forceBuild)
+	}
+}
+
+func TestPlanManagedImagePreparationCLIOverridesFilePolicy(t *testing.T) {
+	policySvcs := map[string]*policy.ServiceConfig{"app": {}}
+	project := &composetypes.Project{Services: map[string]composetypes.ServiceConfig{
+		"app": {Image: "app:latest", PullPolicy: composetypes.PullPolicyAlways},
+	}}
+	ds := &fakeDS{exists: map[string]bool{"app:latest": true}}
+
+	never, err := planManagedImagePreparation(context.Background(), ds, policySvcs, project, "never", true, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(never.pullAlways) != 0 || len(never.pullMissing) != 0 {
+		t.Fatalf("--pull=never plan = %+v", never)
+	}
+
+	always, err := planManagedImagePreparation(context.Background(), ds, policySvcs, project, "always", true, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(always.pullAlways, ",") != "app" {
+		t.Fatalf("--pull=always plan = %+v", always)
+	}
+}
+
+func TestPlanManagedImagePreparationRejectsUnsupportedOrConflictingPolicy(t *testing.T) {
+	policySvcs := map[string]*policy.ServiceConfig{"app": {}}
+	ds := &fakeDS{exists: map[string]bool{}}
+	tests := []struct {
+		name      string
+		svc       composetypes.ServiceConfig
+		cliPull   string
+		cliSet    bool
+		noBuild   bool
+		wantError string
+	}{
+		{name: "timed", svc: composetypes.ServiceConfig{Image: "app:latest", PullPolicy: "daily"}, wantError: "cannot apply"},
+		{name: "bad CLI pull", svc: composetypes.ServiceConfig{Image: "app:latest"}, cliPull: "sometimes", cliSet: true, wantError: "unsupported Compose --pull"},
+		{name: "build without config", svc: composetypes.ServiceConfig{Image: "app:latest", PullPolicy: composetypes.PullPolicyBuild}, wantError: "no build configuration"},
+		{name: "no build conflict", svc: composetypes.ServiceConfig{Image: "app:latest", Build: &composetypes.BuildConfig{Context: "."}, PullPolicy: composetypes.PullPolicyBuild}, noBuild: true, wantError: "--no-build conflicts"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			project := &composetypes.Project{Services: map[string]composetypes.ServiceConfig{"app": tc.svc}}
+			_, err := planManagedImagePreparation(context.Background(), ds, policySvcs, project, tc.cliPull, tc.cliSet, false, tc.noBuild)
+			if err == nil || !strings.Contains(err.Error(), tc.wantError) {
+				t.Fatalf("error = %v, want %q", err, tc.wantError)
+			}
+		})
 	}
 }
 

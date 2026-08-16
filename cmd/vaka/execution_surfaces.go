@@ -52,6 +52,8 @@ type parsedRun struct {
 	entrypoint         bool
 	user               bool
 	build              bool
+	pull               string
+	pullSet            bool
 	pullAlways         bool
 	capabilityOverride bool
 	volumes            []string
@@ -92,6 +94,8 @@ func parseRun(args []string) (parsedRun, error) {
 			case "-e", "--env":
 				parsed.environment = append(parsed.environment, value)
 			case "--pull":
+				parsed.pull = value
+				parsed.pullSet = true
 				parsed.pullAlways = value == "always"
 			case "--env-from-file":
 				parsed.environmentFile = true
