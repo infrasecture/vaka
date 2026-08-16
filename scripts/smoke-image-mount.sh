@@ -98,6 +98,7 @@ services:
   app:
     image: "${VAKA_SMOKE_SERVICE_IMAGE}"
     command: ["sleep", "3600"]
+    cap_drop: [SETUID, SETGID]
     healthcheck:
       test: ["CMD-SHELL", "sed -n '/^Cap/p' /proc/self/status > /tmp/vaka-health-caps"]
       interval: 1s
@@ -171,16 +172,22 @@ if docker container exec "${container_id}" /bin/sh -c 'printf smoke > /opt/vaka/
     die "write to read-only /opt/vaka mount unexpectedly succeeded"
 fi
 
-assert_no_net_admin() {
+assert_cap_absent() {
     local source=$1
     local caps=$2
+    local cap_name=$3
+    local cap_bit=$4
     local name hex value
     for name in CapInh CapPrm CapEff CapBnd CapAmb; do
         hex="$(awk -v key="${name}:" '$1 == key {print $2}' <<<"${caps}")"
         [[ -n "${hex}" ]] || die "${source} did not report ${name}: ${caps}"
         value=$((16#${hex}))
-        (( (value & 0x1000) == 0 )) || die "${source} retained NET_ADMIN in ${name}: ${hex}"
+        (( (value & (1 << cap_bit)) == 0 )) || die "${source} retained ${cap_name} in ${name}: ${hex}"
     done
+}
+
+assert_no_net_admin() {
+    assert_cap_absent "$1" "$2" NET_ADMIN 12
 }
 
 printf '==> Verifying Vaka exec trampoline capabilities\n'
@@ -191,6 +198,21 @@ exec_caps="$("${VAKA_BIN}" \
     --file "${compose_file}" \
     exec -T app /bin/sh -c "sed -n '/^Cap/p' /proc/self/status")"
 assert_no_net_admin "vaka exec" "${exec_caps}"
+
+printf '==> Verifying Vaka exec --user identity transition\n'
+exec_user_output="$("${VAKA_BIN}" \
+    "--vaka-file=${policy_file}" \
+    compose \
+    --project-name "${project}" \
+    --file "${compose_file}" \
+    exec -T --user 65534:65534 app /bin/sh -c 'printf "%s:%s\n" "$(id -u)" "$(id -g)"; sed -n "/^Cap/p" /proc/self/status')"
+exec_user_identity="${exec_user_output%%$'\n'*}"
+exec_user_caps="${exec_user_output#*$'\n'}"
+[[ "${exec_user_identity}" == 65534:65534 ]] || \
+    die "vaka exec --user ran as ${exec_user_identity}; expected 65534:65534"
+assert_no_net_admin "vaka exec --user" "${exec_user_caps}"
+assert_cap_absent "vaka exec --user" "${exec_user_caps}" SETGID 6
+assert_cap_absent "vaka exec --user" "${exec_user_caps}" SETUID 7
 
 set +e
 "${VAKA_BIN}" \
@@ -222,4 +244,4 @@ done
 [[ -n "${health_caps}" ]] || die "wrapped healthcheck did not record its capabilities"
 assert_no_net_admin "healthcheck" "${health_caps}"
 
-printf 'PASS: exact image ID %s is read-only; exec and healthchecks drop NET_ADMIN\n' "${runtime_id}"
+printf 'PASS: exact image ID %s is read-only; exec identity switching works; exec and healthchecks drop temporary capabilities\n' "${runtime_id}"
