@@ -87,6 +87,21 @@ func TestBuildOverrideInjectsPolicyRuntime(t *testing.T) {
 	}
 }
 
+func TestBuildOverrideFreezesPreparedUnmanagedService(t *testing.T) {
+	out, err := compose.BuildOverride(singleEntry("app"), testRuntime, "worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := parseOverride(t, out)
+	worker, ok := doc.Services["worker"]
+	if !ok || worker.PullPolicy != "never" {
+		t.Fatalf("prepared unmanaged override = %+v", worker)
+	}
+	if worker.User != "" || worker.Image != "" || len(worker.Entrypoint) != 0 {
+		t.Fatalf("prepared unmanaged service received managed settings: %+v", worker)
+	}
+}
+
 func TestBuildOverrideExplicitlyDisablesAbsentHealthcheck(t *testing.T) {
 	out, err := compose.BuildOverride(singleEntry("app"), testRuntime)
 	if err != nil {

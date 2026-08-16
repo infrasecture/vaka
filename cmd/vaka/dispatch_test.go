@@ -461,6 +461,23 @@ func TestMalformedConsumedBooleanRejectedBeforeDockerAction(t *testing.T) {
 	}
 }
 
+func TestInvalidPullOptionRejectedBeforeDockerAction(t *testing.T) {
+	for _, args := range [][]string{
+		{"compose", "up", "--pull=policy"},
+		{"up", "--pull=garbage"},
+		{"compose", "up", "--pull=build"},
+		{"compose", "create", "--pull"},
+	} {
+		calls, err := runRootCapturingExec(t, args)
+		if err == nil || !strings.Contains(err.Error(), "--pull") {
+			t.Errorf("invalid pull %v error = %v", args, err)
+		}
+		if len(calls) != 0 {
+			t.Errorf("invalid pull %v executed Docker action: %+v", args, calls)
+		}
+	}
+}
+
 func TestComposePullEnsuresRuntimeBeforeReferenceProxy(t *testing.T) {
 	dir := t.TempDir()
 	chdirForTest(t, dir)

@@ -269,7 +269,10 @@ func buildInjectionOverride(
 	// Consume image-refresh operations before inspection. The final Compose
 	// invocation receives exact image IDs, so it must not rebuild or repull a
 	// different image after Vaka has validated healthchecks and image volumes.
-	pullValue, pullRequested := composePullOption(inv)
+	pullValue, pullRequested, err := composePullOption(inv)
+	if err != nil {
+		return "", nil, err
+	}
 	forceRebuild, err := composeBuildRequested(inv)
 	if err != nil {
 		return "", nil, err
@@ -284,9 +287,28 @@ func buildInjectionOverride(
 	if forceRebuild && noBuild {
 		return "", nil, fmt.Errorf("compose options --build and --no-build cannot both be enabled")
 	}
-	preparation, err := planManagedImagePreparation(ctx, ds, p.Services, project, pullValue, pullRequested, forceRebuild, noBuild)
+	applyManagedCLI := true
+	if inv.Subcommand == "run" {
+		parsed, parseErr := parseRun(inv.PostSubcommand)
+		if parseErr != nil {
+			return "", nil, parseErr
+		}
+		_, applyManagedCLI = p.Services[parsed.service]
+	}
+	managedPullRequested := pullRequested && applyManagedCLI
+	managedForceRebuild := forceRebuild && applyManagedCLI
+	preparation, err := planManagedImagePreparation(ctx, ds, p.Services, project, pullValue, managedPullRequested, managedForceRebuild, noBuild)
 	if err != nil {
 		return "", nil, err
+	}
+	unmanaged, err := planSelectedUnmanagedRefresh(project, p.Services, inv, pullValue, pullRequested, forceRebuild, noBuild)
+	if err != nil {
+		return "", nil, err
+	}
+	preparation.pullAlways = append(preparation.pullAlways, unmanaged.pullAlways...)
+	preparation.pullOrBuild = append(preparation.pullOrBuild, unmanaged.pullOrBuild...)
+	for name := range unmanaged.forceBuild {
+		preparation.forceBuild[name] = true
 	}
 	for _, pull := range []struct {
 		policy   string
@@ -298,7 +320,7 @@ func buildInjectionOverride(
 		if len(pull.services) == 0 {
 			continue
 		}
-		fmt.Fprintf(os.Stderr, "vaka: pre-pulling managed services with policy %s before exact-image inspection: %v\n", pull.policy, pull.services)
+		fmt.Fprintf(os.Stderr, "vaka: pre-pulling services with policy %s before image preparation: %v\n", pull.policy, pull.services)
 		pullArgs := append([]string{}, inv.ComposeGlobals...)
 		pullArgs = append(pullArgs, "pull", "--policy", pull.policy)
 		pullArgs = append(pullArgs, pull.services...)
@@ -307,14 +329,14 @@ func buildInjectionOverride(
 		}
 	}
 	for _, pull := range preparation.pullOrBuild {
-		fmt.Fprintf(os.Stderr, "vaka: pre-pulling managed buildable service %s with policy %s before exact-image inspection\n", pull.service, pull.policy)
+		fmt.Fprintf(os.Stderr, "vaka: pre-pulling buildable service %s with policy %s before image preparation\n", pull.service, pull.policy)
 		pullArgs := append([]string{}, inv.ComposeGlobals...)
 		pullArgs = append(pullArgs, "pull", "--policy", pull.policy, pull.service)
 		if err := execDockerComposeFn(&ComposeInvocation{Args: pullArgs}, "", nil); err != nil {
 			if noBuild {
 				return "", nil, fmt.Errorf("pre-pull %s (%s): %w", pull.service, pull.policy, err)
 			}
-			fmt.Fprintf(os.Stderr, "vaka: pull failed for buildable managed service %s; building it before inspection\n", pull.service)
+			fmt.Fprintf(os.Stderr, "vaka: pull failed for buildable service %s; building it before inspection\n", pull.service)
 			preparation.forceBuild[pull.service] = true
 		}
 	}
@@ -323,7 +345,7 @@ func buildInjectionOverride(
 	// inspectable image. --build is consumed for every buildable managed service
 	// before inspection; this preserves final-image identity without touching
 	// unrelated unmanaged services.
-	toBuild, err := servicesNeedingPrebuild(ctx, ds, p.Services, project, forceRebuild, preparation.forceBuild, noBuild)
+	toBuild, err := servicesNeedingPrebuild(ctx, ds, p.Services, project, managedForceRebuild, preparation.forceBuild, noBuild)
 	if err != nil {
 		return "", nil, err
 	}
@@ -351,6 +373,7 @@ func buildInjectionOverride(
 		if strings.TrimSpace(composeSvc.Image) == "" && composeSvc.Build != nil {
 			composeSvc.Image = project.Name + "-" + svcName
 		}
+		composeSvc.PullPolicy = preparation.effectivePullPolicy[svcName]
 
 		rt, err := ds.ResolveRuntime(ctx, svcName, composeSvc)
 		if err != nil {
@@ -417,12 +440,15 @@ func buildInjectionOverride(
 		runtimeMount.Source = resolvedImage.MountSource
 	}
 
-	overrideYAML, err = compose.BuildOverride(entries, runtimeMount)
+	overrideYAML, err = compose.BuildOverride(entries, runtimeMount, unmanaged.prepared...)
 	if err != nil {
 		return "", nil, fmt.Errorf("build override: %w", err)
 	}
-	if forceRebuild || pullRequested {
-		if err := consumeComposeImageRefreshOptions(inv, forceRebuild, pullRequested); err != nil {
+	consumeBuild := forceRebuild && (inv.Subcommand != "run" || applyManagedCLI)
+	pullMode := strings.ToLower(strings.TrimSpace(pullValue))
+	consumePull := pullRequested && (pullMode == composetypes.PullPolicyAlways || pullMode == composetypes.PullPolicyBuild) && (inv.Subcommand != "run" || applyManagedCLI)
+	if consumeBuild || consumePull {
+		if err := consumeComposeImageRefreshOptions(inv, consumeBuild, consumePull); err != nil {
 			return "", nil, err
 		}
 	}
@@ -513,6 +539,9 @@ func servicesNeedingPrebuild(
 	for svcName := range policySvcs {
 		candidates[svcName] = true
 	}
+	for svcName := range forceServices {
+		candidates[svcName] = true
+	}
 	for svcName := range candidates {
 		composeSvc, ok := project.Services[svcName]
 		if !ok {
@@ -545,15 +574,192 @@ func servicesNeedingPrebuild(
 }
 
 type managedImagePreparation struct {
-	pullAlways  []string
-	pullMissing []string
-	pullOrBuild []managedPullOrBuild
-	forceBuild  map[string]bool
+	pullAlways          []string
+	pullMissing         []string
+	pullOrBuild         []managedPullOrBuild
+	forceBuild          map[string]bool
+	effectivePullPolicy map[string]string
 }
 
 type managedPullOrBuild struct {
 	service string
 	policy  string
+}
+
+type unmanagedImagePreparation struct {
+	pullAlways  []string
+	pullOrBuild []managedPullOrBuild
+	forceBuild  map[string]bool
+	prepared    []string
+}
+
+// planSelectedUnmanagedRefresh preserves native Compose --build/--pull
+// behavior when Vaka must consume a project-wide option to protect managed
+// services. It only prepares unmanaged services selected by up/create; run can
+// keep its option unchanged when its sole target is unmanaged.
+func planSelectedUnmanagedRefresh(
+	project *composetypes.Project,
+	policySvcs map[string]*policy.ServiceConfig,
+	inv *ComposeInvocation,
+	pullValue string,
+	pullRequested, forceBuild, noBuild bool,
+) (unmanagedImagePreparation, error) {
+	plan := unmanagedImagePreparation{forceBuild: map[string]bool{}}
+	pullValue = strings.ToLower(strings.TrimSpace(pullValue))
+	consumePull := pullRequested && (pullValue == composetypes.PullPolicyAlways || pullValue == composetypes.PullPolicyBuild)
+	if (inv.Subcommand != "up" && inv.Subcommand != "create") || (!forceBuild && !consumePull) {
+		return plan, nil
+	}
+	targets, err := scanCreateServiceTargets(inv)
+	if err != nil {
+		return unmanagedImagePreparation{}, err
+	}
+	selected, err := selectComposeServices(project, targets, inv.PostSubcommand)
+	if err != nil {
+		return unmanagedImagePreparation{}, fmt.Errorf("select Compose services for image preparation: %w", err)
+	}
+	prepared := map[string]bool{}
+	for name, svc := range selected.Services {
+		if _, managed := policySvcs[name]; managed {
+			continue
+		}
+		if forceBuild && svc.Build != nil {
+			plan.forceBuild[name] = true
+			prepared[name] = true
+		}
+		switch pullValue {
+		case composetypes.PullPolicyAlways:
+			if strings.TrimSpace(svc.Image) == "" {
+				continue
+			}
+			prepared[name] = true
+			if svc.Build != nil {
+				plan.pullOrBuild = append(plan.pullOrBuild, managedPullOrBuild{service: name, policy: "always"})
+			} else {
+				plan.pullAlways = append(plan.pullAlways, name)
+			}
+		case composetypes.PullPolicyBuild:
+			if svc.Build != nil {
+				plan.forceBuild[name] = true
+				prepared[name] = true
+			}
+		}
+	}
+	if noBuild && len(plan.forceBuild) > 0 {
+		return unmanagedImagePreparation{}, fmt.Errorf("--no-build conflicts with a requested build for selected unmanaged services")
+	}
+	for name := range prepared {
+		plan.prepared = append(plan.prepared, name)
+	}
+	sort.Strings(plan.pullAlways)
+	sort.Slice(plan.pullOrBuild, func(i, j int) bool { return plan.pullOrBuild[i].service < plan.pullOrBuild[j].service })
+	sort.Strings(plan.prepared)
+	return plan, nil
+}
+
+func selectComposeServices(project *composetypes.Project, targets, args []string) (*composetypes.Project, error) {
+	enabled, err := project.WithServicesEnabled(targets...)
+	if err != nil {
+		return nil, err
+	}
+	noDeps, err := composeBoolOptionEnabled(args, "--no-deps", "")
+	if err != nil {
+		return nil, err
+	}
+	if noDeps {
+		return enabled.WithSelectedServices(targets, composetypes.IgnoreDependencies)
+	}
+	return enabled.WithSelectedServices(targets)
+}
+
+var upOptionsWithValue = map[string]bool{
+	"--attach": true, "--exit-code-from": true, "--no-attach": true,
+	"--pull": true, "--scale": true, "--timeout": true, "-t": true,
+	"--wait-timeout": true,
+}
+
+var upBooleanOptions = map[string]bool{
+	"--abort-on-container-exit": true, "--abort-on-container-failure": true,
+	"--always-recreate-deps": true, "--attach-dependencies": true,
+	"--build": true, "-d": true, "--detach": true, "--dry-run": true,
+	"--force-recreate": true, "--menu": true, "--no-build": true,
+	"--no-color": true, "--no-deps": true, "--no-log-prefix": true,
+	"--no-recreate": true, "--no-start": true, "--quiet-build": true,
+	"--quiet-pull": true, "--remove-orphans": true, "-V": true,
+	"--renew-anon-volumes": true, "--timestamps": true, "--wait": true,
+	"-w": true, "--watch": true, "-y": true, "--yes": true,
+}
+
+var createOptionsWithValue = map[string]bool{
+	"--pull": true, "--scale": true,
+}
+
+var createBooleanOptions = map[string]bool{
+	"--build": true, "--dry-run": true, "--force-recreate": true,
+	"--no-build": true, "--no-recreate": true, "--quiet-pull": true,
+	"--remove-orphans": true, "-y": true, "--yes": true,
+}
+
+// scanCreateServiceTargets is deliberately command-local. It identifies only
+// up/create SERVICE operands and fails before preparation when a new option is
+// ambiguous; it is not a replacement Compose parser.
+func scanCreateServiceTargets(inv *ComposeInvocation) ([]string, error) {
+	valueOptions, booleanOptions := upOptionsWithValue, upBooleanOptions
+	shortBooleans := "dVwy"
+	if inv.Subcommand == "create" {
+		valueOptions, booleanOptions = createOptionsWithValue, createBooleanOptions
+		shortBooleans = "y"
+	}
+	var targets []string
+	for i := 0; i < len(inv.PostSubcommand); {
+		tok := inv.PostSubcommand[i]
+		if tok == "--" {
+			targets = append(targets, inv.PostSubcommand[i+1:]...)
+			break
+		}
+		if !strings.HasPrefix(tok, "-") || tok == "-" {
+			targets = append(targets, tok)
+			i++
+			continue
+		}
+		if flag, value, consumed, _, ok := parseValueTakingToken(inv.PostSubcommand, i, valueOptions); ok {
+			if value == "" {
+				return nil, fmt.Errorf("compose %s: %s requires a value", inv.Subcommand, flag)
+			}
+			i += consumed
+			continue
+		}
+		if booleanOptions[tok] {
+			i++
+			continue
+		}
+		if strings.HasPrefix(tok, "--") {
+			name, _, hasValue := strings.Cut(tok, "=")
+			if booleanOptions[name] && hasValue {
+				i++
+				continue
+			}
+		}
+		if len(tok) > 2 && tok[0] == '-' && tok[1] != '-' {
+			if inv.Subcommand == "up" && strings.HasPrefix(tok, "-t") {
+				i++
+				continue
+			}
+			validCluster := true
+			for _, flag := range tok[1:] {
+				if !strings.ContainsRune(shortBooleans, flag) {
+					validCluster = false
+					break
+				}
+			}
+			if validCluster {
+				i++
+				continue
+			}
+		}
+		return nil, fmt.Errorf("compose %s: unknown option %q before image preparation; upgrade Vaka if this is a new Docker Compose option", inv.Subcommand, tok)
+	}
+	return targets, nil
 }
 
 // planManagedImagePreparation applies explicit Compose pull policies only to
@@ -570,9 +776,12 @@ func planManagedImagePreparation(
 	forceBuildAll bool,
 	noBuild bool,
 ) (managedImagePreparation, error) {
-	plan := managedImagePreparation{forceBuild: map[string]bool{}}
+	plan := managedImagePreparation{
+		forceBuild:          map[string]bool{},
+		effectivePullPolicy: map[string]string{},
+	}
 	cliPull = strings.ToLower(strings.TrimSpace(cliPull))
-	if cliPullSet && cliPull != "policy" && cliPull != composetypes.PullPolicyAlways && cliPull != composetypes.PullPolicyMissing && cliPull != composetypes.PullPolicyNever && cliPull != composetypes.PullPolicyBuild {
+	if cliPullSet && cliPull != composetypes.PullPolicyAlways && cliPull != composetypes.PullPolicyMissing && cliPull != composetypes.PullPolicyIfNotPresent && cliPull != composetypes.PullPolicyNever && cliPull != composetypes.PullPolicyBuild {
 		return managedImagePreparation{}, fmt.Errorf("unsupported Compose --pull value %q for Vaka-managed services", cliPull)
 	}
 	names := make([]string, 0, len(policySvcs))
@@ -587,9 +796,10 @@ func planManagedImagePreparation(
 			continue
 		}
 		effective := strings.ToLower(strings.TrimSpace(svc.PullPolicy))
-		if cliPullSet && cliPull != "policy" {
+		if cliPullSet {
 			effective = cliPull
 		}
+		plan.effectivePullPolicy[name] = effective
 		switch {
 		case effective == "":
 			// Preserve Vaka's explicit --vaka-pull policy for services without a
@@ -652,17 +862,20 @@ func imageUsesLatestTag(image string) bool {
 }
 
 func composePullAlwaysRequested(inv *ComposeInvocation) bool {
-	pull, present := composePullOption(inv)
+	pull, present, _ := composePullOption(inv)
 	return present && pull == "always"
 }
 
-func composePullOption(inv *ComposeInvocation) (string, bool) {
+func composePullOption(inv *ComposeInvocation) (string, bool, error) {
 	if inv.Subcommand == "run" {
 		parsed, err := parseRun(inv.PostSubcommand)
 		if err != nil {
-			return "", false
+			return "", false, err
 		}
-		return parsed.pull, parsed.pullSet
+		if err := validateComposePullValue(inv.Subcommand, parsed.pull, parsed.pullSet); err != nil {
+			return "", false, err
+		}
+		return parsed.pull, parsed.pullSet, nil
 	}
 	pull := ""
 	present := false
@@ -676,13 +889,34 @@ func composePullOption(inv *ComposeInvocation) (string, bool) {
 			present = true
 			continue
 		}
-		if tok == "--pull" && i+1 < len(inv.PostSubcommand) {
+		if tok == "--pull" {
+			if i+1 >= len(inv.PostSubcommand) {
+				return "", false, fmt.Errorf("compose %s: --pull requires a value", inv.Subcommand)
+			}
 			pull = inv.PostSubcommand[i+1]
 			present = true
 			i++
 		}
 	}
-	return pull, present
+	if err := validateComposePullValue(inv.Subcommand, pull, present); err != nil {
+		return "", false, err
+	}
+	return pull, present, nil
+}
+
+func validateComposePullValue(subcommand, value string, present bool) error {
+	if !present {
+		return nil
+	}
+	value = strings.ToLower(strings.TrimSpace(value))
+	valid := value == composetypes.PullPolicyAlways || value == composetypes.PullPolicyMissing || value == composetypes.PullPolicyIfNotPresent || value == composetypes.PullPolicyNever
+	if subcommand == "create" {
+		valid = valid || value == composetypes.PullPolicyBuild
+	}
+	if !valid {
+		return fmt.Errorf("compose %s: invalid --pull value %q", subcommand, value)
+	}
+	return nil
 }
 
 func composeBuildRequested(inv *ComposeInvocation) (bool, error) {

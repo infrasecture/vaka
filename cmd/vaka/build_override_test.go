@@ -266,6 +266,122 @@ services:
 	}
 }
 
+func TestRunImageOptionsRemainNativeForUnmanagedTarget(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	writeFixtureFiles(t, dir, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+`, `
+services:
+  app:
+    image: app:latest
+  unmanaged:
+    image: unmanaged:latest
+    build: .
+`)
+
+	var prepCalls int
+	setExecDockerComposeForTest(t, func(*ComposeInvocation, string, []string) error {
+		prepCalls++
+		return nil
+	})
+	inv, _ := ParseComposeInvocation([]string{"run", "--build", "--pull=always", "unmanaged", "id"})
+	original := strings.Join(inv.Args, "\x00")
+	if _, _, err := buildInjectionOverride(context.Background(), &fakeBuilderDockerServices{}, "vaka.yaml", inv, false); err != nil {
+		t.Fatal(err)
+	}
+	if prepCalls != 0 {
+		t.Fatalf("preparation calls = %d, want native Compose handling", prepCalls)
+	}
+	if got := strings.Join(inv.Args, "\x00"); got != original {
+		t.Fatalf("unmanaged run args changed: %v", inv.Args)
+	}
+}
+
+func TestUpBuildPreparesOnlySelectedUnmanagedServices(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	writeFixtureFiles(t, dir, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+`, `
+services:
+  app:
+    image: app:latest
+  selected:
+    image: selected:latest
+    build: .
+  unrelated:
+    image: unrelated:latest
+    build: .
+`)
+
+	var buildArgs []string
+	setExecDockerComposeForTest(t, func(inv *ComposeInvocation, override string, _ []string) error {
+		if override == "" && len(inv.Args) > 0 && inv.Args[0] == "build" {
+			buildArgs = append([]string{}, inv.Args...)
+		}
+		return nil
+	})
+	inv, _ := ParseComposeInvocation([]string{"up", "--build", "--no-deps", "selected"})
+	override, _, err := buildInjectionOverride(context.Background(), &fakeBuilderDockerServices{}, "vaka.yaml", inv, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(buildArgs, " ")
+	if !strings.Contains(joined, "selected") || strings.Contains(joined, "unrelated") {
+		t.Fatalf("build args = %v", buildArgs)
+	}
+	if strings.Contains(strings.Join(inv.Args, " "), "--build") {
+		t.Fatalf("consumed build flag remains: %v", inv.Args)
+	}
+	if !strings.Contains(override, "selected:") || !strings.Contains(override, "pull_policy: never") {
+		t.Fatalf("override does not freeze prepared unmanaged service:\n%s", override)
+	}
+	if strings.Contains(override, "unrelated:") {
+		t.Fatalf("override includes unrelated unmanaged service:\n%s", override)
+	}
+}
+
+func TestUpMissingPullRemainsForUnmanagedComposeBehavior(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	writeFixtureFiles(t, dir, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+`, `
+services:
+  app:
+    image: app:latest
+  unmanaged:
+    image: unmanaged:latest
+`)
+	setExecDockerComposeForTest(t, func(*ComposeInvocation, string, []string) error { return nil })
+	inv, _ := ParseComposeInvocation([]string{"up", "--pull=missing", "unmanaged"})
+	if _, _, err := buildInjectionOverride(context.Background(), &fakeBuilderDockerServices{}, "vaka.yaml", inv, false); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(inv.Args, " "), "--pull=missing") {
+		t.Fatalf("safe pull policy was stripped: %v", inv.Args)
+	}
+}
+
 func TestBuildInjectionOverridePrePullsManagedPolicyOnly(t *testing.T) {
 	dir := t.TempDir()
 	chdirForTest(t, dir)

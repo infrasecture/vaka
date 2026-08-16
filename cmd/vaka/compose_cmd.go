@@ -134,11 +134,17 @@ func unsupportedComposeDryRunError() error {
 func validateConsumedComposeBooleans(inv *ComposeInvocation, spec composeCommandSpec) error {
 	if spec.class == verbRender {
 		if inv.Subcommand == "run" {
-			_, err := parseRun(inv.PostSubcommand)
-			return err
+			if _, err := parseRun(inv.PostSubcommand); err != nil {
+				return err
+			}
 		}
 		for _, option := range []string{"--build", "--no-build"} {
 			if _, err := composeBoolOptionEnabled(inv.PostSubcommand, option, ""); err != nil {
+				return err
+			}
+		}
+		if inv.Subcommand == "up" || inv.Subcommand == "create" || inv.Subcommand == "run" {
+			if _, _, err := composePullOption(inv); err != nil {
 				return err
 			}
 		}

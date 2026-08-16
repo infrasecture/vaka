@@ -422,7 +422,10 @@ func (d *dockerServices) ResolveRuntime(ctx context.Context, svcName string, svc
 	// refs). Present images are never re-pulled. The vaka-init helper is never
 	// routed here.
 	inspect, err := d.c.ImageInspect(ctx, svc.Image)
-	if errdefs.IsNotFound(err) && d.pullPolicy.pullsMissing(svc.Image) {
+	// An explicit Compose pull_policy is authoritative. buildInjectionOverride
+	// applies it before inspection; --vaka-pull is only the fallback for a
+	// service that did not declare a Compose policy.
+	if errdefs.IsNotFound(err) && strings.TrimSpace(svc.PullPolicy) == "" && d.pullPolicy.pullsMissing(svc.Image) {
 		if perr := d.pullImage(ctx, svc.Image); perr != nil {
 			return ResolvedRuntime{}, fmt.Errorf("service %s: pull %q on %s: %w", svcName, svc.Image, d.targetDesc, perr)
 		}
@@ -430,9 +433,13 @@ func (d *dockerServices) ResolveRuntime(ctx context.Context, svcName string, svc
 	}
 	if err != nil {
 		if errdefs.IsNotFound(err) {
+			hint := "pull it first (or run with --vaka-pull=missing)"
+			if policy := strings.TrimSpace(svc.PullPolicy); policy != "" {
+				hint = fmt.Sprintf("its effective Compose pull policy %q did not make it available; change that policy or prepare the image explicitly", policy)
+			}
 			return ResolvedRuntime{}, fmt.Errorf(
-				"service %s: image %q not available locally on %s — pull it first (or run with --vaka-pull=missing), or set compose user/entrypoint so image defaults are not needed",
-				svcName, svc.Image, d.targetDesc,
+				"service %s: image %q not available locally on %s — %s, or set compose user/entrypoint so image defaults are not needed",
+				svcName, svc.Image, d.targetDesc, hint,
 			)
 		}
 		return ResolvedRuntime{}, fmt.Errorf("service %s: inspect %q on %s: %w", svcName, svc.Image, d.targetDesc, err)

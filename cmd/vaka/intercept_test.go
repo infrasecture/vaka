@@ -4,6 +4,8 @@ package main
 import (
 	"context"
 	"os"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -324,6 +326,68 @@ func TestPlanManagedImagePreparationRejectsUnsupportedOrConflictingPolicy(t *tes
 				t.Fatalf("error = %v, want %q", err, tc.wantError)
 			}
 		})
+	}
+}
+
+func TestPlanManagedImagePreparationCarriesEffectivePullPolicy(t *testing.T) {
+	policySvcs := map[string]*policy.ServiceConfig{"app": {}}
+	project := &composetypes.Project{Services: map[string]composetypes.ServiceConfig{
+		"app": {Image: "app:latest", PullPolicy: composetypes.PullPolicyNever},
+	}}
+	plan, err := planManagedImagePreparation(context.Background(), &fakeDS{}, policySvcs, project, "", false, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := plan.effectivePullPolicy["app"]; got != composetypes.PullPolicyNever {
+		t.Fatalf("effective pull policy = %q, want never", got)
+	}
+
+	plan, err = planManagedImagePreparation(context.Background(), &fakeDS{}, policySvcs, project, composetypes.PullPolicyMissing, true, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := plan.effectivePullPolicy["app"]; got != composetypes.PullPolicyMissing {
+		t.Fatalf("CLI effective pull policy = %q, want missing", got)
+	}
+}
+
+func TestScanCreateServiceTargetsAndDependencySelection(t *testing.T) {
+	project := &composetypes.Project{Services: map[string]composetypes.ServiceConfig{
+		"app": {Name: "app", DependsOn: map[string]composetypes.ServiceDependency{"db": {Condition: "service_started"}}},
+		"db":  {Name: "db"},
+		"old": {Name: "old"},
+	}}
+	tests := []struct {
+		args []string
+		want []string
+	}{
+		{args: []string{"up", "--build", "--pull=always", "app"}, want: []string{"app", "db"}},
+		{args: []string{"up", "--no-deps=false", "--no-deps", "app", "--build"}, want: []string{"app"}},
+		{args: []string{"create", "--scale", "app=2", "app"}, want: []string{"app", "db"}},
+	}
+	for _, tc := range tests {
+		inv, _ := ParseComposeInvocation(tc.args)
+		targets, err := scanCreateServiceTargets(inv)
+		if err != nil {
+			t.Fatalf("scan %v: %v", tc.args, err)
+		}
+		selected, err := selectComposeServices(project, targets, inv.PostSubcommand)
+		if err != nil {
+			t.Fatalf("select %v: %v", tc.args, err)
+		}
+		var got []string
+		for name := range selected.Services {
+			got = append(got, name)
+		}
+		sort.Strings(got)
+		if !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("selected %v = %v, want %v", tc.args, got, tc.want)
+		}
+	}
+
+	inv, _ := ParseComposeInvocation([]string{"create", "--build", "--wait", "app"})
+	if _, err := scanCreateServiceTargets(inv); err == nil || !strings.Contains(err.Error(), "unknown option") {
+		t.Fatalf("unknown create option error = %v", err)
 	}
 }
 

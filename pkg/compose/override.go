@@ -87,7 +87,7 @@ type healthcheckOverride struct {
 // prefix; its mutable lookup tag is never included in the generated Compose
 // model. Metadata and labels retain the complete ID for auditing and
 // container-state comparisons.
-func BuildOverride(entries []ServiceEntry, runtime RuntimeMount) (string, error) {
+func BuildOverride(entries []ServiceEntry, runtime RuntimeMount, preparedUnmanaged ...string) (string, error) {
 	if strings.TrimSpace(runtime.Version) == "" {
 		return "", fmt.Errorf("build compose override: runtime version is required")
 	}
@@ -105,6 +105,12 @@ func BuildOverride(entries []ServiceEntry, runtime RuntimeMount) (string, error)
 			RuntimeImage:   runtime.ImageID,
 		},
 		Services: make(map[string]serviceOverride),
+	}
+	for _, name := range preparedUnmanaged {
+		if strings.TrimSpace(name) == "" {
+			return "", fmt.Errorf("build compose override: prepared service name is empty")
+		}
+		override.Services[name] = serviceOverride{PullPolicy: "never"}
 	}
 
 	for _, e := range entries {

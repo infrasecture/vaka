@@ -585,6 +585,32 @@ func TestResolveRuntimeImageNotFound(t *testing.T) {
 	}
 }
 
+func TestResolveRuntimeExplicitNeverDoesNotUseVakaPullFallback(t *testing.T) {
+	dc := &fakeDockerClient{notFound: true}
+	ds := &dockerServices{c: dc, targetDesc: "test-context", pullPolicy: PullMissing}
+	_, err := ds.ResolveRuntime(context.Background(), "myapp", composetypes.ServiceConfig{
+		Image:      "myapp:latest",
+		PullPolicy: composetypes.PullPolicyNever,
+	})
+	if err == nil || !strings.Contains(err.Error(), `effective Compose pull policy "never"`) {
+		t.Fatalf("error = %v, want explicit policy explanation", err)
+	}
+	if dc.pullCalled {
+		t.Fatal("explicit pull_policy: never was overridden by --vaka-pull")
+	}
+}
+
+func TestResolveRuntimeUsesVakaPullFallbackWithoutComposePolicy(t *testing.T) {
+	dc := &fakeDockerClient{notFound: true, inspectResult: imageConfig([]string{"/app"}, nil, "1000")}
+	ds := &dockerServices{c: dc, targetDesc: "test-context", pullPolicy: PullMissing}
+	if _, err := ds.ResolveRuntime(context.Background(), "myapp", composetypes.ServiceConfig{Image: "myapp:latest"}); err != nil {
+		t.Fatalf("ResolveRuntime: %v", err)
+	}
+	if !dc.pullCalled {
+		t.Fatal("missing image did not use --vaka-pull fallback")
+	}
+}
+
 func TestResolveRuntimeNoImageNeedsFallback(t *testing.T) {
 	dc := &fakeDockerClient{}
 	ds := &dockerServices{c: dc, targetDesc: "test-context"}
