@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	composetypes "github.com/compose-spec/compose-go/v2/types"
@@ -96,6 +97,8 @@ func loadAndValidateResolved(vakaFile string, input *composeResolution) (*policy
 
 	errs := policy.ValidateHost(p, networkModes)
 
+	warnDegradedEnforcement(p, project)
+
 	// Warn on defaultAction: accept.
 	for name, svc := range p.Services {
 		if svc.Network != nil && svc.Network.Egress != nil &&
@@ -113,4 +116,68 @@ func loadAndValidateResolved(vakaFile string, input *composeResolution) (*policy
 	}
 
 	return p, project, nil
+}
+
+func warnDegradedEnforcement(p *policy.ServicePolicy, project *composetypes.Project) {
+	if p == nil || project == nil {
+		return
+	}
+
+	names := make([]string, 0, len(p.Services))
+	for name := range p.Services {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		composeSvc, ok := project.Services[name]
+		if !ok {
+			continue
+		}
+		reasons := degradedEnforcementReasons(composeSvc, p.Services[name].Runtime)
+		if len(reasons) == 0 {
+			continue
+		}
+		fmt.Fprintf(os.Stderr, "Vaka warning: service %s %s. Egress enforcement is best-effort for this service.\n",
+			name, strings.Join(reasons, "; "))
+	}
+}
+
+func degradedEnforcementReasons(svc composetypes.ServiceConfig, runtime *policy.RuntimeConfig) []string {
+	var reasons []string
+	if svc.Privileged {
+		reasons = append(reasons, "is privileged and can bypass Vaka's runtime and egress policy")
+	}
+	if explicitlyAddsCapability(svc, "SYS_ADMIN") && !runtimeDropsCapability(runtime, "SYS_ADMIN") {
+		reasons = append(reasons, "retains SYS_ADMIN and can replace Vaka's runtime")
+	}
+	if explicitlyAddsCapability(svc, "NET_ADMIN") && !runtimeDropsCapability(runtime, "NET_ADMIN") {
+		reasons = append(reasons, "retains NET_ADMIN and can modify Vaka's nftables policy")
+	}
+	return reasons
+}
+
+func explicitlyAddsCapability(svc composetypes.ServiceConfig, name string) bool {
+	want := normalizeCapabilityName(name)
+	for _, added := range svc.CapAdd {
+		capability := normalizeCapabilityName(added)
+		if capability == "ALL" || capability == want {
+			return true
+		}
+	}
+	return false
+}
+
+func runtimeDropsCapability(runtime *policy.RuntimeConfig, name string) bool {
+	if runtime == nil {
+		return false
+	}
+	want := normalizeCapabilityName(name)
+	for _, dropped := range runtime.DropCaps {
+		capability := normalizeCapabilityName(dropped)
+		if capability == "ALL" || capability == want {
+			return true
+		}
+	}
+	return false
 }
