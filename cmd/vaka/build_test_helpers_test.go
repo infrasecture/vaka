@@ -29,6 +29,7 @@ func (f *fakeBuilderDockerServices) InspectExecTarget(_ context.Context, _ strin
 		return target, nil
 	}
 	return execTarget{
+		ContainerID:    "container-id",
 		Managed:        true,
 		RuntimeVersion: runtimeBundleVersion,
 		RuntimeImage:   "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -49,9 +50,13 @@ func (f *fakeBuilderDockerServices) ImageExists(_ context.Context, ref string) (
 
 func (f *fakeBuilderDockerServices) ResolveRuntime(_ context.Context, svcName string, svc composetypes.ServiceConfig) (ResolvedRuntime, error) {
 	if rt, ok := f.runtimes[svcName]; ok {
+		if rt.ImageID == "" {
+			rt.ImageID = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+		}
 		return rt, nil
 	}
 	return ResolvedRuntime{
+		ImageID:    "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 		Entrypoint: svc.Entrypoint,
 		Command:    svc.Command,
 	}, nil

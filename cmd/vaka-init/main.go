@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"runtime"
 	"sort"
 	"strings"
 	"syscall"
@@ -25,7 +26,6 @@ import (
 
 var runtimeVersion = runtimebundle.Version()
 
-const secretPath = "/run/secrets/vaka.yaml"
 const nftBin = "/opt/vaka/sbin/nft"
 const passwdPath = "/etc/passwd"
 const groupPath = "/etc/group"
@@ -49,13 +49,24 @@ func main() {
 	if mode == modeNoop {
 		return
 	}
+	// Linux capabilities and credentials are per-thread. Keep every security
+	// transition and the final execve on one OS thread so the Go scheduler
+	// cannot move verification to a thread with the container's stored sets.
+	runtime.LockOSThread()
 
-	// Step 1: Read and parse per-service policy from Docker secret.
-	// The secret file contains the base64-encoded policy YAML written by
-	// docker compose from the VAKA_<SERVICE>_CONF environment variable.
-	p, err := readPolicy(secretPath)
+	// Step 1: Read the injected policy from the immutable container
+	// configuration inherited by startup, healthchecks, and exec processes.
+	p, err := readPolicyValue(os.Getenv(runtimebundle.PolicyEnvironment))
 	if err != nil {
 		fatal("%v", err)
+	}
+	expectedRevision := strings.TrimSpace(os.Getenv(runtimebundle.PolicyRevisionEnvironment))
+	actualRevision, err := policy.Revision(p)
+	if err != nil {
+		fatal("compute injected policy revision: %v", err)
+	}
+	if expectedRevision == "" || actualRevision != expectedRevision {
+		fatal("injected policy revision mismatch: expected %q, got %q", expectedRevision, actualRevision)
 	}
 	if errs := policy.ValidateInjected(p); len(errs) > 0 {
 		msgs := make([]string, 0, len(errs))
@@ -263,6 +274,21 @@ func readPolicy(path string) (*policy.ServicePolicy, error) {
 	decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(raw)))
 	if err != nil {
 		return nil, fmt.Errorf("base64-decode %s: %w", path, err)
+	}
+	p, err := policy.Parse(bytes.NewReader(decoded))
+	if err != nil {
+		return nil, fmt.Errorf("parse policy: %w", err)
+	}
+	return p, nil
+}
+
+func readPolicyValue(encoded string) (*policy.ServicePolicy, error) {
+	if strings.TrimSpace(encoded) == "" {
+		return nil, fmt.Errorf("%s is missing from the container configuration", runtimebundle.PolicyEnvironment)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(encoded))
+	if err != nil {
+		return nil, fmt.Errorf("base64-decode %s: %w", runtimebundle.PolicyEnvironment, err)
 	}
 	p, err := policy.Parse(bytes.NewReader(decoded))
 	if err != nil {

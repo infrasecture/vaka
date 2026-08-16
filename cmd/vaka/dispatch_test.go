@@ -30,6 +30,12 @@ func runRootCapturingExec(t *testing.T, argv []string) ([]composeExecCall, error
 		})
 		return nil
 	})
+	oldContainerExec := execDockerContainerFn
+	execDockerContainerFn = func(args []string) error {
+		calls = append(calls, composeExecCall{args: append([]string{"docker"}, args...)})
+		return nil
+	}
+	t.Cleanup(func() { execDockerContainerFn = oldContainerExec })
 	setDockerServicesFactoryForTest(t, &fakeBuilderDockerServices{})
 
 	root := newRootCmd(&RootInvocation{VakaFile: "vaka.yaml", Rest: argv})

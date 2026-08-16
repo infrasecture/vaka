@@ -22,6 +22,8 @@ func TestValidateRunInvocationRejectsSecurityOverrides(t *testing.T) {
 		{name: "user", args: []string{"run", "-u1000", "app"}, want: "--user is incompatible"},
 		{name: "cap drop", args: []string{"run", "--cap-drop", "SETPCAP", "app"}, want: "--cap-add/--cap-drop"},
 		{name: "cap add", args: []string{"run", "--cap-add=NET_ADMIN", "app"}, want: "--cap-add/--cap-drop"},
+		{name: "policy environment", args: []string{"run", "-e", "AGENT_VAKA_POLICY=bad", "app"}, want: "reserved Vaka environment"},
+		{name: "environment file", args: []string{"run", "--env-from-file", "override.env", "app"}, want: "--env-from-file"},
 		{name: "runtime child mount", args: []string{"run", "-v", "scratch:/opt/vaka/sbin", "app"}, want: "protected runtime"},
 		{name: "runtime ancestor mount", args: []string{"run", "--volume=scratch:/opt", "app"}, want: "protected runtime"},
 		{name: "root mount", args: []string{"run", "-v", "scratch:/", "app"}, want: "protected runtime"},
@@ -73,6 +75,14 @@ func TestValidateManagedExecutionSurfaces(t *testing.T) {
 		{name: "sync", svc: composetypes.ServiceConfig{Develop: &composetypes.DevelopConfig{Watch: []composetypes.Trigger{{Action: composetypes.WatchActionSync}}}}, want: "action sync"},
 		{name: "sync restart", svc: composetypes.ServiceConfig{Develop: &composetypes.DevelopConfig{Watch: []composetypes.Trigger{{Action: composetypes.WatchActionSyncRestart}}}}, want: "action sync+restart"},
 		{name: "sync exec", svc: composetypes.ServiceConfig{Develop: &composetypes.DevelopConfig{Watch: []composetypes.Trigger{{Action: composetypes.WatchActionSyncExec}}}}, want: "action sync+exec"},
+		{name: "rebuild", svc: composetypes.ServiceConfig{Develop: &composetypes.DevelopConfig{Watch: []composetypes.Trigger{{Action: composetypes.WatchActionRebuild}}}}, want: "action rebuild"},
+		{name: "nested volume", svc: composetypes.ServiceConfig{Volumes: []composetypes.ServiceVolumeConfig{{Target: "/opt/vaka/sbin"}}}, want: "volume target"},
+		{name: "ancestor volume", svc: composetypes.ServiceConfig{Volumes: []composetypes.ServiceVolumeConfig{{Target: "/opt"}}}, want: "volume target"},
+		{name: "config", svc: composetypes.ServiceConfig{Configs: []composetypes.ServiceConfigObjConfig{{Source: "cfg", Target: "/opt/vaka/config"}}}, want: "config target"},
+		{name: "secret", svc: composetypes.ServiceConfig{Secrets: []composetypes.ServiceSecretConfig{{Source: "replacement", Target: "/run/secrets/vaka.yaml"}}}, want: "secret target"},
+		{name: "tmpfs", svc: composetypes.ServiceConfig{Tmpfs: []string{"/opt/vaka/sbin:rw"}}, want: "tmpfs target"},
+		{name: "volumes from", svc: composetypes.ServiceConfig{VolumesFrom: []string{"sidecar:rw"}}, want: "volumes_from"},
+		{name: "device", svc: composetypes.ServiceConfig{Devices: []composetypes.DeviceMapping{{Source: "/dev/null", Target: "/opt/vaka/sbin/vaka-init"}}}, want: "device target"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -82,6 +92,15 @@ func TestValidateManagedExecutionSurfaces(t *testing.T) {
 				t.Fatalf("error = %v, want %q", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestValidateManagedExecutionSurfacesAllowsUnrelatedSecrets(t *testing.T) {
+	project := &composetypes.Project{Services: map[string]composetypes.ServiceConfig{
+		"app": {Secrets: []composetypes.ServiceSecretConfig{{Source: "api-key"}}},
+	}}
+	if err := validateManagedExecutionSurfaces(managedTestPolicy(), project); err != nil {
+		t.Fatalf("unrelated secret rejected: %v", err)
 	}
 }
 
@@ -153,5 +172,36 @@ services:
 				t.Fatalf("old runtime error = %v", err)
 			}
 		})
+	}
+}
+
+func TestReferenceRequiresExecutionValidationForRmStop(t *testing.T) {
+	tests := []struct {
+		args []string
+		want bool
+	}{
+		{args: []string{"rm", "-s"}, want: true},
+		{args: []string{"rm", "--stop"}, want: true},
+		{args: []string{"rm", "--stop=true"}, want: true},
+		{args: []string{"rm", "--stop=false"}, want: false},
+		{args: []string{"rm"}, want: false},
+	}
+	for _, tc := range tests {
+		inv, err := ParseComposeInvocation(tc.args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := referenceRequiresExecutionValidation(inv); got != tc.want {
+			t.Errorf("referenceRequiresExecutionValidation(%v) = %t, want %t", tc.args, got, tc.want)
+		}
+	}
+}
+
+func TestComposeBoolOptionFalseIsDisabled(t *testing.T) {
+	if composeBoolOptionEnabled([]string{"--no-recreate=false"}, "--no-recreate", "") {
+		t.Fatal("--no-recreate=false treated as enabled")
+	}
+	if composeBoolOptionEnabled([]string{"--no-up=false"}, "--no-up", "") {
+		t.Fatal("--no-up=false treated as enabled")
 	}
 }

@@ -16,12 +16,20 @@ const testLegacyVolume = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 
 type fakeLegacyRuntimeClient struct {
 	listFn         func(containertypes.ListOptions) ([]containertypes.Summary, error)
+	inspectFn      func(string) (containertypes.InspectResponse, error)
 	removedHelpers []string
 	removedVolumes []string
 	containerErr   error
 	volumeErr      error
 	forceValues    []bool
 	volumeLabels   map[string]string
+}
+
+func (f *fakeLegacyRuntimeClient) ContainerInspect(_ context.Context, id string) (containertypes.InspectResponse, error) {
+	if f.inspectFn == nil {
+		return containertypes.InspectResponse{}, errors.New("unexpected ContainerInspect")
+	}
+	return f.inspectFn(id)
 }
 
 func (f *fakeLegacyRuntimeClient) ContainerList(_ context.Context, options containertypes.ListOptions) ([]containertypes.Summary, error) {

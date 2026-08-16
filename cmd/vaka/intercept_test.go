@@ -209,6 +209,23 @@ func TestServicesNeedingPrebuildForceRebuild(t *testing.T) {
 	}
 }
 
+func TestComposeImageRefreshOptionsStopAtRunService(t *testing.T) {
+	inv, err := ParseComposeInvocation([]string{"run", "app", "sh", "--pull=always", "--build"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if composePullAlwaysRequested(inv) || composeBuildRequested(inv) {
+		t.Fatal("run command payload was interpreted as Compose image options")
+	}
+	original := append([]string{}, inv.Args...)
+	if err := consumeComposeImageRefreshOptions(inv, true, true); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(inv.Args, "\x00") != strings.Join(original, "\x00") {
+		t.Fatalf("run payload changed: got %v want %v", inv.Args, original)
+	}
+}
+
 func TestParseComposeInvocationComposeGlobals(t *testing.T) {
 	tests := []struct {
 		name string

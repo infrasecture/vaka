@@ -14,6 +14,10 @@ const (
 	ImageTagPrefix = "runtime-"
 	// VersionLabel is stamped on the runtime image and verified after pull.
 	VersionLabel = "agent.vaka.runtime.version"
+	// PolicyEnvironment and PolicyRevisionEnvironment are stored in the
+	// immutable container configuration and inherited by every Vaka trampoline.
+	PolicyEnvironment         = "AGENT_VAKA_POLICY"
+	PolicyRevisionEnvironment = "AGENT_VAKA_POLICY_REVISION"
 )
 
 //go:embed VERSION

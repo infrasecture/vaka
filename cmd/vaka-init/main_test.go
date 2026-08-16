@@ -78,6 +78,20 @@ func TestReadPolicy_roundtrip(t *testing.T) {
 	}
 }
 
+func TestReadPolicyValueRoundtrip(t *testing.T) {
+	p := &policy.ServicePolicy{APIVersion: "agent.vaka/v1alpha1", Kind: "ServicePolicy", Services: map[string]*policy.ServiceConfig{"svc": {}}}
+	got, err := readPolicyValue(encodePolicy(t, p))
+	if err != nil {
+		t.Fatalf("readPolicyValue: %v", err)
+	}
+	if got.Kind != p.Kind || got.Services["svc"] == nil {
+		t.Fatalf("decoded policy = %+v", got)
+	}
+	if _, err := readPolicyValue(""); err == nil || !strings.Contains(err.Error(), "AGENT_VAKA_POLICY") {
+		t.Fatalf("missing policy environment error = %v", err)
+	}
+}
+
 func TestReadPolicy_trailingNewline(t *testing.T) {
 	// Docker compose appends a newline when writing env-var secrets.
 	// TrimSpace must strip it before base64 decoding.

@@ -3,12 +3,17 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/exec"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
 
 	containertypes "github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
+	"github.com/docker/docker/api/types/mount"
+	"vaka.dev/vaka/internal/runtimebundle"
 	"vaka.dev/vaka/pkg/compose"
 )
 
@@ -20,10 +25,17 @@ const (
 )
 
 type execTarget struct {
-	Managed        bool
-	RuntimeVersion string
-	RuntimeImage   string
-	RuntimeMounted bool
+	ContainerID     string
+	Managed         bool
+	LegacyManaged   bool
+	RuntimeVersion  string
+	RuntimeImage    string
+	RuntimeMounted  bool
+	ValidationError string
+}
+
+type containerInspectClient interface {
+	ContainerInspect(context.Context, string) (containertypes.InspectResponse, error)
 }
 
 type execTargetInspector interface {
@@ -68,12 +80,7 @@ func (d *dockerServices) InspectExecTarget(ctx context.Context, project, service
 		if index > 0 && containerNumber(ctr) != index {
 			continue
 		}
-		return execTarget{
-			Managed:        ctr.Labels[compose.ManagedLabel] == "true",
-			RuntimeVersion: strings.TrimSpace(ctr.Labels[compose.RuntimeVersionLabel]),
-			RuntimeImage:   strings.TrimSpace(ctr.Labels[compose.RuntimeImageLabel]),
-			RuntimeMounted: verifiedRuntimeMount(ctr),
-		}, nil
+		return d.inspectExecContainer(ctx, ctr)
 	}
 	if index > 0 {
 		return execTarget{}, fmt.Errorf("service %s has no running container at index %d in Compose project %s", service, index, project)
@@ -81,13 +88,115 @@ func (d *dockerServices) InspectExecTarget(ctx context.Context, project, service
 	return execTarget{}, fmt.Errorf("service %s has no running container in Compose project %s", service, project)
 }
 
-func verifiedRuntimeMount(ctr containertypes.Summary) bool {
-	for _, mounted := range ctr.Mounts {
-		if string(mounted.Type) == "image" && mounted.Destination == "/opt/vaka" && !mounted.RW {
-			return true
+func (d *dockerServices) inspectExecContainer(ctx context.Context, summary containertypes.Summary) (execTarget, error) {
+	inspector, ok := d.legacy.(containerInspectClient)
+	if !ok {
+		return execTarget{}, fmt.Errorf("inspect container %s: Docker client does not provide full container metadata", summary.ID)
+	}
+	inspect, err := inspector.ContainerInspect(ctx, summary.ID)
+	if err != nil {
+		return execTarget{}, fmt.Errorf("inspect selected container %s on %s: %w", summary.ID, d.targetDesc, err)
+	}
+	if inspect.ID != summary.ID {
+		return execTarget{}, fmt.Errorf("inspect selected container %s returned different identity %s", summary.ID, inspect.ID)
+	}
+	labels := summary.Labels
+	if inspect.Config != nil {
+		labels = inspect.Config.Labels
+	}
+	target := execTarget{
+		ContainerID:    inspect.ID,
+		Managed:        labels[compose.ManagedLabel] == "true",
+		RuntimeVersion: strings.TrimSpace(labels[compose.RuntimeVersionLabel]),
+		RuntimeImage:   strings.TrimSpace(labels[compose.RuntimeImageLabel]),
+	}
+	if !target.Managed {
+		target.LegacyManaged = legacyManagedSignature(inspect)
+		return target, nil
+	}
+	serviceImage := strings.TrimSpace(labels[compose.ServiceImageLabel])
+	if err := d.verifyManagedContainerMounts(ctx, inspect, target.RuntimeImage, serviceImage); err != nil {
+		target.ValidationError = err.Error()
+		return target, nil
+	}
+	target.RuntimeMounted = true
+	return target, nil
+}
+
+func legacyManagedSignature(inspect containertypes.InspectResponse) bool {
+	if inspect.Config == nil || len(inspect.Config.Entrypoint) == 0 || inspect.Config.Entrypoint[0] != vakaInitPath {
+		return false
+	}
+	user := strings.TrimSpace(inspect.Config.User)
+	if user != "0" && user != "0:0" && !strings.EqualFold(user, "root") && !strings.EqualFold(user, "root:root") {
+		return false
+	}
+	hasRuntime := false
+	for _, mounted := range inspect.Mounts {
+		destination := path.Clean(mounted.Destination)
+		hasRuntime = hasRuntime || destination == protectedRuntimePath
+	}
+	return hasRuntime
+}
+
+func (d *dockerServices) verifyManagedContainerMounts(ctx context.Context, inspect containertypes.InspectResponse, runtimeImage, serviceImage string) error {
+	if !validDockerImageID(runtimeImage) {
+		return fmt.Errorf("invalid or missing runtime image identity %q", runtimeImage)
+	}
+	if !validDockerImageID(serviceImage) || inspect.Image != serviceImage {
+		return fmt.Errorf("container service image %q does not match inspected image label %q", inspect.Image, serviceImage)
+	}
+
+	runtimeMounts := 0
+	for _, mounted := range inspect.Mounts {
+		destination := mounted.Destination
+		if pathsOverlap(destination, protectedRuntimePath) {
+			if path.Clean(destination) != protectedRuntimePath || mounted.Type != mount.TypeImage || mounted.RW {
+				return fmt.Errorf("mount %s (%s, rw=%t) overlaps protected runtime %s", destination, mounted.Type, mounted.RW, protectedRuntimePath)
+			}
+			runtimeMounts++
+		}
+		if pathsOverlap(destination, protectedPolicyPath) {
+			return fmt.Errorf("unexpected mount %s (%s, rw=%t) overlaps reserved policy path %s", destination, mounted.Type, mounted.RW, protectedPolicyPath)
 		}
 	}
-	return false
+	if runtimeMounts != 1 {
+		return fmt.Errorf("expected exactly one read-only image mount at %s, found %d", protectedRuntimePath, runtimeMounts)
+	}
+	if inspect.HostConfig == nil {
+		return fmt.Errorf("container has no HostConfig mount metadata")
+	}
+	hostRuntimeMounts := 0
+	for _, configured := range inspect.HostConfig.Mounts {
+		if !pathsOverlap(configured.Target, protectedRuntimePath) {
+			continue
+		}
+		if path.Clean(configured.Target) != protectedRuntimePath || configured.Type != mount.TypeImage || !configured.ReadOnly {
+			return fmt.Errorf("configured mount %s (%s, readOnly=%t) overlaps protected runtime", configured.Target, configured.Type, configured.ReadOnly)
+		}
+		if configured.ImageOptions == nil || path.Clean("/"+configured.ImageOptions.Subpath) != protectedRuntimePath {
+			return fmt.Errorf("runtime image mount has unexpected subpath %q", imageMountSubpath(configured))
+		}
+		resolved, err := d.c.ImageInspect(ctx, configured.Source)
+		if err != nil {
+			return fmt.Errorf("resolve runtime mount source %q: %w", configured.Source, err)
+		}
+		if resolved.ID != runtimeImage {
+			return fmt.Errorf("runtime mount source %q resolves to %q, expected %q", configured.Source, resolved.ID, runtimeImage)
+		}
+		hostRuntimeMounts++
+	}
+	if hostRuntimeMounts != 1 {
+		return fmt.Errorf("expected exactly one configured runtime image mount, found %d", hostRuntimeMounts)
+	}
+	return nil
+}
+
+func imageMountSubpath(configured mount.Mount) string {
+	if configured.ImageOptions == nil {
+		return ""
+	}
+	return configured.ImageOptions.Subpath
 }
 
 type projectExecutionInspector interface {
@@ -113,19 +222,21 @@ func (d *dockerServices) InspectManagedProject(ctx context.Context, project stri
 		// Compose lifecycle verbs operate on regular service containers, not
 		// one-offs left by `compose run`; stale one-offs must not block start or
 		// restart of the declared service.
-		if ctr.Labels[compose.ManagedLabel] != "true" || isComposeOneoff(ctr) {
+		if isComposeOneoff(ctr) {
 			continue
 		}
 		service := ctr.Labels[composeServiceLabel]
 		if service == "" {
 			continue
 		}
-		targets[service] = append(targets[service], execTarget{
-			Managed:        true,
-			RuntimeVersion: strings.TrimSpace(ctr.Labels[compose.RuntimeVersionLabel]),
-			RuntimeImage:   strings.TrimSpace(ctr.Labels[compose.RuntimeImageLabel]),
-			RuntimeMounted: verifiedRuntimeMount(ctr),
-		})
+		target, err := d.inspectExecContainer(ctx, ctr)
+		if err != nil {
+			return nil, err
+		}
+		if !target.Managed && !target.LegacyManaged {
+			continue
+		}
+		targets[service] = append(targets[service], target)
 	}
 	return targets, nil
 }
@@ -149,6 +260,17 @@ type parsedExec struct {
 	prefix     []string
 	user       string
 	privileged bool
+	detach     bool
+	noTTY      bool
+	dryRun     bool
+}
+
+var execDockerContainerFn = func(args []string) error {
+	cmd := exec.Command("docker", args...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
 var execOptionsWithValue = map[string]bool{
@@ -196,16 +318,6 @@ func parseExec(args []string) (parsedExec, error) {
 			i++
 			continue
 		}
-		if strings.HasPrefix(tok, "-u") && !strings.HasPrefix(tok, "--") && len(tok) > 2 {
-			parsed.user = tok[2:]
-			i++
-			continue
-		}
-		if len(tok) > 2 && !strings.HasPrefix(tok, "--") && (strings.HasPrefix(tok, "-e") || strings.HasPrefix(tok, "-w")) {
-			parsed.prefix = append(parsed.prefix, tok)
-			i++
-			continue
-		}
 
 		if flag, value, consumed, _, ok := parseValueTakingToken(args, i, execOptionsWithValue); ok {
 			if value == "" {
@@ -227,12 +339,29 @@ func parseExec(args []string) (parsedExec, error) {
 			i += consumed
 			continue
 		}
+		if strings.HasPrefix(tok, "-u") && !strings.HasPrefix(tok, "--") && len(tok) > 2 {
+			parsed.user = strings.TrimPrefix(tok[2:], "=")
+			if parsed.user == "" {
+				return parsedExec{}, fmt.Errorf("compose exec: -u requires a value")
+			}
+			i++
+			continue
+		}
+		if len(tok) > 2 && !strings.HasPrefix(tok, "--") && (strings.HasPrefix(tok, "-e") || strings.HasPrefix(tok, "-w")) {
+			parsed.prefix = append(parsed.prefix, tok)
+			i++
+			continue
+		}
 		if execBooleanOptions[tok] {
+			parsed.recordExecBoolean(tok)
 			parsed.prefix = append(parsed.prefix, tok)
 			i++
 			continue
 		}
 		if isExecShortBooleanCluster(tok) {
+			for _, flag := range tok[1:] {
+				parsed.recordExecBoolean("-" + string(flag))
+			}
 			parsed.prefix = append(parsed.prefix, tok)
 			i++
 			continue
@@ -246,6 +375,17 @@ func parseExec(args []string) (parsedExec, error) {
 		return parsedExec{}, fmt.Errorf("compose exec: missing COMMAND for service %s", parsed.service)
 	}
 	return parsed, nil
+}
+
+func (p *parsedExec) recordExecBoolean(flag string) {
+	switch flag {
+	case "-d", "--detach":
+		p.detach = true
+	case "-T", "--no-tty":
+		p.noTTY = true
+	case "--dry-run":
+		p.dryRun = true
+	}
 }
 
 func isExecShortBooleanCluster(tok string) bool {
@@ -275,6 +415,78 @@ func secureExecInvocation(inv *ComposeInvocation, parsed parsedExec) (*ComposeIn
 	return ParseComposeInvocation(args)
 }
 
+func secureDockerExecArgs(containerID string, parsed parsedExec) ([]string, error) {
+	if strings.TrimSpace(containerID) == "" {
+		return nil, fmt.Errorf("managed exec target has no exact container ID")
+	}
+	if parsed.dryRun {
+		return nil, fmt.Errorf("compose exec --dry-run is not supported for Vaka-managed services")
+	}
+	if reservedExecEnvironmentOverride(parsed.prefix) != "" {
+		return nil, fmt.Errorf("compose exec cannot override reserved Vaka environment variable %s", reservedExecEnvironmentOverride(parsed.prefix))
+	}
+	args := []string{"exec"}
+	for i := 0; i < len(parsed.prefix); i++ {
+		tok := parsed.prefix[i]
+		switch {
+		case tok == "--index":
+			i++
+		case strings.HasPrefix(tok, "--index="):
+		case tok == "-T" || tok == "--no-tty" || tok == "-i" || tok == "--interactive" || tok == "-t" || tok == "--tty" || tok == "--dry-run":
+		case isExecShortBooleanCluster(tok):
+			if strings.Contains(tok, "d") {
+				args = append(args, "-d")
+			}
+		default:
+			args = append(args, tok)
+		}
+	}
+	if !parsed.detach {
+		args = append(args, "-i")
+		if !parsed.noTTY {
+			args = append(args, "-t")
+		}
+	}
+	args = append(args, "--user=0:0", containerID, vakaInitPath, "exec")
+	if parsed.user != "" {
+		args = append(args, "--user", parsed.user)
+	}
+	args = append(args, "--")
+	args = append(args, parsed.command...)
+	return args, nil
+}
+
+func reservedExecEnvironmentOverride(prefix []string) string {
+	for i := 0; i < len(prefix); i++ {
+		tok := prefix[i]
+		value := ""
+		switch {
+		case tok == "-e" || tok == "--env":
+			if i+1 < len(prefix) {
+				value = prefix[i+1]
+				i++
+			}
+		case strings.HasPrefix(tok, "--env="):
+			value = strings.TrimPrefix(tok, "--env=")
+		case strings.HasPrefix(tok, "-e") && len(tok) > 2:
+			value = strings.TrimPrefix(strings.TrimPrefix(tok, "-e"), "=")
+		}
+		if name := reservedVakaEnvironmentName(value); name != "" {
+			return name
+		}
+	}
+	return ""
+}
+
+func reservedVakaEnvironmentName(value string) string {
+	name, _, _ := strings.Cut(value, "=")
+	name = strings.TrimSpace(name)
+	if name == runtimebundle.PolicyEnvironment || name == runtimebundle.PolicyRevisionEnvironment {
+		return name
+	}
+	return ""
+}
+
 func runSecureExec(inv *ComposeInvocation) error {
 	parsed, err := parseExec(inv.PostSubcommand)
 	if err != nil {
@@ -297,6 +509,9 @@ func runSecureExec(inv *ComposeInvocation) error {
 	if err != nil {
 		return err
 	}
+	if target.LegacyManaged {
+		return fmt.Errorf("service %s uses a legacy Vaka-managed container without current security metadata; recreate it with `vaka up --force-recreate` before exec", parsed.service)
+	}
 	if !target.Managed {
 		return runReference(inv)
 	}
@@ -311,11 +526,14 @@ func runSecureExec(inv *ComposeInvocation) error {
 		return fmt.Errorf("service %s uses Vaka runtime %s, but this CLI requires %s; recreate it with `vaka up --force-recreate` before exec", parsed.service, actual, runtimeBundleVersion)
 	}
 	if target.RuntimeImage == "" || !target.RuntimeMounted {
+		if target.ValidationError != "" {
+			return fmt.Errorf("service %s does not use Vaka's verified runtime and policy mounts: %s; recreate it with `vaka up --force-recreate`", parsed.service, target.ValidationError)
+		}
 		return fmt.Errorf("service %s does not use Vaka's verified read-only runtime mount; recreate it without --vaka-init-present or agent.vaka.init before exec", parsed.service)
 	}
-	secured, err := secureExecInvocation(inv, parsed)
+	args, err := secureDockerExecArgs(target.ContainerID, parsed)
 	if err != nil {
 		return err
 	}
-	return runReference(secured)
+	return execDockerContainerFn(args)
 }

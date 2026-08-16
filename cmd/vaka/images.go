@@ -58,6 +58,9 @@ type ResolvedImage struct {
 
 // ResolvedRuntime is resolved service runtime metadata from compose + image.
 type ResolvedRuntime struct {
+	// ImageID is the exact service image inspected for all inherited runtime
+	// metadata. The generated Compose override executes this identity directly.
+	ImageID    string
 	Entrypoint []string
 	Command    []string
 	// Healthcheck is the effective image/Compose healthcheck test vector. It is
@@ -405,16 +408,12 @@ func (d *dockerServices) ResolveRuntime(ctx context.Context, svcName string, svc
 
 	needImageEntrypoint := len(svc.Entrypoint) == 0
 	needImageUser := strings.TrimSpace(svc.User) == ""
-	needImageHealthcheck := svc.Image != "" && (svc.HealthCheck == nil || (!svc.HealthCheck.Disable && len(svc.HealthCheck.Test) == 0))
+	needImageHealthcheck := svc.HealthCheck == nil || (!svc.HealthCheck.Disable && len(svc.HealthCheck.Test) == 0)
 	needImageHealthcheckShell := len(resolved.Healthcheck) > 0 && resolved.Healthcheck[0] == "CMD-SHELL"
-	needInspect := needImageEntrypoint || needImageUser || needImageHealthcheck || needImageHealthcheckShell
-	if !needInspect {
-		return resolved, nil
-	}
 
 	if svc.Image == "" {
 		return ResolvedRuntime{}, fmt.Errorf(
-			"service %s: cannot resolve image defaults without image: (needed for %s)",
+			"service %s: cannot inspect the exact service image without image: (needed for %s and protected image-volume validation)",
 			svcName, missingRuntimeFieldsHint(needImageEntrypoint, needImageUser, needImageHealthcheck),
 		)
 	}
@@ -441,6 +440,15 @@ func (d *dockerServices) ResolveRuntime(ctx context.Context, svcName string, svc
 	if inspect.Config == nil {
 		return ResolvedRuntime{}, fmt.Errorf("service %s: image %q has no Config", svcName, svc.Image)
 	}
+	if !validDockerImageID(inspect.ID) {
+		return ResolvedRuntime{}, fmt.Errorf("service %s: image %q returned invalid image ID %q", svcName, svc.Image, inspect.ID)
+	}
+	for volumePath := range inspect.Config.Volumes {
+		if protectedPathOverlap(volumePath) {
+			return ResolvedRuntime{}, fmt.Errorf("service %s: image %q declares VOLUME %q overlapping Vaka's protected runtime or policy mount", svcName, svc.Image, volumePath)
+		}
+	}
+	resolved.ImageID = inspect.ID
 
 	if needImageEntrypoint {
 		resolved.Entrypoint = inspect.Config.Entrypoint
@@ -454,7 +462,7 @@ func (d *dockerServices) ResolveRuntime(ctx context.Context, svcName string, svc
 	if needImageHealthcheck && inspect.Config.Healthcheck != nil {
 		resolved.Healthcheck = append([]string{}, inspect.Config.Healthcheck.Test...)
 	}
-	if len(inspect.Config.Shell) > 0 {
+	if needImageHealthcheckShell || (needImageHealthcheck && len(resolved.Healthcheck) > 0 && resolved.Healthcheck[0] == "CMD-SHELL") {
 		resolved.HealthcheckShell = append([]string{}, inspect.Config.Shell...)
 	}
 	return resolved, nil

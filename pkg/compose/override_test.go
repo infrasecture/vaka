@@ -15,25 +15,22 @@ type overrideDoc struct {
 		RuntimeVersion string `yaml:"runtime-version"`
 		RuntimeImage   string `yaml:"runtime-image"`
 	} `yaml:"x-vaka"`
-	Secrets map[string]struct {
-		Environment string `yaml:"environment"`
-	} `yaml:"secrets"`
 	Services map[string]struct {
+		Image       string                             `yaml:"image"`
+		PullPolicy  string                             `yaml:"pull_policy"`
 		User        string                             `yaml:"user"`
 		Entrypoint  []string                           `yaml:"entrypoint"`
 		Command     []string                           `yaml:"command"`
 		CapAdd      []string                           `yaml:"cap_add"`
 		Labels      map[string]string                  `yaml:"labels"`
+		Environment map[string]string                  `yaml:"environment"`
 		Volumes     []composetypes.ServiceVolumeConfig `yaml:"volumes"`
 		VolumesFrom []string                           `yaml:"volumes_from"`
 		DependsOn   map[string]any                     `yaml:"depends_on"`
 		Healthcheck struct {
-			Test []string `yaml:"test"`
+			Test    []string `yaml:"test"`
+			Disable bool     `yaml:"disable"`
 		} `yaml:"healthcheck"`
-		Secrets []struct {
-			Source string `yaml:"source"`
-			Target string `yaml:"target"`
-		} `yaml:"secrets"`
 	} `yaml:"services"`
 }
 
@@ -53,6 +50,7 @@ var testRuntime = compose.RuntimeMount{ImageID: testImageID, Version: "v0.1.0"}
 func singleEntry(name string) []compose.ServiceEntry {
 	return []compose.ServiceEntry{{
 		Name:           name,
+		ImageID:        "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 		Entrypoint:     []string{"claude"},
 		Command:        []string{"--dangerously-skip-permissions"},
 		CapDelta:       []string{"NET_ADMIN"},
@@ -69,14 +67,14 @@ func TestBuildOverrideInjectsPolicyRuntime(t *testing.T) {
 	doc := parseOverride(t, out)
 	svc := doc.Services["codex"]
 
-	if got := doc.Secrets["vaka_codex_conf"].Environment; got != "VAKA_CODEX_CONF" {
-		t.Errorf("secret env = %q, want VAKA_CODEX_CONF", got)
-	}
 	if len(svc.Entrypoint) != 2 || svc.Entrypoint[0] != "/opt/vaka/sbin/vaka-init" || svc.Entrypoint[1] != "--" {
 		t.Errorf("entrypoint = %v, want [/opt/vaka/sbin/vaka-init --]", svc.Entrypoint)
 	}
 	if svc.User != "0:0" {
 		t.Errorf("user = %q, want 0:0", svc.User)
+	}
+	if svc.Image != singleEntry("codex")[0].ImageID || svc.PullPolicy != "never" {
+		t.Errorf("service image identity = %q pull_policy=%q, want exact inspected ID with pulling disabled", svc.Image, svc.PullPolicy)
 	}
 	if got := strings.Join(svc.Command, " "); got != "claude --dangerously-skip-permissions" {
 		t.Errorf("command = %q", got)
@@ -84,8 +82,19 @@ func TestBuildOverrideInjectsPolicyRuntime(t *testing.T) {
 	if len(svc.CapAdd) != 1 || svc.CapAdd[0] != "NET_ADMIN" {
 		t.Errorf("cap_add = %v, want [NET_ADMIN]", svc.CapAdd)
 	}
-	if len(svc.Secrets) != 1 || svc.Secrets[0].Target != "vaka.yaml" {
-		t.Errorf("secrets = %+v, want target vaka.yaml", svc.Secrets)
+	if svc.Environment["AGENT_VAKA_POLICY"] != "${VAKA_CODEX_CONF}" || svc.Environment["AGENT_VAKA_POLICY_REVISION"] != "sha256:policy" {
+		t.Errorf("policy environment = %+v", svc.Environment)
+	}
+}
+
+func TestBuildOverrideExplicitlyDisablesAbsentHealthcheck(t *testing.T) {
+	out, err := compose.BuildOverride(singleEntry("app"), testRuntime)
+	if err != nil {
+		t.Fatalf("BuildOverride: %v", err)
+	}
+	health := parseOverride(t, out).Services["app"].Healthcheck
+	if !health.Disable || len(health.Test) != 0 {
+		t.Fatalf("healthcheck = %+v, want disable: true", health)
 	}
 }
 
@@ -138,6 +147,7 @@ func TestBuildOverrideLabelsPolicyAndRuntimeIdentity(t *testing.T) {
 	want := map[string]string{
 		compose.ManagedLabel:        "true",
 		compose.PolicyRevisionLabel: "sha256:policy",
+		compose.ServiceImageLabel:   singleEntry("codex")[0].ImageID,
 		compose.RuntimeImageLabel:   testImageID,
 		compose.RuntimeVersionLabel: "v0.1.0",
 	}
@@ -261,7 +271,7 @@ func TestBuildReferenceOverrideContainsOnlyRuntimeMetadata(t *testing.T) {
 	if doc.Metadata.RuntimeVersion != "v0.1.0" {
 		t.Errorf("runtime version = %q, want v0.1.0", doc.Metadata.RuntimeVersion)
 	}
-	if len(doc.Services) != 0 || len(doc.Secrets) != 0 {
-		t.Errorf("reference override has services/secrets: %+v", doc)
+	if len(doc.Services) != 0 {
+		t.Errorf("reference override has services: %+v", doc)
 	}
 }

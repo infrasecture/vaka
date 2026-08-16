@@ -244,21 +244,35 @@ func buildInjectionOverride(
 			return "", nil, err
 		}
 	}
-	if inv.Subcommand == "up" && hasComposeOption(inv.PostSubcommand, "--no-recreate") && len(p.Services) > 0 {
+	if inv.Subcommand == "up" && composeBoolOptionEnabled(inv.PostSubcommand, "--no-recreate", "") && len(p.Services) > 0 {
 		return "", nil, fmt.Errorf("compose up --no-recreate can reuse containers with an older unsafe runtime; remove --no-recreate so managed services are recreated")
 	}
-	if inv.Subcommand == "watch" && hasComposeOption(inv.PostSubcommand, "--no-up") && len(p.Services) > 0 {
+	if inv.Subcommand == "watch" && composeBoolOptionEnabled(inv.PostSubcommand, "--no-up", "") && len(p.Services) > 0 {
 		return "", nil, fmt.Errorf("compose watch --no-up can reuse containers with an older unsafe runtime; remove --no-up so managed services are recreated")
 	}
 	inv.ResolvedProjectName = project.Name
 
-	// Pre-build any service whose image must be inspected for ENTRYPOINT/CMD
-	// and/or USER fallback but isn't available locally and has a build: section.
-	// Without this,
-	// `vaka up --build` fails for services that rely on Dockerfile defaults.
-	// When the user passes --build, every service with a build: section is
-	// prebuilt so ResolveRuntime inspects the fresh image, not a stale copy.
-	forceRebuild := inv.BuildRequested
+	// Consume image-refresh operations before inspection. The final Compose
+	// invocation receives exact image IDs, so it must not rebuild or repull a
+	// different image after Vaka has validated healthchecks and image volumes.
+	pullAlways := composePullAlwaysRequested(inv)
+	if pullAlways {
+		toPull := projectImageServices(project)
+		if len(toPull) > 0 {
+			fmt.Fprintf(os.Stderr, "vaka: pre-pulling services before exact-image inspection: %v\n", toPull)
+			pullArgs := append([]string{}, inv.ComposeGlobals...)
+			pullArgs = append(pullArgs, "pull", "--policy", "always")
+			pullArgs = append(pullArgs, toPull...)
+			if err := execDockerComposeFn(&ComposeInvocation{Args: pullArgs}, "", nil); err != nil {
+				return "", nil, fmt.Errorf("pre-pull: %w", err)
+			}
+		}
+	}
+
+	// Build-only managed services must always be built so they have an exact
+	// inspectable image. --build is consumed for every buildable project service
+	// before inspection; this preserves final-image identity for mixed projects.
+	forceRebuild := composeBuildRequested(inv)
 	toBuild, err := servicesNeedingPrebuild(ctx, ds, p.Services, project, forceRebuild)
 	if err != nil {
 		return "", nil, err
@@ -286,6 +300,9 @@ func buildInjectionOverride(
 		}
 		if composeSvc.Labels[vakaInitLabel] == "present" {
 			return "", nil, fmt.Errorf("service %s: label %s=present is not supported: the exec security boundary requires Vaka's verified read-only runtime mount", svcName, vakaInitLabel)
+		}
+		if strings.TrimSpace(composeSvc.Image) == "" && composeSvc.Build != nil {
+			composeSvc.Image = project.Name + "-" + svcName
 		}
 
 		rt, err := ds.ResolveRuntime(ctx, svcName, composeSvc)
@@ -326,6 +343,7 @@ func buildInjectionOverride(
 
 		entries = append(entries, compose.ServiceEntry{
 			Name:             svcName,
+			ImageID:          rt.ImageID,
 			Entrypoint:       rt.Entrypoint,
 			Command:          rt.Command,
 			CapDelta:         capPlan.Add,
@@ -355,19 +373,12 @@ func buildInjectionOverride(
 	if err != nil {
 		return "", nil, fmt.Errorf("build override: %w", err)
 	}
-	return overrideYAML, extraEnv, nil
-}
-
-func hasComposeOption(args []string, option string) bool {
-	for _, arg := range args {
-		if arg == "--" {
-			return false
-		}
-		if arg == option || strings.HasPrefix(arg, option+"=") {
-			return true
+	if forceRebuild || pullAlways {
+		if err := consumeComposeImageRefreshOptions(inv, forceRebuild, pullAlways); err != nil {
+			return "", nil, err
 		}
 	}
-	return false
+	return overrideYAML, extraEnv, nil
 }
 
 // referenceOverrideYAML returns the metadata-only override used by Compose
@@ -435,19 +446,29 @@ func ensureReferenceRuntime(inv *ComposeInvocation) error {
 // ResolveRuntime sees the post-build image.
 func servicesNeedingPrebuild(ctx context.Context, ds DockerServices, policySvcs map[string]*policy.ServiceConfig, project *composetypes.Project, forceRebuild bool) ([]string, error) {
 	var out []string
+	candidates := map[string]bool{}
 	for svcName := range policySvcs {
+		candidates[svcName] = true
+	}
+	if forceRebuild {
+		for svcName := range project.Services {
+			candidates[svcName] = true
+		}
+	}
+	for svcName := range candidates {
 		composeSvc, ok := project.Services[svcName]
 		if !ok {
-			continue
-		}
-		if !needsImageRuntimeFallback(composeSvc) {
 			continue
 		}
 		if composeSvc.Build == nil {
 			continue
 		}
-		if composeSvc.Image != "" && !forceRebuild {
-			exists, err := ds.ImageExists(ctx, composeSvc.Image)
+		if !forceRebuild {
+			imageRef := strings.TrimSpace(composeSvc.Image)
+			if imageRef == "" {
+				imageRef = project.Name + "-" + svcName
+			}
+			exists, err := ds.ImageExists(ctx, imageRef)
 			if err != nil {
 				return nil, err
 			}
@@ -461,9 +482,83 @@ func servicesNeedingPrebuild(ctx context.Context, ds DockerServices, policySvcs 
 	return out, nil
 }
 
-func needsImageRuntimeFallback(svc composetypes.ServiceConfig) bool {
-	needsHealthcheck := svc.Image != "" && (svc.HealthCheck == nil || (!svc.HealthCheck.Disable && len(svc.HealthCheck.Test) == 0))
-	return len(svc.Entrypoint) == 0 || strings.TrimSpace(svc.User) == "" || needsHealthcheck
+func projectImageServices(project *composetypes.Project) []string {
+	out := []string{}
+	for name, svc := range project.Services {
+		if strings.TrimSpace(svc.Image) != "" {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func composePullAlwaysRequested(inv *ComposeInvocation) bool {
+	if inv.Subcommand == "run" {
+		parsed, err := parseRun(inv.PostSubcommand)
+		return err == nil && parsed.pullAlways
+	}
+	for i := 0; i < len(inv.PostSubcommand); i++ {
+		tok := inv.PostSubcommand[i]
+		if tok == "--" {
+			break
+		}
+		if tok == "--pull=always" || (tok == "--pull" && i+1 < len(inv.PostSubcommand) && inv.PostSubcommand[i+1] == "always") {
+			return true
+		}
+	}
+	return false
+}
+
+func composeBuildRequested(inv *ComposeInvocation) bool {
+	if inv.Subcommand == "run" {
+		parsed, err := parseRun(inv.PostSubcommand)
+		return err == nil && parsed.build
+	}
+	return inv.BuildRequested
+}
+
+func consumeComposeImageRefreshOptions(inv *ComposeInvocation, consumeBuild, consumePull bool) error {
+	args := append([]string{}, inv.Args[:inv.SubcommandIdx+1]...)
+	post := inv.PostSubcommand
+	limit := len(post)
+	if inv.Subcommand == "run" {
+		parsed, err := parseRun(post)
+		if err != nil {
+			return err
+		}
+		limit = parsed.serviceIndex
+	}
+	for i := 0; i < len(post); i++ {
+		if i >= limit {
+			args = append(args, post[i:]...)
+			break
+		}
+		tok := post[i]
+		if tok == "--" {
+			args = append(args, post[i:]...)
+			break
+		}
+		if consumeBuild && tok == "--build" {
+			continue
+		}
+		if consumePull && tok == "--pull=always" {
+			continue
+		}
+		if consumePull && tok == "--pull" && i+1 < len(post) && post[i+1] == "always" {
+			i++
+			continue
+		}
+		args = append(args, tok)
+	}
+	resolvedProjectName := inv.ResolvedProjectName
+	reparsed, err := ParseComposeInvocation(args)
+	if err != nil {
+		return fmt.Errorf("rewrite consumed Compose image options: %w", err)
+	}
+	reparsed.ResolvedProjectName = resolvedProjectName
+	*inv = *reparsed
+	return nil
 }
 
 type capabilityPlan struct {

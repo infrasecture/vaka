@@ -7,6 +7,7 @@ import (
 
 	composetypes "github.com/compose-spec/compose-go/v2/types"
 	"gopkg.in/yaml.v3"
+	"vaka.dev/vaka/internal/runtimebundle"
 )
 
 const (
@@ -22,6 +23,7 @@ const (
 	ManagedLabel        = "agent.vaka.managed"
 	PolicyRevisionLabel = "agent.vaka.policy-revision"
 	RuntimeImageLabel   = "agent.vaka.runtime-image"
+	ServiceImageLabel   = "agent.vaka.service-image"
 	RuntimeVersionLabel = "agent.vaka.runtime.version"
 )
 
@@ -39,6 +41,7 @@ type RuntimeMount struct {
 // ServiceEntry holds per-service data needed to build the compose override.
 type ServiceEntry struct {
 	Name             string
+	ImageID          string
 	Entrypoint       []string
 	Command          []string
 	CapDelta         []string
@@ -59,7 +62,6 @@ func secretKey(serviceName string) string {
 
 type composeOverride struct {
 	Metadata *runtimeMetadata           `yaml:"x-vaka,omitempty"`
-	Secrets  map[string]secretDef       `yaml:"secrets,omitempty"`
 	Services map[string]serviceOverride `yaml:"services,omitempty"`
 }
 
@@ -68,28 +70,22 @@ type runtimeMetadata struct {
 	RuntimeImage   string `yaml:"runtime-image,omitempty"`
 }
 
-type secretDef struct {
-	Environment string `yaml:"environment"`
-}
-
 type serviceOverride struct {
+	Image       string                             `yaml:"image,omitempty"`
+	PullPolicy  string                             `yaml:"pull_policy,omitempty"`
 	User        string                             `yaml:"user,omitempty"`
 	Entrypoint  []string                           `yaml:"entrypoint,omitempty"`
 	Command     []string                           `yaml:"command,omitempty"`
 	CapAdd      []string                           `yaml:"cap_add,omitempty"`
 	Labels      map[string]string                  `yaml:"labels,omitempty"`
-	Secrets     []secretMount                      `yaml:"secrets,omitempty"`
+	Environment map[string]string                  `yaml:"environment,omitempty"`
 	Volumes     []composetypes.ServiceVolumeConfig `yaml:"volumes,omitempty"`
 	Healthcheck *healthcheckOverride               `yaml:"healthcheck,omitempty"`
 }
 
 type healthcheckOverride struct {
-	Test []string `yaml:"test"`
-}
-
-type secretMount struct {
-	Source string `yaml:"source"`
-	Target string `yaml:"target"`
+	Test    []string `yaml:"test,omitempty"`
+	Disable bool     `yaml:"disable,omitempty"`
 }
 
 // BuildOverride constructs the policy-enforcing compose override. The runtime
@@ -114,7 +110,6 @@ func BuildOverride(entries []ServiceEntry, runtime RuntimeMount) (string, error)
 			RuntimeVersion: runtime.Version,
 			RuntimeImage:   runtime.ImageID,
 		},
-		Secrets:  make(map[string]secretDef),
 		Services: make(map[string]serviceOverride),
 	}
 
@@ -122,14 +117,16 @@ func BuildOverride(entries []ServiceEntry, runtime RuntimeMount) (string, error)
 		if strings.TrimSpace(e.PolicyRevision) == "" {
 			return "", fmt.Errorf("build compose override: service %s has no policy revision", e.Name)
 		}
-		key := secretKey(e.Name)
-		override.Secrets[key] = secretDef{Environment: e.EnvVarName}
-
+		if _, err := runtimeImageMountSource(e.ImageID, ""); err != nil {
+			return "", fmt.Errorf("build compose override: service %s has invalid inspected image identity: %w", e.Name, err)
+		}
 		cmd := make([]string, 0, len(e.Entrypoint)+len(e.Command))
 		cmd = append(cmd, e.Entrypoint...)
 		cmd = append(cmd, e.Command...)
 
 		svc := serviceOverride{
+			Image:      e.ImageID,
+			PullPolicy: "never",
 			User:       "0:0",
 			Entrypoint: []string{vakaInitPath, "--"},
 			Command:    cmd,
@@ -137,9 +134,13 @@ func BuildOverride(entries []ServiceEntry, runtime RuntimeMount) (string, error)
 			Labels: map[string]string{
 				ManagedLabel:        "true",
 				PolicyRevisionLabel: e.PolicyRevision,
+				ServiceImageLabel:   e.ImageID,
 				RuntimeVersionLabel: runtime.Version,
 			},
-			Secrets: []secretMount{{Source: key, Target: "vaka.yaml"}},
+			Environment: map[string]string{
+				runtimebundle.PolicyEnvironment:         "${" + e.EnvVarName + "}",
+				runtimebundle.PolicyRevisionEnvironment: e.PolicyRevision,
+			},
 		}
 		wrappedHealthcheck, err := wrapHealthcheck(e.Healthcheck, e.HealthcheckShell)
 		if err != nil {
@@ -147,6 +148,10 @@ func BuildOverride(entries []ServiceEntry, runtime RuntimeMount) (string, error)
 		}
 		if len(wrappedHealthcheck) > 0 {
 			svc.Healthcheck = &healthcheckOverride{Test: wrappedHealthcheck}
+		} else {
+			// Compose merge semantics otherwise inherit a healthcheck from a
+			// different image selected after inspection.
+			svc.Healthcheck = &healthcheckOverride{Disable: true}
 		}
 
 		if runtime.ImageID != "" && !e.OptOut {

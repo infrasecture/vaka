@@ -85,6 +85,7 @@ func (f *fakeDockerClient) ImagePull(_ context.Context, ref string, _ dockerimag
 // imageConfig builds a fake inspect result with ENTRYPOINT/CMD/USER defaults.
 func imageConfig(entrypoint, cmd []string, user string) dockerimage.InspectResponse {
 	return dockerimage.InspectResponse{
+		ID: testRuntimeImageID,
 		Config: &dockerspec.DockerOCIImageConfig{
 			ImageConfig: ocispec.ImageConfig{
 				Entrypoint: entrypoint,
@@ -597,7 +598,7 @@ func TestResolveRuntimeNoImageNeedsFallback(t *testing.T) {
 	}
 }
 
-func TestResolveRuntimeNoImageButComposeHasAllRuntimeFields(t *testing.T) {
+func TestResolveRuntimeNoImageFailsEvenWithComposeRuntimeFields(t *testing.T) {
 	dc := &fakeDockerClient{}
 	ds := &dockerServices{c: dc, targetDesc: "test-context"}
 	svc := composetypes.ServiceConfig{
@@ -605,20 +606,21 @@ func TestResolveRuntimeNoImageButComposeHasAllRuntimeFields(t *testing.T) {
 		Command:    []string{"serve"},
 		User:       "1000:1000",
 	}
-	got, err := ds.ResolveRuntime(context.Background(), "svc", svc)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strEq(got.Entrypoint, svc.Entrypoint) {
-		t.Errorf("entrypoint = %v, want %v", got.Entrypoint, svc.Entrypoint)
-	}
-	if !strEq(got.Command, svc.Command) {
-		t.Errorf("command = %v, want %v", got.Command, svc.Command)
-	}
-	if got.ImageUser != "" {
-		t.Errorf("image user = %q, want empty", got.ImageUser)
+	_, err := ds.ResolveRuntime(context.Background(), "svc", svc)
+	if err == nil || !strings.Contains(err.Error(), "exact service image") {
+		t.Fatalf("error = %v, want exact image requirement", err)
 	}
 	if dc.inspectCalled != 0 {
 		t.Errorf("ImageInspect called %d times; expected 0", dc.inspectCalled)
+	}
+}
+
+func TestResolveRuntimeRejectsProtectedImageVolume(t *testing.T) {
+	image := imageConfig([]string{"/app"}, nil, "1000:1000")
+	image.Config.Volumes = map[string]struct{}{protectedRuntimePath + "/sbin": {}}
+	ds := &dockerServices{c: &fakeDockerClient{inspectResult: image}, targetDesc: "test-context"}
+	_, err := ds.ResolveRuntime(context.Background(), "app", composetypes.ServiceConfig{Image: "app:latest", Entrypoint: []string{"/app"}, User: "1000:1000"})
+	if err == nil || !strings.Contains(err.Error(), "declares VOLUME") {
+		t.Fatalf("protected image volume error = %v", err)
 	}
 }
