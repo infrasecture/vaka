@@ -29,6 +29,10 @@ vaka pull          # error: use the compose namespace
 vaka compose pull  # correct
 ```
 
+A shorthand and its `vaka compose` form use the same Vaka dispatch and security
+checks. Running `docker compose` directly bypasses Vaka and retains raw Compose
+behavior.
+
 ## Recipe Commands
 
 A recipe is a versioned Compose project with a Vaka policy and optional support
@@ -203,6 +207,14 @@ Commands that can create containers (`up`, `run`, `create`, `scale`, and
 future Compose commands fail closed until their process-creation behavior is
 reviewed in Vaka.
 
+Before inspecting and pinning service images, Vaka applies the final requested
+`--build`/`--pull` behavior and supported Compose-file `pull_policy` values to
+all Vaka-managed services in the project, even when the Compose command targets
+one service. It never performs this preparation for unmanaged services. An
+absent `pull_policy` uses `--vaka-pull`; `never`, `missing`, `always`, and
+`build` are supported. Timed policies fail with guidance to pull explicitly so
+Vaka does not inspect one image and execute another.
+
 Known non-creating commands use a metadata-only reference override. Examples
 include `logs`, `ps`, `pull`, `down`, `start`, `stop`, `kill`, and `rm`.
 `exec` is different: Vaka inspects the selected live container, verifies its
@@ -349,7 +361,8 @@ to Docker Compose documentation.
 `missing-pinned` pulls only missing digest-pinned service images.
 `missing` also permits a missing tag-based image to be pulled. `never` makes
 every missing image an error. Images already present are not refreshed by this
-flag; Compose's own `--pull` option is separate.
+flag. On full-render commands, Compose `--pull` and `pull_policy` take
+precedence and are applied before Vaka inspects the image.
 
 Value-taking Vaka flags require `=` form and all Vaka flags precede the command:
 

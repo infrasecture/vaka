@@ -6,6 +6,11 @@ A managed container is a Compose service explicitly listed under `services` in
 `vaka.yaml`. Compose services omitted from `vaka.yaml` receive no Vaka override
 and retain their existing egress behavior; enforcement is opt-in per service.
 
+Vaka protects against accidental or implicit policy bypasses in Vaka-controlled
+workflows. The host operator, Compose configuration, service image, Docker
+daemon, kernel, and direct Docker access are trusted. Vaka is not a sandbox for
+a hostile container or operator.
+
 ## What It Enforces
 
 - nftables rules are loaded before the application process starts.
@@ -28,7 +33,11 @@ vaka needs `NET_ADMIN` temporarily to load nftables rules. The normal path is:
 4. `vaka-init` switches to the service's effective Compose/image user.
 5. The application starts.
 
-If the original Compose service already had `NET_ADMIN`, vaka treats that as intentional and leaves it in place unless you provide an explicit `runtime.dropCaps` list.
+If the original Compose service already had `NET_ADMIN`, vaka treats that as
+intentional and leaves it in place unless you provide an explicit
+`runtime.dropCaps` list. Vaka warns when a managed service is privileged or
+deliberately retains `SYS_ADMIN` or `NET_ADMIN`; egress enforcement is
+best-effort for that service.
 
 Docker stores the startup user and capabilities on the container, so processes
 created later do not inherit the application's dropped process state. Vaka

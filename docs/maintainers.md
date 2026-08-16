@@ -65,8 +65,10 @@ Use SemVer to communicate the runtime change:
 - **Patch:** compatible implementation, dependency, bundled `nft`, or security
   fix.
 - **Minor:** backward-compatible runtime capability or policy-contract
-  extension.
-- **Major:** incompatible behavior, policy contract, or filesystem layout.
+  extension; while the runtime is `0.x`, also use a minor bump for an
+  incompatible contract or layout change.
+- **Major:** incompatible behavior, policy contract, or filesystem layout after
+  the runtime reaches `1.0.0`.
 
 Do not bump the runtime for host-only CLI behavior, Compose dispatch, recipe
 registry work, documentation, packaging, or tests. Test-only Go files are
