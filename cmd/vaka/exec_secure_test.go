@@ -194,19 +194,40 @@ func TestVerifyManagedContainerMountsFailsClosed(t *testing.T) {
 }
 
 func TestLegacyManagedSignature(t *testing.T) {
-	inspect := containertypes.InspectResponse{
-		Config: &containertypes.Config{User: "0:0", Entrypoint: []string{vakaInitPath, "--"}},
-		Mounts: []containertypes.MountPoint{
-			{Type: mount.TypeVolume, Destination: protectedRuntimePath, RW: true},
-			{Type: mount.TypeBind, Destination: protectedPolicyPath, RW: false},
+	tests := []containertypes.InspectResponse{
+		{
+			Config: &containertypes.Config{User: "0:0", Entrypoint: []string{vakaInitPath, "--"}},
+			Mounts: []containertypes.MountPoint{{Type: mount.TypeVolume, Destination: protectedRuntimePath, RW: true}},
+		},
+		{
+			Config: &containertypes.Config{
+				User:       "",
+				Entrypoint: []string{vakaInitPath},
+				Labels:     map[string]string{vakaInitLabel: "present"},
+			},
+		},
+		{
+			Config: &containertypes.Config{
+				User:       "root:staff",
+				Entrypoint: []string{vakaInitPath},
+				Labels:     map[string]string{vakaInitLabel: "present"},
+			},
 		},
 	}
-	if !legacyManagedSignature(inspect) {
-		t.Fatal("pre-v0.2 Vaka container signature was not detected")
+	for i, inspect := range tests {
+		if !legacyManagedSignature(inspect) {
+			t.Errorf("pre-v0.2 Vaka container signature %d was not detected", i)
+		}
 	}
+	inspect := tests[0]
 	inspect.Config.Entrypoint = []string{"/usr/local/bin/app"}
 	if legacyManagedSignature(inspect) {
 		t.Fatal("ordinary root container was classified as legacy-managed")
+	}
+	inspect = tests[1]
+	inspect.Config.User = "1000:1000"
+	if legacyManagedSignature(inspect) {
+		t.Fatal("non-root container was classified as legacy-managed")
 	}
 }
 
@@ -293,5 +314,39 @@ services:
 	}
 	if len(calls) != 0 {
 		t.Fatalf("privileged exec must not reach Compose, got %+v", calls)
+	}
+}
+
+func TestSecureExecRejectsPolicyManagedUnlabeledContainer(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	writeFixtureFiles(t, dir, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+`, `
+services:
+  app:
+    image: alpine:3.20
+`)
+	setDockerServicesFactoryForTest(t, &fakeBuilderDockerServices{execTargets: map[string]execTarget{
+		"app:0": {ContainerID: "plain-compose", Managed: false},
+	}})
+	var composeCalls int
+	setExecDockerComposeForTest(t, func(*ComposeInvocation, string, []string) error {
+		composeCalls++
+		return nil
+	})
+	inv, _ := ParseComposeInvocation([]string{"exec", "app", "id"})
+	err := runSecureExec("vaka.yaml", inv)
+	if err == nil || !strings.Contains(err.Error(), "was not created by Vaka") || !strings.Contains(err.Error(), "raw `docker compose exec`") {
+		t.Fatalf("unlabeled policy container error = %v", err)
+	}
+	if composeCalls != 0 {
+		t.Fatalf("raw Compose calls = %d, want zero", composeCalls)
 	}
 }

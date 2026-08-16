@@ -246,13 +246,13 @@ func buildInjectionOverride(
 			return "", nil, err
 		}
 	}
-	if inv.Subcommand == "up" {
+	if inv.Subcommand == "up" || inv.Subcommand == "create" {
 		noRecreate, err := composeBoolOptionEnabled(inv.PostSubcommand, "--no-recreate", "")
 		if err != nil {
 			return "", nil, err
 		}
 		if noRecreate && len(p.Services) > 0 {
-			return "", nil, fmt.Errorf("compose up --no-recreate can reuse containers with an older unsafe runtime; remove --no-recreate so managed services are recreated")
+			return "", nil, fmt.Errorf("compose %s --no-recreate can reuse containers with an older unsafe runtime; remove --no-recreate so managed services are recreated", inv.Subcommand)
 		}
 	}
 	if inv.Subcommand == "watch" {

@@ -20,7 +20,7 @@ type fakeBuilderDockerServices struct {
 	projectTargets map[string][]execTarget
 }
 
-func (f *fakeBuilderDockerServices) InspectManagedProject(_ context.Context, _ string) (map[string][]execTarget, error) {
+func (f *fakeBuilderDockerServices) InspectProjectContainers(_ context.Context, _ string) (map[string][]execTarget, error) {
 	return f.projectTargets, nil
 }
 

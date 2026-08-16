@@ -77,7 +77,7 @@ func runComposeCLI(root *RootInvocation, argv []string) error {
 		}
 		return runReference(inv)
 	case verbExec:
-		return runSecureExec(inv)
+		return runSecureExec(root.VakaFile, inv)
 	case verbUnknown:
 		return fmt.Errorf("docker compose command %q has not been reviewed for Vaka's process security boundary; upgrade Vaka for support", inv.Subcommand)
 	default:

@@ -326,18 +326,17 @@ func validateServiceExecutionSurfaces(name string, svc composetypes.ServiceConfi
 	return nil
 }
 
-func validateReferenceExecutionSurfaces(_ string, inv *ComposeInvocation) error {
+func validateReferenceExecutionSurfaces(vakaFile string, inv *ComposeInvocation) error {
 	input, err := resolveComposeInput(inv)
 	if err != nil {
 		return err
 	}
-	opts, err := newComposeProjectOptions(input, false)
+	p, project, err := loadAndValidateResolved(vakaFile, input)
 	if err != nil {
-		return fmt.Errorf("compose project options: %w", err)
+		return err
 	}
-	project, err := opts.LoadProject(context.Background())
-	if err != nil {
-		return fmt.Errorf("load compose project: %w", err)
+	if project == nil {
+		return fmt.Errorf("load compose project: no Compose project was loaded")
 	}
 	ds, err := newDockerServices(inv, PullNever)
 	if err != nil {
@@ -347,15 +346,23 @@ func validateReferenceExecutionSurfaces(_ string, inv *ComposeInvocation) error 
 	if !ok {
 		return fmt.Errorf("inspect Compose project: Docker service implementation does not support live container metadata")
 	}
-	live, err := inspector.InspectManagedProject(context.Background(), project.Name)
+	live, err := inspector.InspectProjectContainers(context.Background(), project.Name)
 	if err != nil {
 		return err
 	}
 	for name, targets := range live {
+		_, policyManaged := p.Services[name]
 		if inv.Subcommand != "unpause" {
 			if svc, ok := project.Services[name]; ok {
 				if err := validateServiceExecutionSurfaces(name, svc); err != nil {
 					return err
+				}
+			}
+		}
+		if policyManaged {
+			for _, target := range targets {
+				if !target.Managed && !target.LegacyManaged {
+					return fmt.Errorf("service %s is managed by %s but its live container was not created by Vaka; recreate it with `vaka up --force-recreate` before %s, or use raw `docker compose %s` only for an intentional policy bypass", name, vakaFile, inv.Subcommand, inv.Subcommand)
 				}
 			}
 		}

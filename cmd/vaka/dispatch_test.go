@@ -349,6 +349,45 @@ services:
 	}
 }
 
+func TestComposeNoRecreateRejectsManagedContainerReuse(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	writeFixtureFiles(t, dir, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+`, `
+services:
+  app:
+    image: alpine:3.20
+`)
+
+	for _, verb := range []string{"up", "create"} {
+		t.Run(verb+" enabled last", func(t *testing.T) {
+			calls, err := runRootCapturingExec(t, []string{"compose", verb, "--no-recreate=false", "--no-recreate"})
+			if err == nil || !strings.Contains(err.Error(), "older unsafe runtime") {
+				t.Fatalf("%s --no-recreate error = %v", verb, err)
+			}
+			if len(calls) != 0 {
+				t.Fatalf("%s --no-recreate must not execute Compose, got %+v", verb, calls)
+			}
+		})
+		t.Run(verb+" disabled last", func(t *testing.T) {
+			calls, err := runRootCapturingExec(t, []string{"compose", verb, "--no-recreate", "--no-recreate=0"})
+			if err != nil {
+				t.Fatalf("%s disabled no-recreate: %v", verb, err)
+			}
+			if len(calls) != 1 {
+				t.Fatalf("%s calls = %+v, want one", verb, calls)
+			}
+		})
+	}
+}
+
 func TestUnknownComposeCommandFailsClosed(t *testing.T) {
 	calls, err := runRootCapturingExec(t, []string{"compose", "future-container-command"})
 	if err == nil || !strings.Contains(err.Error(), "has not been reviewed") {

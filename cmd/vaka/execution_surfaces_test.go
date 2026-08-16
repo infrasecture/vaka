@@ -142,7 +142,7 @@ services:
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = validateReferenceExecutionSurfaces("missing-vaka-file-is-not-used.yaml", inv)
+	err = validateReferenceExecutionSurfaces("vaka.yaml", inv)
 	if err == nil || !strings.Contains(err.Error(), "pre_stop") {
 		t.Fatalf("lifecycle validation error = %v", err)
 	}
@@ -167,11 +167,38 @@ services:
 	for _, verb := range []string{"start", "restart", "unpause"} {
 		t.Run(verb, func(t *testing.T) {
 			inv, _ := ParseComposeInvocation([]string{verb})
-			err := validateReferenceExecutionSurfaces("unused.yaml", inv)
+			err := validateReferenceExecutionSurfaces("vaka.yaml", inv)
 			if err == nil || !strings.Contains(err.Error(), "force-recreate") {
 				t.Fatalf("old runtime error = %v", err)
 			}
 		})
+	}
+}
+
+func TestLifecycleRejectsPolicyManagedUnlabeledContainer(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	writeFixtureFiles(t, dir, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+`, `
+services:
+  app:
+    image: alpine:3.20
+`)
+	setDockerServicesFactoryForTest(t, &fakeBuilderDockerServices{projectTargets: map[string][]execTarget{
+		"app": {{Managed: false}},
+	}})
+
+	inv, _ := ParseComposeInvocation([]string{"start", "app"})
+	err := validateReferenceExecutionSurfaces("vaka.yaml", inv)
+	if err == nil || !strings.Contains(err.Error(), "was not created by Vaka") || !strings.Contains(err.Error(), "raw `docker compose start`") {
+		t.Fatalf("unlabeled policy container error = %v", err)
 	}
 }
 

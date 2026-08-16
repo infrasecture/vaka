@@ -43,9 +43,9 @@ type execTargetInspector interface {
 }
 
 // InspectExecTarget resolves the same service replica selected by Compose
-// exec and reads security metadata from the live container. Live labels are
-// authoritative: local policy or Compose files may have changed since the
-// container was created.
+// exec and reads security metadata from the live container. Callers combine
+// live metadata with current policy membership: neither one is sufficient on
+// its own to decide that falling through to raw Compose is safe.
 func (d *dockerServices) InspectExecTarget(ctx context.Context, project, service string, index int) (execTarget, error) {
 	if d.legacy == nil {
 		return execTarget{}, fmt.Errorf("inspect exec target: Docker client is unavailable")
@@ -130,9 +130,11 @@ func legacyManagedSignature(inspect containertypes.InspectResponse) bool {
 	if inspect.Config == nil || len(inspect.Config.Entrypoint) == 0 || inspect.Config.Entrypoint[0] != vakaInitPath {
 		return false
 	}
-	user := strings.TrimSpace(inspect.Config.User)
-	if user != "0" && user != "0:0" && !strings.EqualFold(user, "root") && !strings.EqualFold(user, "root:root") {
+	if !dockerUserIsRoot(inspect.Config.User) {
 		return false
+	}
+	if inspect.Config.Labels[vakaInitLabel] == "present" {
+		return true
 	}
 	hasRuntime := false
 	for _, mounted := range inspect.Mounts {
@@ -140,6 +142,11 @@ func legacyManagedSignature(inspect containertypes.InspectResponse) bool {
 		hasRuntime = hasRuntime || destination == protectedRuntimePath
 	}
 	return hasRuntime
+}
+
+func dockerUserIsRoot(raw string) bool {
+	user, _, _ := strings.Cut(strings.TrimSpace(raw), ":")
+	return user == "" || user == "0" || strings.EqualFold(user, "root")
 }
 
 func (d *dockerServices) verifyManagedContainerMounts(ctx context.Context, inspect containertypes.InspectResponse, runtimeImage, serviceImage string) error {
@@ -203,10 +210,10 @@ func imageMountSubpath(configured mount.Mount) string {
 }
 
 type projectExecutionInspector interface {
-	InspectManagedProject(context.Context, string) (map[string][]execTarget, error)
+	InspectProjectContainers(context.Context, string) (map[string][]execTarget, error)
 }
 
-func (d *dockerServices) InspectManagedProject(ctx context.Context, project string) (map[string][]execTarget, error) {
+func (d *dockerServices) InspectProjectContainers(ctx context.Context, project string) (map[string][]execTarget, error) {
 	if d.legacy == nil {
 		return nil, fmt.Errorf("inspect Compose project: Docker client is unavailable")
 	}
@@ -235,9 +242,6 @@ func (d *dockerServices) InspectManagedProject(ctx context.Context, project stri
 		target, err := d.inspectExecContainer(ctx, ctr)
 		if err != nil {
 			return nil, err
-		}
-		if !target.Managed && !target.LegacyManaged {
-			continue
 		}
 		targets[service] = append(targets[service], target)
 	}
@@ -503,15 +507,22 @@ func reservedVakaEnvironmentName(value string) string {
 	return ""
 }
 
-func runSecureExec(inv *ComposeInvocation) error {
+func runSecureExec(vakaFile string, inv *ComposeInvocation) error {
 	parsed, err := parseExec(inv.PostSubcommand)
 	if err != nil {
 		return err
 	}
 	ctx := context.Background()
-	project, err := resolveComposeProjectName(ctx, inv)
+	composeInput, err := resolveComposeInput(inv)
 	if err != nil {
-		return fmt.Errorf("resolve Compose project for exec: %w", err)
+		return err
+	}
+	p, project, err := loadAndValidateResolved(vakaFile, composeInput)
+	if err != nil {
+		return err
+	}
+	if project == nil {
+		return fmt.Errorf("resolve Compose project for exec: no Compose project was loaded")
 	}
 	ds, err := newDockerServices(inv, PullNever)
 	if err != nil {
@@ -521,7 +532,7 @@ func runSecureExec(inv *ComposeInvocation) error {
 	if !ok {
 		return fmt.Errorf("inspect exec target: Docker service implementation does not support live container metadata")
 	}
-	target, err := inspector.InspectExecTarget(ctx, project, parsed.service, parsed.index)
+	target, err := inspector.InspectExecTarget(ctx, project.Name, parsed.service, parsed.index)
 	if err != nil {
 		return err
 	}
@@ -529,6 +540,9 @@ func runSecureExec(inv *ComposeInvocation) error {
 		return fmt.Errorf("service %s uses a legacy Vaka-managed container without current security metadata; recreate it with `vaka up --force-recreate` before exec", parsed.service)
 	}
 	if !target.Managed {
+		if _, policyManaged := p.Services[parsed.service]; policyManaged {
+			return fmt.Errorf("service %s is managed by %s but its live container was not created by Vaka; recreate it with `vaka up --force-recreate` before exec, or use raw `docker compose exec` only for an intentional policy bypass", parsed.service, vakaFile)
+		}
 		return runReference(inv)
 	}
 	if parsed.privileged {
