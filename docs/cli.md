@@ -205,9 +205,11 @@ vaka compose --project-directory srv logs -f app
 ```
 
 When no explicit `--profile` is supplied, Vaka honors `COMPOSE_PROFILES` using
-Compose's normal environment and `.env` resolution. Policy service names are
-validated against all declared services, while rendering and image preparation
-use only the active services selected by the command.
+Compose's normal environment resolution. Explicit `--env-file` values replace
+`COMPOSE_ENV_FILES`; when neither is set, Compose's ordinary `.env` fallback is
+used. Policy service names are validated against all declared services, while
+rendering and image preparation use only the active services selected by the
+command.
 
 Commands that can create containers (`up`, `run`, `create`, `scale`, and
 `watch`) validate policy and generate the complete Vaka override. Unknown
