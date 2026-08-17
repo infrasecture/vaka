@@ -123,6 +123,36 @@ services:
 	}
 }
 
+func TestBuildInjectionOverridePreservesExplicitInit(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	writeFixtureFiles(t, dir, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+`, `
+services:
+  app:
+    image: alpine:3.20
+    init: true
+`)
+	inv, err := ParseComposeInvocation([]string{"show-compose"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	override, _, err := buildInjectionOverride(context.Background(), &fakeBuilderDockerServices{}, "vaka.yaml", inv, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(override, "init: true") {
+		t.Fatalf("explicit init was not preserved:\n%s", override)
+	}
+}
+
 func TestBuildInjectionOverrideSeparatesGeneratorAndRuntimeIdentity(t *testing.T) {
 	dir := t.TempDir()
 	chdirForTest(t, dir)

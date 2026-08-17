@@ -508,6 +508,7 @@ func buildInjectionOverride(
 			Entrypoint:       rt.Entrypoint,
 			Command:          rt.Command,
 			CapDelta:         capPlan.Add,
+			InitEnabled:      composeSvc.Init != nil && *composeSvc.Init,
 			PolicyPayload:    payload,
 			PolicyRevision:   policyRevision,
 			Healthcheck:      rt.Healthcheck,

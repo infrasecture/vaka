@@ -19,6 +19,7 @@ type overrideDoc struct {
 		Image       string                             `yaml:"image"`
 		PullPolicy  string                             `yaml:"pull_policy"`
 		User        string                             `yaml:"user"`
+		Init        *bool                              `yaml:"init"`
 		Entrypoint  []string                           `yaml:"entrypoint"`
 		Command     []string                           `yaml:"command"`
 		CapAdd      []string                           `yaml:"cap_add"`
@@ -73,6 +74,9 @@ func TestBuildOverrideInjectsPolicyRuntime(t *testing.T) {
 	if svc.User != "0:0" {
 		t.Errorf("user = %q, want 0:0", svc.User)
 	}
+	if svc.Init == nil || *svc.Init {
+		t.Errorf("init = %v, want explicit false", svc.Init)
+	}
 	if svc.Image != singleEntry("codex")[0].ImageID || svc.PullPolicy != "never" {
 		t.Errorf("service image identity = %q pull_policy=%q, want exact inspected ID with pulling disabled", svc.Image, svc.PullPolicy)
 	}
@@ -84,6 +88,19 @@ func TestBuildOverrideInjectsPolicyRuntime(t *testing.T) {
 	}
 	if svc.Environment["AGENT_VAKA_POLICY"] != "cG9saWN5" || svc.Environment["AGENT_VAKA_POLICY_REVISION"] != "sha256:policy" {
 		t.Errorf("policy environment = %+v", svc.Environment)
+	}
+}
+
+func TestBuildOverridePreservesExplicitInit(t *testing.T) {
+	entries := singleEntry("app")
+	entries[0].InitEnabled = true
+	out, err := compose.BuildOverride(entries, testRuntime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	init := parseOverride(t, out).Services["app"].Init
+	if init == nil || !*init {
+		t.Fatalf("init = %v, want explicit true", init)
 	}
 }
 

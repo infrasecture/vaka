@@ -152,6 +152,10 @@ if [[ "${container_state}" != "running" ]]; then
     die "smoke service is ${container_state}, expected running"
 fi
 
+configured_init="$(docker container inspect "${container_id}" --format '{{json .HostConfig.Init}}')"
+[[ "${configured_init}" == false ]] || \
+    die "managed service HostConfig.Init is ${configured_init}; expected explicit false to override daemon defaults"
+
 requested_mount="$(docker container inspect "${container_id}" --format '{{range .HostConfig.Mounts}}{{if eq .Target "/opt/vaka"}}{{printf "%s|%s|%t|%s" .Type .Source .ReadOnly .ImageOptions.Subpath}}{{end}}{{end}}')"
 IFS='|' read -r requested_type requested_source requested_read_only requested_subpath <<<"${requested_mount}"
 [[ "${requested_type}" == image && "${requested_read_only}" == true && "${requested_subpath}" == opt/vaka ]] || \

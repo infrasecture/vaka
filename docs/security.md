@@ -46,6 +46,11 @@ service joins a managed service's network or PID namespace, including
 `container:` joins to an explicit managed `container_name`. Enforcement is
 best-effort across these deliberately weakened boundaries.
 
+When Compose leaves `init` unset, Vaka emits `init: false` for the managed
+service so a daemon-wide default cannot silently insert a capable parent ahead
+of `vaka-init`. An explicit `init: true` remains preserved and produces the
+best-effort warning described above.
+
 Docker stores the startup user and capabilities on the container, so processes
 created later do not inherit the application's dropped process state. Vaka
 therefore wraps healthchecks and `vaka exec` commands with the verified

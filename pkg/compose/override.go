@@ -45,6 +45,7 @@ type ServiceEntry struct {
 	Entrypoint       []string
 	Command          []string
 	CapDelta         []string
+	InitEnabled      bool
 	PolicyPayload    string
 	PolicyRevision   string
 	Healthcheck      []string
@@ -68,6 +69,7 @@ type serviceOverride struct {
 	Image       string                             `yaml:"image,omitempty"`
 	PullPolicy  string                             `yaml:"pull_policy,omitempty"`
 	User        string                             `yaml:"user,omitempty"`
+	Init        *bool                              `yaml:"init,omitempty"`
 	Entrypoint  []string                           `yaml:"entrypoint,omitempty"`
 	Command     []string                           `yaml:"command,omitempty"`
 	CapAdd      []string                           `yaml:"cap_add,omitempty"`
@@ -126,11 +128,15 @@ func BuildOverride(entries []ServiceEntry, runtime RuntimeMount, preparedUnmanag
 		entrypoint := make([]string, 0, 2+len(e.Entrypoint))
 		entrypoint = append(entrypoint, vakaInitPath, "--")
 		entrypoint = append(entrypoint, e.Entrypoint...)
+		// Never delegate an unset Compose value to the daemon-wide init
+		// default. The caller sets this only for an explicit init: true.
+		initEnabled := e.InitEnabled
 
 		svc := serviceOverride{
 			Image:      e.ImageID,
 			PullPolicy: "never",
 			User:       "0:0",
+			Init:       &initEnabled,
 			Entrypoint: entrypoint,
 			Command:    append([]string(nil), e.Command...),
 			CapAdd:     e.CapDelta,
