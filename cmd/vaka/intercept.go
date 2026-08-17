@@ -746,16 +746,8 @@ func validateSelectedRenderOptions(selected *composetypes.Project, inv *ComposeI
 	if len(selected.Services) == 0 {
 		return fmt.Errorf("compose %s: no service selected", inv.Subcommand)
 	}
-	if inv.Subcommand == "up" || inv.Subcommand == "create" {
-		for _, raw := range composeValueOptionValues(inv.PostSubcommand, map[string]bool{"--scale": true}) {
-			name, _, err := parseScaleSpecifier(raw)
-			if err != nil {
-				return fmt.Errorf("compose %s: %w", inv.Subcommand, err)
-			}
-			if _, err := selected.GetService(name); err != nil {
-				return fmt.Errorf("compose %s --scale: %w", inv.Subcommand, err)
-			}
-		}
+	if err := validateSelectedContainerNames(selected, inv); err != nil {
+		return err
 	}
 	if inv.Subcommand == "up" {
 		removeOrphans, err := composeBoolOptionEnabled(inv.PostSubcommand, "--remove-orphans", "")
@@ -785,6 +777,63 @@ func validateSelectedRenderOptions(selected *composetypes.Project, inv *ComposeI
 		return fmt.Errorf("compose watch: none of the selected services is configured for watch")
 	}
 	return nil
+}
+
+// validateSelectedContainerNames mirrors the container-name checks Compose
+// performs before creating the selected graph. Run is deliberately different:
+// Compose removes the one-off target before creating its dependencies, so only
+// that dependency subgraph participates in the early uniqueness check.
+func validateSelectedContainerNames(selected *composetypes.Project, inv *ComposeInvocation) error {
+	checked := selected
+	if inv.Subcommand == "run" {
+		parsed, err := parseRun(inv.PostSubcommand)
+		if err != nil {
+			return err
+		}
+		checked = selected.WithServicesDisabled(parsed.service)
+	}
+	if err := checked.CheckContainerNameUnicity(); err != nil {
+		return fmt.Errorf("compose %s: %w", inv.Subcommand, err)
+	}
+
+	scales, err := effectiveCLIServiceScales(inv)
+	if err != nil {
+		return err
+	}
+	for name, replicas := range scales {
+		svc, err := selected.GetService(name)
+		if err != nil {
+			return fmt.Errorf("compose %s --scale: %w", inv.Subcommand, err)
+		}
+		if replicas > 1 && strings.TrimSpace(svc.ContainerName) != "" {
+			return fmt.Errorf("compose %s: service %q uses custom container name %q and cannot be scaled to %d replicas", inv.Subcommand, name, svc.ContainerName, replicas)
+		}
+	}
+	return nil
+}
+
+// effectiveCLIServiceScales returns only command-line scale overrides. Both
+// Compose's repeated --scale option and positional scale command use the last
+// value supplied for a service.
+func effectiveCLIServiceScales(inv *ComposeInvocation) (map[string]int, error) {
+	scales := make(map[string]int)
+	switch inv.Subcommand {
+	case "up", "create":
+		for _, raw := range composeValueOptionValues(inv.PostSubcommand, map[string]bool{"--scale": true}) {
+			name, replicas, err := parseScaleSpecifier(raw)
+			if err != nil {
+				return nil, fmt.Errorf("compose %s: %w", inv.Subcommand, err)
+			}
+			scales[name] = replicas
+		}
+	case "scale":
+		_, parsed, err := scanScaleServiceSpecs(inv)
+		if err != nil {
+			return nil, err
+		}
+		return parsed, nil
+	}
+	return scales, nil
 }
 
 func composeEnvironmentBool(value string) bool {
@@ -1026,40 +1075,48 @@ func parseScaleSpecifier(value string) (string, int, error) {
 }
 
 func scanScaleServiceTargets(inv *ComposeInvocation) ([]string, error) {
+	targets, _, err := scanScaleServiceSpecs(inv)
+	return targets, err
+}
+
+func scanScaleServiceSpecs(inv *ComposeInvocation) ([]string, map[string]int, error) {
 	var targets []string
+	replicas := make(map[string]int)
 	for i, tok := range inv.PostSubcommand {
 		if tok == "--" {
 			for _, value := range inv.PostSubcommand[i+1:] {
-				service, _, err := parseScaleSpecifier(value)
+				service, count, err := parseScaleSpecifier(value)
 				if err != nil {
-					return nil, fmt.Errorf("compose scale: %w", err)
+					return nil, nil, fmt.Errorf("compose scale: %w", err)
 				}
 				targets = append(targets, service)
+				replicas[service] = count
 			}
 			break
 		}
 		if strings.HasPrefix(tok, "-") && tok != "-" {
 			name, value, hasValue := strings.Cut(tok, "=")
 			if name != "--dry-run" && name != "--no-deps" {
-				return nil, fmt.Errorf("compose scale: unknown option %q before image preparation; upgrade Vaka if this is a new Docker Compose option", tok)
+				return nil, nil, fmt.Errorf("compose scale: unknown option %q before image preparation; upgrade Vaka if this is a new Docker Compose option", tok)
 			}
 			if hasValue {
 				if _, err := composeBoolValue(name, value); err != nil {
-					return nil, err
+					return nil, nil, err
 				}
 			}
 			continue
 		}
-		service, _, err := parseScaleSpecifier(tok)
+		service, count, err := parseScaleSpecifier(tok)
 		if err != nil {
-			return nil, fmt.Errorf("compose scale: %w", err)
+			return nil, nil, fmt.Errorf("compose scale: %w", err)
 		}
 		targets = append(targets, service)
+		replicas[service] = count
 	}
 	if len(targets) == 0 {
-		return nil, fmt.Errorf("compose scale: requires at least one SERVICE=REPLICAS argument")
+		return nil, nil, fmt.Errorf("compose scale: requires at least one SERVICE=REPLICAS argument")
 	}
-	return targets, nil
+	return targets, replicas, nil
 }
 
 var watchBooleanOptions = map[string]bool{

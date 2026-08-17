@@ -678,6 +678,79 @@ func TestInvalidRenderInvocationRejectedBeforeDockerAction(t *testing.T) {
 	}
 }
 
+func TestContainerNameConflictsRejectedBeforeImagePreparation(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	writeFixtureFiles(t, dir, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+  dep:
+    network:
+      egress:
+        defaultAction: reject
+`, `
+services:
+  app:
+    build: .
+    container_name: duplicate
+    depends_on:
+      - dep
+  dep:
+    build: .
+    container_name: duplicate
+`)
+
+	ds := &fakeBuilderDockerServices{}
+	calls, err := runRootCapturingExecWithDockerServices(t, []string{"compose", "up", "--build", "app"}, ds)
+	if err == nil || !strings.Contains(err.Error(), "already in use") {
+		t.Fatalf("duplicate container-name error = %v", err)
+	}
+	if len(calls) != 0 || len(ds.ensureRefs) != 0 {
+		t.Fatalf("duplicate names reached Docker preparation: calls=%+v runtime=%v", calls, ds.ensureRefs)
+	}
+}
+
+func TestFixedContainerNameScaleRejectedBeforeImagePreparation(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	writeFixtureFiles(t, dir, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+`, `
+services:
+  app:
+    build: .
+    container_name: fixed
+`)
+
+	for _, args := range [][]string{
+		{"compose", "up", "--build", "--scale=app=2", "app"},
+		{"compose", "create", "--build", "--scale=app=2", "app"},
+		{"compose", "scale", "--no-deps", "app=2"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			ds := &fakeBuilderDockerServices{}
+			calls, err := runRootCapturingExecWithDockerServices(t, args, ds)
+			if err == nil || !strings.Contains(err.Error(), "cannot be scaled") {
+				t.Fatalf("fixed-name scale error = %v", err)
+			}
+			if len(calls) != 0 || len(ds.ensureRefs) != 0 {
+				t.Fatalf("invalid scale reached Docker preparation: calls=%+v runtime=%v", calls, ds.ensureRefs)
+			}
+		})
+	}
+}
+
 func TestComposeGlobalValidationPrecedesDockerAction(t *testing.T) {
 	tests := [][]string{
 		{"compose", "--ansi=rainbow", "up", "--build"},

@@ -478,6 +478,117 @@ func TestScanCreateServiceTargetsAndDependencySelection(t *testing.T) {
 	}
 }
 
+func TestSelectedContainerNamePreflightMatchesComposeGraphs(t *testing.T) {
+	project := &composetypes.Project{Services: composetypes.Services{
+		"app": {
+			Name:          "app",
+			ContainerName: "shared",
+			DependsOn: map[string]composetypes.ServiceDependency{
+				"dep-a": {Condition: "service_started"},
+				"dep-b": {Condition: "service_started"},
+			},
+		},
+		"dep-a": {Name: "dep-a", ContainerName: "dependency"},
+		"dep-b": {Name: "dep-b", ContainerName: "dependency"},
+		"other-a": {
+			Name:          "other-a",
+			ContainerName: "unrelated",
+		},
+		"other-b": {
+			Name:          "other-b",
+			ContainerName: "unrelated",
+		},
+	}}
+
+	t.Run("selected dependency duplicate", func(t *testing.T) {
+		inv, _ := ParseComposeInvocation([]string{"up", "app"})
+		selected, err := selectRenderInvocationServices(project, inv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := validateSelectedContainerNames(selected, inv); err == nil || !strings.Contains(err.Error(), "already in use") {
+			t.Fatalf("duplicate-name error = %v", err)
+		}
+	})
+
+	t.Run("unselected duplicate ignored", func(t *testing.T) {
+		inv, _ := ParseComposeInvocation([]string{"up", "--no-deps", "app"})
+		selected, err := selectRenderInvocationServices(project, inv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := validateSelectedContainerNames(selected, inv); err != nil {
+			t.Fatalf("unselected names blocked targeted command: %v", err)
+		}
+	})
+
+	t.Run("run checks dependencies only", func(t *testing.T) {
+		inv, _ := ParseComposeInvocation([]string{"run", "app"})
+		selected, err := selectRenderInvocationServices(project, inv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := validateSelectedContainerNames(selected, inv); err == nil || !strings.Contains(err.Error(), "already in use") {
+			t.Fatalf("run dependency duplicate error = %v", err)
+		}
+
+		projectWithoutDependencyDuplicate := project.WithServicesDisabled("dep-b")
+		app := projectWithoutDependencyDuplicate.Services["app"]
+		app.ContainerName = "dependency"
+		app.DependsOn = map[string]composetypes.ServiceDependency{"dep-a": {Condition: "service_started"}}
+		projectWithoutDependencyDuplicate.Services["app"] = app
+		inv, _ = ParseComposeInvocation([]string{"run", "app"})
+		selected, err = selectRenderInvocationServices(projectWithoutDependencyDuplicate, inv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := validateSelectedContainerNames(selected, inv); err != nil {
+			t.Fatalf("run target/dependency duplicate was over-rejected: %v", err)
+		}
+
+		inv, _ = ParseComposeInvocation([]string{"run", "--no-deps", "app"})
+		selected, err = selectRenderInvocationServices(project, inv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := validateSelectedContainerNames(selected, inv); err != nil {
+			t.Fatalf("run --no-deps inspected dependencies: %v", err)
+		}
+	})
+}
+
+func TestEffectiveCLIScalePreflightUsesLastValue(t *testing.T) {
+	project := &composetypes.Project{Services: composetypes.Services{
+		"app": {Name: "app", ContainerName: "fixed"},
+	}}
+	tests := []struct {
+		name    string
+		args    []string
+		wantErr bool
+	}{
+		{name: "up final one", args: []string{"up", "--scale", "app=2", "--scale=app=1", "app"}},
+		{name: "up final two", args: []string{"up", "--scale=app=1", "--scale", "app=2", "app"}, wantErr: true},
+		{name: "create final two", args: []string{"create", "--scale=app=1", "--scale=app=2", "app"}, wantErr: true},
+		{name: "scale final one", args: []string{"scale", "app=2", "app=1"}},
+		{name: "scale final two", args: []string{"scale", "app=1", "app=2"}, wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			inv, err := ParseComposeInvocation(tc.args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = validateSelectedContainerNames(project, inv)
+			if tc.wantErr && (err == nil || !strings.Contains(err.Error(), "cannot be scaled")) {
+				t.Fatalf("error = %v, want scale rejection", err)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 func TestPullBuildFreezesSelectedUnmanagedImageOnlyService(t *testing.T) {
 	project := &composetypes.Project{Services: composetypes.Services{
 		"app": {Name: "app", Image: "app:latest", DependsOn: map[string]composetypes.ServiceDependency{
