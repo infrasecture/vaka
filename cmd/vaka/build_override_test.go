@@ -676,6 +676,43 @@ services:
 	}
 }
 
+func TestInvalidCapabilityPlanPrecedesImagePreparation(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	writeFixtureFiles(t, dir, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+`, `
+services:
+  app:
+    image: app:latest
+    build: .
+    pull_policy: always
+    cap_add: [ALL]
+    cap_drop: [NET_ADMIN]
+`)
+
+	var calls [][]string
+	setExecDockerComposeForTest(t, func(inv *ComposeInvocation, _ string, _ []string) error {
+		calls = append(calls, append([]string{}, inv.Args...))
+		return nil
+	})
+	ds := &fakeBuilderDockerServices{}
+	inv, _ := ParseComposeInvocation([]string{"up", "--build", "--pull=always", "app"})
+	_, _, err := buildInjectionOverride(context.Background(), ds, "vaka.yaml", inv, false)
+	if err == nil || !strings.Contains(err.Error(), "prevents Vaka from provisioning required temporary capability NET_ADMIN") {
+		t.Fatalf("capability-plan error = %v", err)
+	}
+	if len(calls) != 0 || len(ds.ensureRefs) != 0 {
+		t.Fatalf("invalid capability plan prepared images: calls=%v runtime=%v", calls, ds.ensureRefs)
+	}
+}
+
 func TestUpMissingPullRemainsForUnmanagedComposeBehavior(t *testing.T) {
 	dir := t.TempDir()
 	chdirForTest(t, dir)

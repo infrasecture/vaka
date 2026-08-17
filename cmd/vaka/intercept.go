@@ -253,6 +253,21 @@ func buildInjectionOverride(
 			return "", nil, err
 		}
 	}
+	// Capability feasibility depends only on the merged Compose service and
+	// Vaka policy. Reject an impossible plan before any requested pull or build
+	// can mutate Docker state.
+	capPlans := make(map[string]capabilityPlan, len(managedServices))
+	for svcName, svc := range managedServices {
+		composeSvc, ok := selected.Services[svcName]
+		if !ok {
+			return "", nil, fmt.Errorf("service %q: not found in compose files %v", svcName, composeInput.Files)
+		}
+		capPlan, err := computeCapabilityPlan(composeSvc, svc.Runtime)
+		if err != nil {
+			return "", nil, fmt.Errorf("service %s: %w", svcName, err)
+		}
+		capPlans[svcName] = capPlan
+	}
 	inv.ResolvedProjectName = project.Name
 	if err := validateRenderContainerReuse(ctx, ds, selected, managedServices, inv); err != nil {
 		return "", nil, err
@@ -404,10 +419,7 @@ func buildInjectionOverride(
 		if restoreUser == "" {
 			restoreUser = strings.TrimSpace(rt.ImageUser)
 		}
-		capPlan, err := computeCapabilityPlan(composeSvc, svc.Runtime, restoreUser)
-		if err != nil {
-			return "", nil, fmt.Errorf("service %s: %w", svcName, err)
-		}
+		capPlan := capPlans[svcName]
 		svc.Runtime.DropCaps = capPlan.Drop
 		fmt.Fprintf(os.Stderr, "vaka: service %s: dropCaps: %v\n", svcName, svc.Runtime.DropCaps)
 
@@ -1336,7 +1348,7 @@ type capabilityPlan struct {
 // computeCapabilityPlan derives Vaka's temporary capabilities from the merged
 // Compose service. Capabilities already granted by the service remain
 // intentional unless runtime.dropCaps requests their removal.
-func computeCapabilityPlan(svc composetypes.ServiceConfig, runtime *policy.RuntimeConfig, _ string) (capabilityPlan, error) {
+func computeCapabilityPlan(svc composetypes.ServiceConfig, runtime *policy.RuntimeConfig) (capabilityPlan, error) {
 	drop := []string{}
 	if runtime != nil {
 		drop = append(drop, runtime.DropCaps...)

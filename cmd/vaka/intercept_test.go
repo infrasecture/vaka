@@ -626,7 +626,6 @@ func TestComputeCapabilityPlan(t *testing.T) {
 		capAdd     []string
 		capDrop    []string
 		privileged bool
-		user       string
 		runtime    *policy.RuntimeConfig
 		wantAdd    []string
 		wantDrop   []string
@@ -634,8 +633,7 @@ func TestComputeCapabilityPlan(t *testing.T) {
 	}{
 		{name: "default root", wantAdd: []string{"NET_ADMIN"}, wantDrop: []string{"NET_ADMIN"}},
 		{name: "setpcap explicitly dropped", capDrop: []string{"SETPCAP"}, wantAdd: []string{"NET_ADMIN", "SETPCAP"}, wantDrop: []string{"NET_ADMIN", "SETPCAP"}},
-		{name: "all dropped for nonroot", capDrop: []string{"ALL"}, user: "1000:1000", wantAdd: []string{"NET_ADMIN", "SETUID", "SETGID", "SETPCAP"}, wantDrop: []string{"NET_ADMIN", "SETUID", "SETGID", "SETPCAP"}},
-		{name: "root with nonroot group", capDrop: []string{"ALL"}, user: "0:1000", wantAdd: []string{"NET_ADMIN", "SETUID", "SETGID", "SETPCAP"}, wantDrop: []string{"NET_ADMIN", "SETUID", "SETGID", "SETPCAP"}},
+		{name: "all dropped provisions exec identity caps", capDrop: []string{"ALL"}, wantAdd: []string{"NET_ADMIN", "SETUID", "SETGID", "SETPCAP"}, wantDrop: []string{"NET_ADMIN", "SETUID", "SETGID", "SETPCAP"}},
 		{name: "root stores exec identity caps", capDrop: []string{"SETUID", "SETGID"}, wantAdd: []string{"NET_ADMIN", "SETUID", "SETGID"}, wantDrop: []string{"NET_ADMIN", "SETUID", "SETGID"}},
 		{name: "runtime drops are unioned", runtime: &policy.RuntimeConfig{DropCaps: []string{"NET_RAW"}}, wantAdd: []string{"NET_ADMIN"}, wantDrop: []string{"NET_RAW", "NET_ADMIN"}},
 		{name: "chown gets missing setup caps", capDrop: []string{"ALL"}, runtime: &policy.RuntimeConfig{Chown: []policy.ChownAction{{Path: "/data"}}}, wantAdd: []string{"NET_ADMIN", "SETUID", "SETGID", "CHOWN", "DAC_OVERRIDE", "SETPCAP"}, wantDrop: []string{"NET_ADMIN", "SETUID", "SETGID", "CHOWN", "DAC_OVERRIDE", "SETPCAP"}},
@@ -650,7 +648,7 @@ func TestComputeCapabilityPlan(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			svc := composetypes.ServiceConfig{CapAdd: tc.capAdd, CapDrop: tc.capDrop, Privileged: tc.privileged}
-			got, err := computeCapabilityPlan(svc, tc.runtime, tc.user)
+			got, err := computeCapabilityPlan(svc, tc.runtime)
 			if tc.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 					t.Fatalf("error = %v, want %q", err, tc.wantErr)
