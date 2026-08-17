@@ -269,11 +269,8 @@ func validateServiceExecutionSurfaces(name string, svc composetypes.ServiceConfi
 	if svc.Labels[vakaInitLabel] == "present" {
 		return fmt.Errorf("service %s: label %s=present is not supported: the exec security boundary requires Vaka's verified read-only runtime mount", name, vakaInitLabel)
 	}
-	if len(svc.PostStart) > 0 {
-		return fmt.Errorf("service %s: post_start hooks are not supported on Vaka-managed services because Compose executes them outside vaka-init", name)
-	}
-	if len(svc.PreStop) > 0 {
-		return fmt.Errorf("service %s: pre_stop hooks are not supported on Vaka-managed services because Compose executes them outside vaka-init", name)
+	if err := validateLifecycleHooks(name, svc, true, true); err != nil {
+		return err
 	}
 	if svc.Develop != nil {
 		for _, trigger := range svc.Develop.Watch {
@@ -326,6 +323,37 @@ func validateServiceExecutionSurfaces(name string, svc composetypes.ServiceConfi
 	return nil
 }
 
+func validateLifecycleHooks(name string, svc composetypes.ServiceConfig, preStop, postStart bool) error {
+	if preStop && len(svc.PreStop) > 0 {
+		return fmt.Errorf("service %s: pre_stop hooks are not supported on Vaka-managed services because Compose executes them outside vaka-init", name)
+	}
+	if postStart && len(svc.PostStart) > 0 {
+		return fmt.Errorf("service %s: post_start hooks are not supported on Vaka-managed services because Compose executes them outside vaka-init", name)
+	}
+	return nil
+}
+
+type lifecycleExecution struct {
+	resumes   bool
+	preStop   bool
+	postStart bool
+}
+
+func lifecycleExecutionFor(subcommand string) lifecycleExecution {
+	switch subcommand {
+	case "start":
+		return lifecycleExecution{resumes: true, postStart: true}
+	case "restart":
+		return lifecycleExecution{resumes: true, preStop: true, postStart: true}
+	case "unpause":
+		return lifecycleExecution{resumes: true}
+	case "stop", "down", "rm":
+		return lifecycleExecution{preStop: true}
+	default:
+		return lifecycleExecution{}
+	}
+}
+
 func validateReferenceExecutionSurfaces(vakaFile string, inv *ComposeInvocation) error {
 	input, err := resolveComposeInput(inv)
 	if err != nil {
@@ -354,40 +382,67 @@ func validateReferenceExecutionSurfaces(vakaFile string, inv *ComposeInvocation)
 	if err != nil {
 		return err
 	}
+	execution := lifecycleExecutionFor(inv.Subcommand)
 	for name, targets := range live {
 		if selected != nil && !selected[name] {
 			continue
 		}
 		_, policyManaged := p.Services[name]
-		if inv.Subcommand != "unpause" {
+		liveManaged := targetsContainVakaRuntime(targets)
+		if (policyManaged || liveManaged) && (execution.preStop || execution.postStart) {
 			if svc, ok := project.Services[name]; ok {
-				if err := validateServiceExecutionSurfaces(name, svc); err != nil {
+				if err := validateLifecycleHooks(name, svc, execution.preStop, execution.postStart); err != nil {
 					return err
 				}
 			}
 		}
-		if policyManaged {
-			for _, target := range targets {
-				if !target.Managed && !target.LegacyManaged {
-					return fmt.Errorf("service %s is managed by %s but its live container was not created by Vaka; recreate it with `vaka up --force-recreate` before %s, or use raw `docker compose %s` only for an intentional policy bypass", name, vakaFile, inv.Subcommand, inv.Subcommand)
-				}
-			}
+		if !execution.resumes {
+			continue
 		}
-		if inv.Subcommand == "start" || inv.Subcommand == "restart" || inv.Subcommand == "unpause" {
-			for _, target := range targets {
-				if target.LegacyManaged || target.RuntimeVersion != runtimeBundleVersion || target.RuntimeImage == "" || !target.RuntimeMounted {
-					return fmt.Errorf("service %s uses an older or mutable Vaka runtime; recreate it with `vaka up --force-recreate` before %s", name, inv.Subcommand)
-				}
-			}
+		if err := validateLifecycleResumeTargets(name, vakaFile, inv.Subcommand, policyManaged, targets); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func targetsContainVakaRuntime(targets []execTarget) bool {
+	for _, target := range targets {
+		if target.Managed || target.LegacyManaged {
+			return true
+		}
+	}
+	return false
+}
+
+func validateLifecycleResumeTargets(name, vakaFile, subcommand string, policyManaged bool, targets []execTarget) error {
+	hasVakaRuntime := false
+	hasOrdinaryRuntime := false
+	for _, target := range targets {
+		if target.Managed || target.LegacyManaged {
+			hasVakaRuntime = true
+		} else {
+			hasOrdinaryRuntime = true
+		}
+	}
+	if policyManaged && hasOrdinaryRuntime {
+		return fmt.Errorf("service %s is managed by %s but its live container was not created by Vaka; recreate it with `vaka up --force-recreate` before %s, or use raw `docker compose %s` only for an intentional policy bypass", name, vakaFile, subcommand, subcommand)
+	}
+	if hasVakaRuntime && hasOrdinaryRuntime {
+		return fmt.Errorf("service %s has a mix of Vaka-managed and ordinary live containers; recreate all replicas with `vaka up --force-recreate` before %s", name, subcommand)
+	}
+	for _, target := range targets {
+		if !target.Managed && !target.LegacyManaged {
+			continue
+		}
+		if target.LegacyManaged || target.RuntimeVersion != runtimeBundleVersion || target.RuntimeImage == "" || !target.RuntimeMounted {
+			return fmt.Errorf("service %s uses an older or mutable Vaka runtime; recreate it with `vaka up --force-recreate` before %s", name, subcommand)
 		}
 	}
 	return nil
 }
 
 func referenceValidationServices(project *composetypes.Project, inv *ComposeInvocation) (map[string]bool, error) {
-	if inv.Subcommand == "down" {
-		return nil, nil
-	}
 	valueOptions := map[string]bool{}
 	booleanOptions := map[string]bool{"--dry-run": true}
 	shortBooleans := ""
@@ -410,6 +465,14 @@ func referenceValidationServices(project *composetypes.Project, inv *ComposeInvo
 		booleanOptions["-v"] = true
 		booleanOptions["--volumes"] = true
 		shortBooleans = "fsv"
+	case "down":
+		valueOptions["-t"] = true
+		valueOptions["--timeout"] = true
+		valueOptions["--rmi"] = true
+		booleanOptions["--remove-orphans"] = true
+		booleanOptions["-v"] = true
+		booleanOptions["--volumes"] = true
+		shortBooleans = "v"
 	case "unpause":
 	default:
 		return nil, nil
@@ -462,14 +525,21 @@ func referenceValidationServices(project *composetypes.Project, inv *ComposeInvo
 		return nil, fmt.Errorf("compose %s: unknown option %q before lifecycle validation; upgrade Vaka if this is a new Docker Compose option", inv.Subcommand, tok)
 	}
 	if len(targets) == 0 {
-		return nil, nil
+		// Compose operates on active services when no targets are given. Live
+		// containers from inactive profiles or obsolete project definitions are
+		// not execution targets and must not block an unrelated lifecycle action.
+		out := make(map[string]bool, len(project.Services))
+		for name := range project.Services {
+			out[name] = true
+		}
+		return out, nil
 	}
 	enabled, err := project.WithServicesEnabled(targets...)
 	if err != nil {
 		return nil, err
 	}
 	var selected *composetypes.Project
-	if inv.Subcommand == "start" || inv.Subcommand == "restart" {
+	if inv.Subcommand == "restart" {
 		noDeps, err := composeBoolOptionEnabled(inv.PostSubcommand, "--no-deps", "")
 		if err != nil {
 			return nil, err
@@ -477,8 +547,21 @@ func referenceValidationServices(project *composetypes.Project, inv *ComposeInvo
 		if noDeps {
 			selected, err = enabled.WithSelectedServices(targets, composetypes.IgnoreDependencies)
 		} else {
-			selected, err = enabled.WithSelectedServices(targets)
+			// Compose restart follows reverse restart:true edges. Ordinary
+			// dependencies are not restarted, while dependents can be selected
+			// transitively when every connecting edge opts in.
+			for name, svc := range enabled.Services {
+				for dependency, config := range svc.DependsOn {
+					if !config.Restart {
+						delete(svc.DependsOn, dependency)
+					}
+				}
+				enabled.Services[name] = svc
+			}
+			selected, err = enabled.WithSelectedServices(targets, composetypes.IncludeDependents)
 		}
+	} else if inv.Subcommand == "start" {
+		selected, err = enabled.WithSelectedServices(targets)
 	} else {
 		selected, err = enabled.WithSelectedServices(targets, composetypes.IgnoreDependencies)
 	}

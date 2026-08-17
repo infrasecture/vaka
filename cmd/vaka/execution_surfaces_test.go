@@ -13,6 +13,15 @@ func managedTestPolicy() *policy.ServicePolicy {
 	return &policy.ServicePolicy{Services: map[string]*policy.ServiceConfig{"app": {}}}
 }
 
+func currentManagedLifecycleTarget() execTarget {
+	return execTarget{
+		Managed:        true,
+		RuntimeVersion: runtimeBundleVersion,
+		RuntimeImage:   "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		RuntimeMounted: true,
+	}
+}
+
 func TestValidateRunInvocationRejectsSecurityOverrides(t *testing.T) {
 	tests := []struct {
 		name string
@@ -130,14 +139,7 @@ services:
     pre_stop:
       - command: ["sh", "-c", "echo unsafe"]
 `)
-	ds := &fakeBuilderDockerServices{projectTargets: map[string][]execTarget{
-		"app": {{
-			Managed:        true,
-			RuntimeVersion: runtimeBundleVersion,
-			RuntimeImage:   "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-			RuntimeMounted: true,
-		}},
-	}}
+	ds := &fakeBuilderDockerServices{projectTargets: map[string][]execTarget{"app": {currentManagedLifecycleTarget()}}}
 	setDockerServicesFactoryForTest(t, ds)
 	inv, err := ParseComposeInvocation([]string{"stop"})
 	if err != nil {
@@ -190,11 +192,7 @@ services:
   stale:
     image: alpine:3.20
 `)
-	current := execTarget{
-		Managed: true, RuntimeVersion: runtimeBundleVersion,
-		RuntimeImage:   "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		RuntimeMounted: true,
-	}
+	current := currentManagedLifecycleTarget()
 	setDockerServicesFactoryForTest(t, &fakeBuilderDockerServices{projectTargets: map[string][]execTarget{
 		"app":   {current},
 		"stale": {{Managed: true, RuntimeVersion: "v0.1.0", RuntimeMounted: true}},
@@ -212,15 +210,26 @@ services:
 
 func TestReferenceValidationServiceTargets(t *testing.T) {
 	project := &composetypes.Project{Services: map[string]composetypes.ServiceConfig{
-		"app": {Name: "app", DependsOn: map[string]composetypes.ServiceDependency{"db": {Condition: "service_started"}}},
-		"db":  {Name: "db"},
+		"dep": {Name: "dep"},
+		"app": {Name: "app", DependsOn: map[string]composetypes.ServiceDependency{
+			"dep": {Condition: "service_started", Restart: true},
+		}},
+		"worker": {Name: "worker", DependsOn: map[string]composetypes.ServiceDependency{
+			"app": {Condition: "service_started", Restart: true},
+		}},
+		"inert": {Name: "inert", DependsOn: map[string]composetypes.ServiceDependency{
+			"dep": {Condition: "service_started", Restart: false},
+		}},
 	}}
 	for _, tc := range []struct {
 		args []string
 		want map[string]bool
 	}{
-		{args: []string{"restart", "app"}, want: map[string]bool{"app": true, "db": true}},
+		{args: []string{"restart", "dep"}, want: map[string]bool{"dep": true, "app": true, "worker": true}},
+		{args: []string{"restart", "app"}, want: map[string]bool{"app": true, "worker": true}},
 		{args: []string{"restart", "--no-deps", "app"}, want: map[string]bool{"app": true}},
+		{args: []string{"start", "app"}, want: map[string]bool{"app": true, "dep": true}},
+		{args: []string{"down", "--remove-orphans", "dep"}, want: map[string]bool{"dep": true}},
 		{args: []string{"rm", "-fsv", "app"}, want: map[string]bool{"app": true}},
 		{args: []string{"stop", "--timeout=5", "app"}, want: map[string]bool{"app": true}},
 	} {
@@ -232,6 +241,192 @@ func TestReferenceValidationServiceTargets(t *testing.T) {
 		if !reflect.DeepEqual(got, tc.want) {
 			t.Errorf("referenceValidationServices(%v) = %v, want %v", tc.args, got, tc.want)
 		}
+	}
+}
+
+func TestReferenceValidationServiceTargetsRespectProfiles(t *testing.T) {
+	project := &composetypes.Project{
+		Services: composetypes.Services{
+			"app": {Name: "app"},
+		},
+		DisabledServices: composetypes.Services{
+			"debug": {Name: "debug", Profiles: []string{"debug"}},
+		},
+	}
+
+	inv, _ := ParseComposeInvocation([]string{"start"})
+	got, err := referenceValidationServices(project, inv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, map[string]bool{"app": true}) {
+		t.Fatalf("project-wide selection = %v, want only active app", got)
+	}
+
+	inv, _ = ParseComposeInvocation([]string{"start", "debug"})
+	got, err = referenceValidationServices(project, inv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, map[string]bool{"debug": true}) {
+		t.Fatalf("explicit profile selection = %v, want debug", got)
+	}
+}
+
+func TestLifecycleRestartValidatesRestartDependents(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	writeFixtureFiles(t, dir, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+`, `
+services:
+  dep:
+    image: alpine:3.20
+  app:
+    image: alpine:3.20
+    depends_on:
+      dep:
+        condition: service_started
+        restart: true
+`)
+	setDockerServicesFactoryForTest(t, &fakeBuilderDockerServices{projectTargets: map[string][]execTarget{
+		"dep": {currentManagedLifecycleTarget()},
+		"app": {{Managed: false}},
+	}})
+
+	inv, _ := ParseComposeInvocation([]string{"restart", "dep"})
+	err := validateReferenceExecutionSurfaces("vaka.yaml", inv)
+	if err == nil || !strings.Contains(err.Error(), "service app") || !strings.Contains(err.Error(), "was not created by Vaka") {
+		t.Fatalf("restart dependent validation error = %v", err)
+	}
+
+	inv, _ = ParseComposeInvocation([]string{"restart", "--no-deps", "dep"})
+	if err := validateReferenceExecutionSurfaces("vaka.yaml", inv); err != nil {
+		t.Fatalf("restart --no-deps validated an excluded dependent: %v", err)
+	}
+}
+
+func TestLifecycleResumeClassification(t *testing.T) {
+	tests := []struct {
+		name          string
+		policyManaged bool
+		targets       []execTarget
+		want          string
+	}{
+		{name: "ordinary unmanaged", targets: []execTarget{{}}},
+		{name: "current managed", targets: []execTarget{currentManagedLifecycleTarget()}},
+		{name: "policy-managed ordinary", policyManaged: true, targets: []execTarget{{}}, want: "was not created by Vaka"},
+		{name: "legacy", targets: []execTarget{{LegacyManaged: true}}, want: "older or mutable Vaka runtime"},
+		{name: "mixed replicas", targets: []execTarget{currentManagedLifecycleTarget(), {}}, want: "mix of Vaka-managed and ordinary"},
+		{name: "one stale replica", targets: []execTarget{currentManagedLifecycleTarget(), {Managed: true, RuntimeVersion: "v0.1.0", RuntimeMounted: true}}, want: "older or mutable Vaka runtime"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateLifecycleResumeTargets("app", "vaka.yaml", "start", tc.policyManaged, tc.targets)
+			if tc.want == "" && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)) {
+				t.Fatalf("error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestLifecycleContainmentDoesNotRequireCurrentRuntime(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		policyYAML string
+		target     execTarget
+	}{
+		{
+			name: "policy-managed ordinary container",
+			policyYAML: `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+`,
+		},
+		{
+			name: "stale managed container",
+			policyYAML: `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services: {}
+`,
+			target: execTarget{Managed: true, RuntimeVersion: "v0.1.0"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			chdirForTest(t, dir)
+			writeFixtureFiles(t, dir, tc.policyYAML, `
+services:
+  app:
+    image: alpine:3.20
+`)
+			setDockerServicesFactoryForTest(t, &fakeBuilderDockerServices{projectTargets: map[string][]execTarget{
+				"app": {tc.target},
+			}})
+			inv, _ := ParseComposeInvocation([]string{"stop", "app"})
+			if err := validateReferenceExecutionSurfaces("vaka.yaml", inv); err != nil {
+				t.Fatalf("containment was blocked: %v", err)
+			}
+		})
+	}
+}
+
+func TestLifecycleHooksFollowLiveManagementAndOperation(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	writeFixtureFiles(t, dir, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services: {}
+`, `
+services:
+  app:
+    image: alpine:3.20
+    pre_stop:
+      - command: ["true"]
+    post_start:
+      - command: ["true"]
+`)
+
+	for _, tc := range []struct {
+		name   string
+		target execTarget
+		verb   string
+		want   string
+	}{
+		{name: "ordinary stop remains native", target: execTarget{}, verb: "stop"},
+		{name: "managed stop checks pre-stop", target: currentManagedLifecycleTarget(), verb: "stop", want: "pre_stop"},
+		{name: "managed start checks post-start", target: currentManagedLifecycleTarget(), verb: "start", want: "post_start"},
+		{name: "unpause runs no hooks", target: currentManagedLifecycleTarget(), verb: "unpause"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setDockerServicesFactoryForTest(t, &fakeBuilderDockerServices{projectTargets: map[string][]execTarget{
+				"app": {tc.target},
+			}})
+			inv, _ := ParseComposeInvocation([]string{tc.verb, "app"})
+			err := validateReferenceExecutionSurfaces("vaka.yaml", inv)
+			if tc.want == "" && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)) {
+				t.Fatalf("error = %v, want %q", err, tc.want)
+			}
+		})
 	}
 }
 
