@@ -53,6 +53,7 @@ type parsedRun struct {
 	entrypoint         bool
 	user               bool
 	build              bool
+	noDeps             bool
 	dryRun             bool
 	dryRunSet          bool
 	pull               string
@@ -129,8 +130,20 @@ func parseRun(args []string) (parsedRun, error) {
 			i++
 			continue
 		}
+		if value, ok := strings.CutPrefix(tok, "--no-deps="); ok {
+			enabled, err := composeBoolValue("--no-deps", value)
+			if err != nil {
+				return parsedRun{}, err
+			}
+			parsed.noDeps = enabled
+			i++
+			continue
+		}
 		if tok == "--build" {
 			parsed.build = true
+		}
+		if tok == "--no-deps" {
+			parsed.noDeps = true
 		}
 		if tok == "--dry-run" {
 			parsed.dryRun = true
@@ -171,6 +184,18 @@ func parseRun(args []string) (parsedRun, error) {
 		return parsedRun{}, fmt.Errorf("compose run: missing SERVICE")
 	}
 	return parsed, nil
+}
+
+func selectRunServices(project *composetypes.Project, parsed parsedRun) (*composetypes.Project, error) {
+	targets := []string{parsed.service}
+	enabled, err := project.WithServicesEnabled(targets...)
+	if err != nil {
+		return nil, err
+	}
+	if parsed.noDeps {
+		return enabled.WithSelectedServices(targets, composetypes.IgnoreDependencies)
+	}
+	return enabled.WithSelectedServices(targets)
 }
 
 func isRunShortBooleanCluster(tok string) bool {

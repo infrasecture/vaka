@@ -293,7 +293,17 @@ func buildInjectionOverride(
 		if parseErr != nil {
 			return "", nil, parseErr
 		}
-		_, applyManagedCLI = p.Services[parsed.service]
+		selected, selectErr := selectRunServices(project, parsed)
+		if selectErr != nil {
+			return "", nil, fmt.Errorf("select Compose run services for image preparation: %w", selectErr)
+		}
+		applyManagedCLI = false
+		for name := range selected.Services {
+			if _, managed := p.Services[name]; managed {
+				applyManagedCLI = true
+				break
+			}
+		}
 	}
 	managedPullRequested := pullRequested && applyManagedCLI
 	managedForceRebuild := forceRebuild && applyManagedCLI
@@ -301,7 +311,7 @@ func buildInjectionOverride(
 	if err != nil {
 		return "", nil, err
 	}
-	unmanaged, err := planSelectedUnmanagedRefresh(project, p.Services, inv, pullValue, pullRequested, forceRebuild, noBuild)
+	unmanaged, err := planSelectedUnmanagedRefresh(project, p.Services, inv, pullValue, pullRequested && applyManagedCLI, forceRebuild && applyManagedCLI, noBuild)
 	if err != nil {
 		return "", nil, err
 	}
@@ -595,8 +605,9 @@ type unmanagedImagePreparation struct {
 
 // planSelectedUnmanagedRefresh preserves native Compose --build/--pull
 // behavior when Vaka must consume a project-wide option to protect managed
-// services. It only prepares unmanaged services selected by up/create; run can
-// keep its option unchanged when its sole target is unmanaged.
+// services. It prepares only selected unmanaged services, including run
+// dependencies. A run graph containing no managed service keeps native Compose
+// handling and reaches this function with refresh options disabled.
 func planSelectedUnmanagedRefresh(
 	project *composetypes.Project,
 	policySvcs map[string]*policy.ServiceConfig,
@@ -607,14 +618,27 @@ func planSelectedUnmanagedRefresh(
 	plan := unmanagedImagePreparation{forceBuild: map[string]bool{}}
 	pullValue = strings.ToLower(strings.TrimSpace(pullValue))
 	consumePull := pullRequested && (pullValue == composetypes.PullPolicyAlways || pullValue == composetypes.PullPolicyBuild)
-	if (inv.Subcommand != "up" && inv.Subcommand != "create") || (!forceBuild && !consumePull) {
+	if !forceBuild && !consumePull {
 		return plan, nil
 	}
-	targets, err := scanCreateServiceTargets(inv)
-	if err != nil {
-		return unmanagedImagePreparation{}, err
+	var selected *composetypes.Project
+	var err error
+	switch inv.Subcommand {
+	case "up", "create":
+		targets, scanErr := scanCreateServiceTargets(inv)
+		if scanErr != nil {
+			return unmanagedImagePreparation{}, scanErr
+		}
+		selected, err = selectComposeServices(project, targets, inv.PostSubcommand)
+	case "run":
+		parsed, parseErr := parseRun(inv.PostSubcommand)
+		if parseErr != nil {
+			return unmanagedImagePreparation{}, parseErr
+		}
+		selected, err = selectRunServices(project, parsed)
+	default:
+		return plan, nil
 	}
-	selected, err := selectComposeServices(project, targets, inv.PostSubcommand)
 	if err != nil {
 		return unmanagedImagePreparation{}, fmt.Errorf("select Compose services for image preparation: %w", err)
 	}

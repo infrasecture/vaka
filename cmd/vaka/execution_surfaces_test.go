@@ -74,6 +74,66 @@ func TestValidateRunInvocationLeavesUnmanagedServiceAlone(t *testing.T) {
 	}
 }
 
+func TestParseRunNoDepsUsesLastValueAndStopsAtService(t *testing.T) {
+	tests := []struct {
+		args []string
+		want bool
+	}{
+		{args: []string{"--no-deps=false", "--no-deps", "app"}, want: true},
+		{args: []string{"--no-deps", "--no-deps=0", "app"}, want: false},
+		{args: []string{"app", "sh", "--no-deps"}, want: false},
+	}
+	for _, tc := range tests {
+		parsed, err := parseRun(tc.args)
+		if err != nil {
+			t.Fatalf("parseRun(%v): %v", tc.args, err)
+		}
+		if parsed.noDeps != tc.want {
+			t.Errorf("parseRun(%v).noDeps = %t, want %t", tc.args, parsed.noDeps, tc.want)
+		}
+	}
+	if _, err := parseRun([]string{"--no-deps=garbage", "app"}); err == nil {
+		t.Fatal("malformed --no-deps value was accepted")
+	}
+}
+
+func TestSelectRunServicesUsesDependencyGraph(t *testing.T) {
+	project := &composetypes.Project{Services: composetypes.Services{
+		"app": {Name: "app", DependsOn: map[string]composetypes.ServiceDependency{
+			"db": {Condition: "service_started"},
+		}},
+		"db": {Name: "db", DependsOn: map[string]composetypes.ServiceDependency{
+			"cache": {Condition: "service_started"},
+		}},
+		"cache":     {Name: "cache"},
+		"unrelated": {Name: "unrelated"},
+	}}
+	for _, tc := range []struct {
+		args []string
+		want map[string]bool
+	}{
+		{args: []string{"app"}, want: map[string]bool{"app": true, "db": true, "cache": true}},
+		{args: []string{"--no-deps", "app"}, want: map[string]bool{"app": true}},
+		{args: []string{"--no-deps", "--no-deps=false", "app"}, want: map[string]bool{"app": true, "db": true, "cache": true}},
+	} {
+		parsed, err := parseRun(tc.args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		selected, err := selectRunServices(project, parsed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := map[string]bool{}
+		for name := range selected.Services {
+			got[name] = true
+		}
+		if !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("selected run graph for %v = %v, want %v", tc.args, got, tc.want)
+		}
+	}
+}
+
 func TestValidateManagedExecutionSurfaces(t *testing.T) {
 	tests := []struct {
 		name string
