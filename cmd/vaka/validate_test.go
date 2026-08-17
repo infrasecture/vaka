@@ -97,6 +97,33 @@ func TestDegradedEnforcementReasons(t *testing.T) {
 			}}},
 			want: []string{"has Docker daemon access and can bypass the container security boundary"},
 		},
+		{
+			name: "docker runtime directory bind",
+			svc: composetypes.ServiceConfig{Volumes: []composetypes.ServiceVolumeConfig{{
+				Type:   composetypes.VolumeTypeBind,
+				Source: "/run",
+				Target: "/host-run",
+			}}},
+			want: []string{"has Docker daemon access and can bypass the container security boundary"},
+		},
+		{
+			name: "specific powerful capabilities",
+			svc:  composetypes.ServiceConfig{CapAdd: []string{"SYS_MODULE", "CAP_BPF", "CHOWN"}},
+			want: []string{"retains powerful Linux capabilities (BPF, SYS_MODULE) that can weaken container isolation"},
+		},
+		{
+			name:    "specific powerful capability dropped by policy",
+			svc:     composetypes.ServiceConfig{CapAdd: []string{"SYS_MODULE"}},
+			runtime: &policy.RuntimeConfig{DropCaps: []string{"SYS_MODULE"}},
+		},
+		{
+			name: "docker init shim",
+			svc: composetypes.ServiceConfig{Init: func() *bool {
+				value := true
+				return &value
+			}()},
+			want: []string{"uses init: true, leaving Docker's trusted init shim outside Vaka's capability-drop path"},
+		},
 	}
 
 	for _, tc := range tests {
@@ -148,12 +175,18 @@ func TestWarnDegradedEnforcementReportsReverseNamespaceSharing(t *testing.T) {
 		"managed": {},
 	}}
 	project := &composetypes.Project{Services: map[string]composetypes.ServiceConfig{
-		"managed": {},
+		"managed": {ContainerName: "managed-fixed-name"},
 		"network-peer": {
 			NetworkMode: "service:managed",
 		},
 		"pid-peer": {
 			Pid: "service:managed",
+		},
+		"container-network-peer": {
+			NetworkMode: "container:managed-fixed-name",
+		},
+		"container-pid-peer": {
+			Pid: "container:managed-fixed-name",
 		},
 		"unrelated": {
 			NetworkMode: "service:elsewhere",
@@ -177,7 +210,9 @@ func TestWarnDegradedEnforcementReportsReverseNamespaceSharing(t *testing.T) {
 
 	got := string(out)
 	if !strings.Contains(got, "unmanaged service network-peer joins managed service managed's network namespace") ||
-		!strings.Contains(got, "unmanaged service pid-peer joins managed service managed's PID namespace") {
+		!strings.Contains(got, "unmanaged service pid-peer joins managed service managed's PID namespace") ||
+		!strings.Contains(got, "unmanaged service container-network-peer joins managed service managed's network namespace") ||
+		!strings.Contains(got, "unmanaged service container-pid-peer joins managed service managed's PID namespace") {
 		t.Fatalf("warnings = %q", got)
 	}
 	if strings.Contains(got, "unrelated") {

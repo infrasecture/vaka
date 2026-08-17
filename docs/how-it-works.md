@@ -139,8 +139,10 @@ removes the containers and then removes the unused volume. Cleanup never uses
 force, never removes named volumes, and revalidates Docker's anonymous-volume
 marker immediately before deletion.
 
-Legacy cleanup does not alter Compose's orphan settings. An explicitly
-requested `--remove-orphans` therefore retains its normal Compose behavior.
+Legacy cleanup does not alter Compose's orphan settings. `--remove-orphans`
+and `COMPOSE_REMOVE_ORPHANS` from Vaka's process environment retain their
+normal Compose behavior; project `.env` and `--env-file` values do not set that
+command default in Compose.
 
 ## Ruleset Shape
 

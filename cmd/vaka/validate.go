@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -129,11 +130,15 @@ func warnDegradedEnforcement(p *policy.ServicePolicy, project *composetypes.Proj
 	}
 	sort.Strings(names)
 	allServices := project.AllServices()
+	managedContainerNames := make(map[string]string)
 
 	for _, name := range names {
 		composeSvc, ok := allServices[name]
 		if !ok {
 			continue
+		}
+		if containerName := strings.TrimSpace(composeSvc.ContainerName); containerName != "" {
+			managedContainerNames[containerName] = name
 		}
 		reasons := degradedEnforcementReasons(composeSvc, p.Services[name].Runtime)
 		if len(reasons) == 0 {
@@ -157,8 +162,8 @@ func warnDegradedEnforcement(p *policy.ServicePolicy, project *composetypes.Proj
 			continue
 		}
 		svc := allServices[name]
-		warnReverseNamespaceSharing(name, "network", svc.NetworkMode, p)
-		warnReverseNamespaceSharing(name, "PID", svc.Pid, p)
+		warnReverseNamespaceSharing(name, "network", svc.NetworkMode, p, managedContainerNames)
+		warnReverseNamespaceSharing(name, "PID", svc.Pid, p, managedContainerNames)
 	}
 }
 
@@ -179,13 +184,43 @@ func degradedEnforcementReasons(svc composetypes.ServiceConfig, runtime *policy.
 	if explicitlyRetainsCapability(svc, "SYS_PTRACE") && !runtimeDropsCapability(runtime, "SYS_PTRACE") {
 		reasons = append(reasons, "retains SYS_PTRACE and can interfere with Vaka's runtime processes")
 	}
+	if capabilities := retainedIsolationCapabilities(svc, runtime); len(capabilities) > 0 {
+		reasons = append(reasons, fmt.Sprintf("retains powerful Linux capabilities (%s) that can weaken container isolation", strings.Join(capabilities, ", ")))
+	}
 	if svc.UseAPISocket || mountsDockerSocket(svc.Volumes) {
 		reasons = append(reasons, "has Docker daemon access and can bypass the container security boundary")
 	}
 	if isSharedNamespaceMode(svc.Pid) {
 		reasons = append(reasons, "shares a PID namespace and can interfere with Vaka's runtime processes")
 	}
+	if svc.Init != nil && *svc.Init {
+		reasons = append(reasons, "uses init: true, leaving Docker's trusted init shim outside Vaka's capability-drop path")
+	}
 	return reasons
+}
+
+func retainedIsolationCapabilities(svc composetypes.ServiceConfig, runtime *policy.RuntimeConfig) []string {
+	if svc.Privileged || capabilityListContains(svc.CapAdd, "ALL") {
+		return nil // covered by the stronger privileged/all-capabilities warning
+	}
+	candidates := []string{
+		"BPF",
+		"CHECKPOINT_RESTORE",
+		"DAC_READ_SEARCH",
+		"PERFMON",
+		"SYS_BOOT",
+		"SYS_MODULE",
+		"SYS_RAWIO",
+		"SYS_TIME",
+		"SYSLOG",
+	}
+	var retained []string
+	for _, capability := range candidates {
+		if explicitlyRetainsCapability(svc, capability) && !runtimeDropsCapability(runtime, capability) {
+			retained = append(retained, capability)
+		}
+	}
+	return retained
 }
 
 func explicitlyRetainsCapability(svc composetypes.ServiceConfig, name string) bool {
@@ -216,6 +251,24 @@ func mountsDockerSocket(volumes []composetypes.ServiceVolumeConfig) bool {
 		if isDockerSocketPath(volume.Source) || isDockerSocketPath(volume.Target) {
 			return true
 		}
+		if volume.Type == composetypes.VolumeTypeBind && pathContainsDockerSocket(volume.Source) {
+			return true
+		}
+	}
+	return false
+}
+
+func pathContainsDockerSocket(path string) bool {
+	path = strings.TrimSpace(path)
+	if path == "" || !filepath.IsAbs(path) {
+		return false
+	}
+	path = filepath.Clean(path)
+	for _, socket := range []string{"/run/docker.sock", "/var/run/docker.sock"} {
+		relative, err := filepath.Rel(path, socket)
+		if err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return true
+		}
 	}
 	return false
 }
@@ -235,13 +288,23 @@ func isSharedNamespaceMode(mode string) bool {
 		strings.HasPrefix(mode, composetypes.ContainerPrefix)
 }
 
-func warnReverseNamespaceSharing(name, kind, mode string, p *policy.ServicePolicy) {
-	target, ok := strings.CutPrefix(strings.TrimSpace(mode), composetypes.ServicePrefix)
-	if !ok {
-		return
-	}
-	if _, managed := p.Services[target]; !managed {
-		return
+func warnReverseNamespaceSharing(name, kind, mode string, p *policy.ServicePolicy, managedContainerNames map[string]string) {
+	mode = strings.TrimSpace(mode)
+	target, serviceMode := strings.CutPrefix(mode, composetypes.ServicePrefix)
+	if serviceMode {
+		if _, managed := p.Services[target]; !managed {
+			return
+		}
+	} else {
+		containerName, containerMode := strings.CutPrefix(mode, composetypes.ContainerPrefix)
+		if !containerMode {
+			return
+		}
+		var managed bool
+		target, managed = managedContainerNames[containerName]
+		if !managed {
+			return
+		}
 	}
 	fmt.Fprintf(os.Stderr, "Vaka warning: unmanaged service %s joins managed service %s's %s namespace. Vaka enforcement is shared and best-effort for service %s.\n",
 		name, target, kind, target)

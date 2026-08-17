@@ -19,7 +19,7 @@ import (
 )
 
 // encodePolicy marshals p to YAML and base64-encodes it, replicating exactly
-// what vaka up does before setting the VAKA_<SERVICE>_CONF env var.
+// what vaka up stores in the reserved policy environment variable.
 func encodePolicy(t *testing.T, p *policy.ServicePolicy) string {
 	t.Helper()
 	raw, err := yaml.Marshal(p)

@@ -263,9 +263,8 @@ func parseInvocation(args []string) (invocationMode, []string, string, error) {
 	}
 }
 
-// readPolicy reads the base64-encoded policy YAML from path, decodes it, and
-// parses it. Docker compose writes the VAKA_<SERVICE>_CONF env var value
-// directly into the secret file, so the file contains base64 text, not raw YAML.
+// readPolicy reads base64-encoded policy YAML from path, decodes it, and parses
+// it. The file contains base64 text, not raw YAML.
 func readPolicy(path string) (*policy.ServicePolicy, error) {
 	f, err := os.Open(path)
 	if err != nil {

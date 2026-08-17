@@ -38,10 +38,13 @@ vaka needs `NET_ADMIN` temporarily to load nftables rules. The normal path is:
 Capabilities deliberately supplied by Compose, including privileged mode and
 `cap_add: ALL`, are preserved unless you provide an explicit
 `runtime.dropCaps` list. Vaka warns when a managed service is privileged,
-requests all capabilities, retains `SYS_ADMIN`, `NET_ADMIN`, or `SYS_PTRACE`,
-has Docker-daemon access, or shares a PID namespace. It also warns when an
-unmanaged service joins a managed service's network or PID namespace. Vaka
-enforcement is best-effort across these deliberately weakened boundaries.
+requests all capabilities, retains `SYS_ADMIN`, `NET_ADMIN`, `SYS_PTRACE`, or
+other high-impact kernel capabilities, has Docker-daemon access, shares a PID
+namespace, or uses `init: true`. In the last case Docker's trusted init shim
+remains outside Vaka's capability-drop path. Vaka also warns when an unmanaged
+service joins a managed service's network or PID namespace, including
+`container:` joins to an explicit managed `container_name`. Enforcement is
+best-effort across these deliberately weakened boundaries.
 
 Docker stores the startup user and capabilities on the container, so processes
 created later do not inherit the application's dropped process state. Vaka
@@ -86,8 +89,9 @@ paths, protected-label overrides, `up --no-recreate`, and `watch --no-up` are
 also rejected; the reuse restriction applies to `create --no-recreate` too.
 These restrictions fail closed rather than guessing how a new
 process or command-line override interacts with the security boundary.
-`down --remove-orphans` also checks managed one-off containers before allowing
-a current `pre_stop` hook to run outside the trampoline.
+`down --remove-orphans` also checks managed one-off containers and rejects a
+current `pre_stop` hook when the container is in a state where Compose can
+execute it outside the trampoline.
 
 ## What It Does Not Enforce
 
