@@ -149,9 +149,9 @@ If an endpoint changes, restart the service so `vaka-init` resolves it again.
 ## Exact Image Inspection And Execution
 
 Vaka applies `--build` and forced pulls before inspecting managed service
-images. It then runs each managed service by the exact local image ID it
-inspected, with pulling disabled in the generated override. In a mixed project,
-selected unmanaged services are prepared only when a project-wide refresh flag
+images. It then runs each selected managed service by the exact local image ID
+it inspected, with pulling disabled in the generated override. In a mixed
+project, selected unmanaged services are prepared only when a refresh flag
 must be consumed. For `run`, that decision covers the selected target and its
 dependency graph unless `--no-deps` is enabled; an entirely unmanaged graph
 retains native Compose handling. This covers inherited entrypoints, users,

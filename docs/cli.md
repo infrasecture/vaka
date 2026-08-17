@@ -204,6 +204,11 @@ vaka compose --profile dev up
 vaka compose --project-directory srv logs -f app
 ```
 
+When no explicit `--profile` is supplied, Vaka honors `COMPOSE_PROFILES` using
+Compose's normal environment and `.env` resolution. Policy service names are
+validated against all declared services, while rendering and image preparation
+use only the active services selected by the command.
+
 Commands that can create containers (`up`, `run`, `create`, `scale`, and
 `watch`) validate policy and generate the complete Vaka override. Unknown
 future Compose commands fail closed until their process-creation behavior is
@@ -211,8 +216,8 @@ reviewed in Vaka.
 
 Before inspecting and pinning service images, Vaka applies the final requested
 `--build`/`--pull` behavior and supported Compose-file `pull_policy` values to
-all Vaka-managed services in the project, even when the Compose command targets
-one service. When a mixed-project `up` or `create` must consume
+the selected Vaka-managed services and their Compose dependencies. When a
+mixed-project `up` or `create` must consume
 `--build`, `--pull=always`, or `--pull=build`, Vaka also prepares only the
 selected unmanaged services (and their Compose dependencies) so their native
 result is preserved. For `run`, Vaka applies the same rule to the selected
@@ -243,9 +248,11 @@ policy-managed-but-unlabeled containers to be recreated before Vaka-controlled
 resume or exec operations.
 For `restart`, the resume guard follows Compose's selected transitive
 `restart: true` dependents unless `--no-deps` is enabled, and validates every
-selected replica. Targeted `down` validates its transitive dependents before
-allowing their hooks to execute. Fully unmanaged services retain native
-Compose behavior.
+selected replica. Targeted `down` validates exactly the explicitly selected
+services; untargeted `down` validates all active services. With
+`--remove-orphans`, Vaka also validates managed one-off containers whose
+current `pre_stop` hook Compose can execute. Fully unmanaged services retain
+native Compose behavior.
 `stop`, `down`, and `rm --stop` remain available for containment; executable
 `pre_stop` hooks still receive the same validation. Watch actions without
 those process or filesystem mutation surfaces remain available.

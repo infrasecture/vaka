@@ -34,12 +34,13 @@ The override:
   when its effective `vaka.yaml` policy changes.
 
 Before image inspection, Vaka performs requested pull or build preparation for
-the complete set of services managed by `vaka.yaml`, even when the command
-targets one service. If Vaka must consume a project-wide refresh option during
-mixed-project `up` or `create`, it also prepares only the selected unmanaged
-services; unmanaged `run` targets retain native Compose handling. Vaka then
-pins every managed service to the exact local image ID it inspected, preventing
-Compose from refreshing the image between inspection and container creation.
+the active services selected by the command, including their selected Compose
+dependencies. If Vaka must consume a refresh option during mixed-project `up`,
+`create`, or `run`, it prepares the selected unmanaged services too; an
+entirely unmanaged selection retains native Compose handling. Vaka then pins
+each selected managed service to the exact local image ID it inspected,
+preventing Compose from refreshing the image between inspection and container
+creation.
 
 ## Runtime Injection
 
@@ -138,12 +139,8 @@ removes the containers and then removes the unused volume. Cleanup never uses
 force, never removes named volumes, and revalidates Docker's anonymous-volume
 marker immediately before deletion.
 
-When that exact legacy state is present, Vaka sets
-`COMPOSE_IGNORE_ORPHANS=true` for the migration's Compose subprocess so Compose
-does not compete with Vaka for the historical `__vaka-init` helper. This also
-means `--remove-orphans` does not remove unrelated project orphans during that
-one invocation. After migration removes the helper, a subsequent command no
-longer sets the variable and normal orphan handling resumes.
+Legacy cleanup does not alter Compose's orphan settings. An explicitly
+requested `--remove-orphans` therefore retains its normal Compose behavior.
 
 ## Ruleset Shape
 
