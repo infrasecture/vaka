@@ -187,8 +187,9 @@ func degradedEnforcementReasons(svc composetypes.ServiceConfig, runtime *policy.
 	if capabilities := retainedIsolationCapabilities(svc, runtime); len(capabilities) > 0 {
 		reasons = append(reasons, fmt.Sprintf("retains powerful Linux capabilities (%s) that can weaken container isolation", strings.Join(capabilities, ", ")))
 	}
-	if svc.UseAPISocket || mountsDockerSocket(svc.Volumes) {
-		reasons = append(reasons, "has Docker daemon access and can bypass the container security boundary")
+	reasons = append(reasons, mountNamespaceSecurityReasons(svc.SecurityOpt)...)
+	if svc.UseAPISocket || mountsContainerDaemonSocket(svc.Volumes) {
+		reasons = append(reasons, "has Docker or container-runtime daemon access and can bypass the container security boundary")
 	}
 	if isSharedNamespaceMode(svc.Pid) {
 		reasons = append(reasons, "shares a PID namespace and can interfere with Vaka's runtime processes")
@@ -246,26 +247,54 @@ func runtimeDropsCapability(runtime *policy.RuntimeConfig, name string) bool {
 	return false
 }
 
-func mountsDockerSocket(volumes []composetypes.ServiceVolumeConfig) bool {
+var containerDaemonSocketPaths = []string{
+	"/run/containerd/containerd.sock",
+	"/run/cri-dockerd.sock",
+	"/run/crio/crio.sock",
+	"/run/docker.sock",
+	"/run/dockershim.sock",
+	"/run/podman/podman.sock",
+	"/var/run/containerd/containerd.sock",
+	"/var/run/cri-dockerd.sock",
+	"/var/run/crio/crio.sock",
+	"/var/run/docker.sock",
+	"/var/run/dockershim.sock",
+	"/var/run/podman/podman.sock",
+}
+
+var containerDaemonSocketNames = map[string]bool{
+	"containerd.sock":       true,
+	"containerd.sock.ttrpc": true,
+	"cri-dockerd.sock":      true,
+	"crio.sock":             true,
+	"docker.sock":           true,
+	"docker.sock.raw":       true,
+	"dockershim.sock":       true,
+	"podman.sock":           true,
+}
+
+func mountsContainerDaemonSocket(volumes []composetypes.ServiceVolumeConfig) bool {
 	for _, volume := range volumes {
-		if isDockerSocketPath(volume.Source) || isDockerSocketPath(volume.Target) {
-			return true
+		// Only a host bind source grants daemon access. A named volume mounted at
+		// a conventional socket target is ordinary storage and must not warn.
+		if volume.Type != "" && volume.Type != composetypes.VolumeTypeBind {
+			continue
 		}
-		if volume.Type == composetypes.VolumeTypeBind && pathContainsDockerSocket(volume.Source) {
+		if isContainerDaemonSocketPath(volume.Source) || pathContainsContainerDaemonSocket(volume.Source) {
 			return true
 		}
 	}
 	return false
 }
 
-func pathContainsDockerSocket(path string) bool {
-	path = strings.TrimSpace(path)
-	if path == "" || !filepath.IsAbs(path) {
+func pathContainsContainerDaemonSocket(candidate string) bool {
+	candidate = strings.TrimSpace(candidate)
+	if candidate == "" || !filepath.IsAbs(candidate) {
 		return false
 	}
-	path = filepath.Clean(path)
-	for _, socket := range []string{"/run/docker.sock", "/var/run/docker.sock"} {
-		relative, err := filepath.Rel(path, socket)
+	candidate = filepath.Clean(candidate)
+	for _, socket := range containerDaemonSocketPaths {
+		relative, err := filepath.Rel(candidate, socket)
 		if err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
 			return true
 		}
@@ -273,17 +302,90 @@ func pathContainsDockerSocket(path string) bool {
 	return false
 }
 
-func isDockerSocketPath(path string) bool {
-	switch strings.TrimSuffix(strings.TrimSpace(path), "/") {
-	case "/var/run/docker.sock", "/run/docker.sock":
-		return true
-	default:
+func isContainerDaemonSocketPath(candidate string) bool {
+	candidate = strings.TrimSuffix(strings.TrimSpace(candidate), "/")
+	if candidate == "" || !filepath.IsAbs(candidate) {
 		return false
 	}
+	return containerDaemonSocketNames[strings.ToLower(filepath.Base(filepath.Clean(candidate)))]
+}
+
+func mountNamespaceSecurityReasons(options []string) []string {
+	var seccompUnconfined, appArmorUnconfined, selinuxDisabled bool
+	var customSeccomp, customAppArmor bool
+	for _, raw := range options {
+		name, value, ok := splitSecurityOption(raw)
+		if !ok {
+			continue
+		}
+		switch name {
+		case "seccomp":
+			switch strings.ToLower(value) {
+			case "unconfined":
+				seccompUnconfined = true
+			case "builtin", "default", "docker-default":
+			default:
+				customSeccomp = value != ""
+			}
+		case "apparmor":
+			switch strings.ToLower(value) {
+			case "unconfined":
+				appArmorUnconfined = true
+			case "default", "docker-default":
+			default:
+				customAppArmor = value != ""
+			}
+		case "label":
+			selinuxDisabled = selinuxDisabled || strings.EqualFold(value, "disable")
+		}
+	}
+
+	var reasons []string
+	weakLSM := appArmorUnconfined || selinuxDisabled
+	if seccompUnconfined && weakLSM {
+		protections := "AppArmor"
+		if selinuxDisabled && !appArmorUnconfined {
+			protections = "SELinux"
+		} else if selinuxDisabled {
+			protections = "AppArmor and SELinux"
+		}
+		reasons = append(reasons, fmt.Sprintf("sets seccomp unconfined and disables %s confinement, which can let a root workload manipulate mount namespaces and overmount %s", protections, protectedRuntimePath))
+	} else {
+		if seccompUnconfined {
+			reasons = append(reasons, "sets seccomp unconfined and removes syscall defenses against mount-namespace manipulation")
+		}
+		if appArmorUnconfined {
+			reasons = append(reasons, fmt.Sprintf("sets AppArmor unconfined and removes mount restrictions protecting %s", protectedRuntimePath))
+		}
+		if selinuxDisabled {
+			reasons = append(reasons, "disables SELinux confinement that can restrict mount-namespace manipulation")
+		}
+	}
+	if customSeccomp && !seccompUnconfined {
+		reasons = append(reasons, "uses a custom seccomp profile whose mount-namespace restrictions Vaka cannot verify")
+	}
+	if customAppArmor && !appArmorUnconfined {
+		reasons = append(reasons, "uses a custom AppArmor profile whose mount restrictions Vaka cannot verify")
+	}
+	return reasons
+}
+
+func splitSecurityOption(raw string) (string, string, bool) {
+	raw = strings.TrimSpace(raw)
+	separator := strings.IndexAny(raw, "=:")
+	if separator <= 0 {
+		return "", "", false
+	}
+	name := strings.ToLower(strings.TrimSpace(raw[:separator]))
+	value := strings.TrimSpace(raw[separator+1:])
+	if name == "" || value == "" {
+		return "", "", false
+	}
+	return name, value, true
 }
 
 func isSharedNamespaceMode(mode string) bool {
-	mode = strings.TrimSpace(mode)
+	mode = strings.ToLower(strings.TrimSpace(mode))
 	return mode == "host" || strings.HasPrefix(mode, composetypes.ServicePrefix) ||
 		strings.HasPrefix(mode, composetypes.ContainerPrefix)
 }

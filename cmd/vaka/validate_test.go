@@ -84,9 +84,14 @@ func TestDegradedEnforcementReasons(t *testing.T) {
 				Pid:          "service:peer",
 			},
 			want: []string{
-				"has Docker daemon access and can bypass the container security boundary",
+				"has Docker or container-runtime daemon access and can bypass the container security boundary",
 				"shares a PID namespace and can interfere with Vaka's runtime processes",
 			},
+		},
+		{
+			name: "host pid namespace",
+			svc:  composetypes.ServiceConfig{Pid: " HOST "},
+			want: []string{"shares a PID namespace and can interfere with Vaka's runtime processes"},
 		},
 		{
 			name: "docker socket bind",
@@ -95,7 +100,7 @@ func TestDegradedEnforcementReasons(t *testing.T) {
 				Source: "/var/run/docker.sock",
 				Target: "/var/run/docker.sock",
 			}}},
-			want: []string{"has Docker daemon access and can bypass the container security boundary"},
+			want: []string{"has Docker or container-runtime daemon access and can bypass the container security boundary"},
 		},
 		{
 			name: "docker runtime directory bind",
@@ -104,7 +109,24 @@ func TestDegradedEnforcementReasons(t *testing.T) {
 				Source: "/run",
 				Target: "/host-run",
 			}}},
-			want: []string{"has Docker daemon access and can bypass the container security boundary"},
+			want: []string{"has Docker or container-runtime daemon access and can bypass the container security boundary"},
+		},
+		{
+			name: "container runtime socket bind",
+			svc: composetypes.ServiceConfig{Volumes: []composetypes.ServiceVolumeConfig{{
+				Type:   composetypes.VolumeTypeBind,
+				Source: "/custom/runtime/containerd.sock",
+				Target: "/run/containerd/containerd.sock",
+			}}},
+			want: []string{"has Docker or container-runtime daemon access and can bypass the container security boundary"},
+		},
+		{
+			name: "combined unconfined profiles",
+			svc: composetypes.ServiceConfig{SecurityOpt: []string{
+				"seccomp=unconfined",
+				"apparmor:unconfined",
+			}},
+			want: []string{"sets seccomp unconfined and disables AppArmor confinement, which can let a root workload manipulate mount namespaces and overmount /vaka"},
 		},
 		{
 			name: "specific powerful capabilities",
@@ -131,6 +153,102 @@ func TestDegradedEnforcementReasons(t *testing.T) {
 			got := degradedEnforcementReasons(tc.svc, tc.runtime)
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("degradedEnforcementReasons() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestMountNamespaceSecurityReasons(t *testing.T) {
+	tests := []struct {
+		name    string
+		options []string
+		want    []string
+	}{
+		{name: "none"},
+		{name: "docker defaults", options: []string{"seccomp=builtin", "apparmor=docker-default"}},
+		{
+			name:    "seccomp unconfined",
+			options: []string{"SECCOMP: Unconfined"},
+			want:    []string{"sets seccomp unconfined and removes syscall defenses against mount-namespace manipulation"},
+		},
+		{
+			name:    "apparmor unconfined",
+			options: []string{"apparmor=unconfined"},
+			want:    []string{"sets AppArmor unconfined and removes mount restrictions protecting /vaka"},
+		},
+		{
+			name:    "seccomp and selinux disabled",
+			options: []string{"seccomp=unconfined", "label:disable"},
+			want:    []string{"sets seccomp unconfined and disables SELinux confinement, which can let a root workload manipulate mount namespaces and overmount /vaka"},
+		},
+		{
+			name:    "all confinement disabled",
+			options: []string{"seccomp=unconfined", "apparmor=unconfined", "label=disable"},
+			want:    []string{"sets seccomp unconfined and disables AppArmor and SELinux confinement, which can let a root workload manipulate mount namespaces and overmount /vaka"},
+		},
+		{
+			name:    "custom profiles",
+			options: []string{"seccomp=/profiles/service.json", "apparmor=service-profile", "no-new-privileges:true"},
+			want: []string{
+				"uses a custom seccomp profile whose mount-namespace restrictions Vaka cannot verify",
+				"uses a custom AppArmor profile whose mount restrictions Vaka cannot verify",
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := mountNamespaceSecurityReasons(tc.options)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("mountNamespaceSecurityReasons() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestMountsContainerDaemonSocket(t *testing.T) {
+	tests := []struct {
+		name    string
+		volumes []composetypes.ServiceVolumeConfig
+		want    bool
+	}{
+		{
+			name: "known socket",
+			volumes: []composetypes.ServiceVolumeConfig{{
+				Type: composetypes.VolumeTypeBind, Source: "/run/crio/crio.sock", Target: "/runtime.sock",
+			}},
+			want: true,
+		},
+		{
+			name: "custom socket location",
+			volumes: []composetypes.ServiceVolumeConfig{{
+				Type: composetypes.VolumeTypeBind, Source: "/srv/runtime/podman.sock", Target: "/runtime.sock",
+			}},
+			want: true,
+		},
+		{
+			name: "parent runtime directory",
+			volumes: []composetypes.ServiceVolumeConfig{{
+				Type: composetypes.VolumeTypeBind, Source: "/run/containerd", Target: "/host-containerd",
+			}},
+			want: true,
+		},
+		{
+			name: "named volume at conventional target",
+			volumes: []composetypes.ServiceVolumeConfig{{
+				Type: composetypes.VolumeTypeVolume, Source: "runtime-data", Target: "/run/docker.sock",
+			}},
+		},
+		{
+			name: "unrelated unix socket",
+			volumes: []composetypes.ServiceVolumeConfig{{
+				Type: composetypes.VolumeTypeBind, Source: "/run/dbus/system_bus_socket", Target: "/bus.sock",
+			}},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := mountsContainerDaemonSocket(tc.volumes); got != tc.want {
+				t.Fatalf("mountsContainerDaemonSocket() = %t, want %t", got, tc.want)
 			}
 		})
 	}

@@ -39,12 +39,25 @@ Capabilities deliberately supplied by Compose, including privileged mode and
 `cap_add: ALL`, are preserved unless you provide an explicit
 `runtime.dropCaps` list. Vaka warns when a managed service is privileged,
 requests all capabilities, retains `SYS_ADMIN`, `NET_ADMIN`, `SYS_PTRACE`, or
-other high-impact kernel capabilities, has Docker-daemon access, shares a PID
-namespace, or uses `init: true`. In the last case Docker's trusted init shim
+other high-impact kernel capabilities, has Docker or container-runtime daemon
+access, shares a PID namespace, weakens the default seccomp/AppArmor/SELinux
+profiles, or uses `init: true`. Vaka also warns about custom seccomp and
+AppArmor profiles because it cannot verify that they still prevent
+mount-namespace manipulation. With `init: true`, Docker's trusted init shim
 remains outside Vaka's capability-drop path. Vaka also warns when an unmanaged
 service joins a managed service's network or PID namespace, including
 `container:` joins to an explicit managed `container_name`. Enforcement is
 best-effort across these deliberately weakened boundaries.
+
+The verified runtime image subpath is mounted read-only directly at `/vaka`.
+Making the mountpoint a direct child of `/` prevents a root workload from
+replacing it by renaming a writable parent directory. It does not make the
+mount immutable to a process that has acquired mount-namespace control.
+In particular, Vaka emits a precise warning for the combination of
+`seccomp=unconfined` with `apparmor=unconfined` or disabled SELinux labeling;
+on susceptible hosts that combination can let a root workload create a mount
+namespace and overmount `/vaka`. Privileged mode and retained `SYS_ADMIN` are
+reported separately as stronger bypass conditions.
 
 When Compose leaves `init` unset, Vaka emits `init: false` for the managed
 service so a daemon-wide default cannot silently insert a capable parent ahead
