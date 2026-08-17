@@ -10,6 +10,8 @@ import (
 	composecli "github.com/compose-spec/compose-go/v2/cli"
 )
 
+const composeEnvFilesVariable = "COMPOSE_ENV_FILES"
+
 // composeResolution is the resolved compose input set for one vaka invocation.
 type composeResolution struct {
 	Files               []string
@@ -48,13 +50,14 @@ func resolveComposeProjectName(ctx context.Context, inv *ComposeInvocation) (str
 func resolveComposeInput(inv *ComposeInvocation) (*composeResolution, error) {
 	explicitFiles := inv.GlobalFiles
 	workingDir := inv.ProjectDirectory
+	envFiles := effectiveComposeEnvFiles(inv.EnvFiles)
 	if len(explicitFiles) > 0 {
 		return &composeResolution{
 			Files:       append([]string{}, explicitFiles...),
 			WorkingDir:  workingDir,
 			ProjectName: inv.ProjectName,
 			Profiles:    append([]string{}, inv.Profiles...),
-			EnvFiles:    append([]string{}, inv.EnvFiles...),
+			EnvFiles:    envFiles,
 		}, nil
 	}
 
@@ -62,7 +65,7 @@ func resolveComposeInput(inv *ComposeInvocation) (*composeResolution, error) {
 		WorkingDir:  workingDir,
 		ProjectName: inv.ProjectName,
 		Profiles:    append([]string{}, inv.Profiles...),
-		EnvFiles:    append([]string{}, inv.EnvFiles...),
+		EnvFiles:    envFiles,
 	}
 	opts, err := newComposeProjectOptions(input, true)
 	if err != nil {
@@ -81,7 +84,7 @@ func resolveComposeInput(inv *ComposeInvocation) (*composeResolution, error) {
 		WorkingDir:          workingDir,
 		ProjectName:         inv.ProjectName,
 		Profiles:            append([]string{}, inv.Profiles...),
-		EnvFiles:            append([]string{}, inv.EnvFiles...),
+		EnvFiles:            envFiles,
 		Environment:         cloneComposeEnvironment(opts.Environment),
 		EnvironmentResolved: true,
 		ImplicitFiles:       true,
@@ -121,8 +124,9 @@ func newComposeProjectOptions(input *composeResolution, autoDiscover bool) (*com
 		}
 		opts = append(opts, composecli.WithEnv([]string{"PWD=" + pwd}))
 	}
-	if len(input.EnvFiles) > 0 {
-		opts = append(opts, composecli.WithEnvFiles(input.EnvFiles...))
+	envFiles := effectiveComposeEnvFiles(input.EnvFiles)
+	if len(envFiles) > 0 {
+		opts = append(opts, composecli.WithEnvFiles(envFiles...))
 	} else {
 		opts = append(opts, composecli.WithEnvFiles())
 	}
@@ -133,8 +137,8 @@ func newComposeProjectOptions(input *composeResolution, autoDiscover bool) (*com
 			composecli.WithDefaultConfigPath,
 		)
 	}
-	if len(input.EnvFiles) > 0 {
-		opts = append(opts, composecli.WithEnvFiles(input.EnvFiles...))
+	if len(envFiles) > 0 {
+		opts = append(opts, composecli.WithEnvFiles(envFiles...))
 	} else {
 		opts = append(opts, composecli.WithEnvFiles())
 	}
@@ -144,6 +148,21 @@ func newComposeProjectOptions(input *composeResolution, autoDiscover bool) (*com
 		composecli.WithName(input.ProjectName),
 	)
 	return composecli.NewProjectOptions(input.Files, opts...)
+}
+
+// effectiveComposeEnvFiles mirrors Docker Compose's CLI-level default for the
+// --env-file StringArray flag. compose-go handles explicit files and the
+// ordinary .env fallback, but COMPOSE_ENV_FILES is applied by the Docker
+// Compose command before compose-go is called. An explicit flag replaces the
+// environment-derived default; otherwise Compose splits the variable on
+// commas, preserving order and the path text of each non-empty field.
+func effectiveComposeEnvFiles(explicit []string) []string {
+	if len(explicit) > 0 {
+		return append([]string{}, explicit...)
+	}
+	return strings.FieldsFunc(os.Getenv(composeEnvFilesVariable), func(r rune) bool {
+		return r == ','
+	})
 }
 
 func cloneComposeEnvironment(environment map[string]string) map[string]string {

@@ -10,6 +10,209 @@ import (
 	"github.com/compose-spec/compose-go/v2/dotenv"
 )
 
+func TestEffectiveComposeEnvFiles(t *testing.T) {
+	t.Run("ambient comma-separated default", func(t *testing.T) {
+		t.Setenv(composeEnvFilesVariable, "base.env,, local.env,")
+		got := effectiveComposeEnvFiles(nil)
+		assertArgv(t, []string{"base.env", " local.env"}, got)
+	})
+
+	t.Run("explicit flags replace ambient default", func(t *testing.T) {
+		t.Setenv(composeEnvFilesVariable, "ambient.env")
+		explicit := []string{"base.env", "local.env"}
+		got := effectiveComposeEnvFiles(explicit)
+		assertArgv(t, explicit, got)
+		got[0] = "changed.env"
+		if explicit[0] != "base.env" {
+			t.Fatal("effective env files alias the explicit invocation slice")
+		}
+	})
+
+	t.Run("empty ambient value retains default dotenv behavior", func(t *testing.T) {
+		t.Setenv(composeEnvFilesVariable, ",,")
+		if got := effectiveComposeEnvFiles(nil); len(got) != 0 {
+			t.Fatalf("effective env files = %v, want none", got)
+		}
+	})
+}
+
+func TestComposeResolutionUsesAmbientEnvFilesForProfilesAndInterpolation(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	composeFile := filepath.Join(dir, "compose.yaml")
+	baseEnv := filepath.Join(dir, "base.env")
+	overrideEnv := filepath.Join(dir, "override.env")
+	if err := os.WriteFile(composeFile, []byte(`
+services:
+  base:
+    image: ${APP_IMAGE}
+  debug:
+    image: alpine:3.20
+    profiles: [debug]
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(baseEnv, []byte("APP_IMAGE=busybox:1.36\nCOMPOSE_PROFILES=debug\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(overrideEnv, []byte("APP_IMAGE=alpine:3.20\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"APP_IMAGE", "COMPOSE_FILE", "COMPOSE_PROFILES"} {
+		unsetEnvironmentForTest(t, key)
+	}
+	t.Setenv(composeEnvFilesVariable, baseEnv+","+overrideEnv)
+
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{name: "implicit compose file", args: []string{"up"}},
+		{name: "explicit compose file", args: []string{"-f", composeFile, "up"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			inv, err := ParseComposeInvocation(tc.args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			input, err := resolveComposeInput(inv)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertArgv(t, []string{baseEnv, overrideEnv}, input.EnvFiles)
+			opts, err := newComposeProjectOptions(input, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			project, err := opts.LoadProject(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := project.Services["debug"]; !ok {
+				t.Fatal("COMPOSE_ENV_FILES did not activate the debug profile")
+			}
+			if got := project.Services["base"].Image; got != "alpine:3.20" {
+				t.Fatalf("base image = %q, want later ambient env file value", got)
+			}
+		})
+	}
+}
+
+func TestExplicitComposeEnvFileReplacesAmbientDefault(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	composeFile := filepath.Join(dir, "compose.yaml")
+	ambientEnv := filepath.Join(dir, "ambient.env")
+	explicitEnv := filepath.Join(dir, "explicit.env")
+	if err := os.WriteFile(composeFile, []byte(`
+services:
+  ambient:
+    image: alpine:3.20
+    profiles: [ambient]
+  explicit:
+    image: alpine:3.20
+    profiles: [explicit]
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ambientEnv, []byte("COMPOSE_PROFILES=ambient\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(explicitEnv, []byte("COMPOSE_PROFILES=explicit\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unsetEnvironmentForTest(t, "COMPOSE_PROFILES")
+	t.Setenv(composeEnvFilesVariable, ambientEnv)
+
+	inv, err := ParseComposeInvocation([]string{"--env-file", explicitEnv, "-f", composeFile, "up"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, err := resolveComposeInput(inv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertArgv(t, []string{explicitEnv}, input.EnvFiles)
+	opts, err := newComposeProjectOptions(input, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := opts.LoadProject(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := project.Services["explicit"]; !ok {
+		t.Fatal("explicit --env-file profile is not active")
+	}
+	if _, ok := project.Services["ambient"]; ok {
+		t.Fatal("ambient COMPOSE_ENV_FILES augmented explicit --env-file")
+	}
+}
+
+func TestComposeEnvFileDefaultAndDisableBehavior(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	composeFile := filepath.Join(dir, "compose.yaml")
+	emptyEnv := filepath.Join(dir, "empty.env")
+	if err := os.WriteFile(composeFile, []byte(`
+services:
+  base:
+    image: alpine:3.20
+  dotenv:
+    image: alpine:3.20
+    profiles: [dotenv]
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("COMPOSE_PROFILES=dotenv\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(emptyEnv, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unsetEnvironmentForTest(t, "COMPOSE_PROFILES")
+
+	for _, tc := range []struct {
+		name        string
+		envFiles    string
+		disable     string
+		wantProfile bool
+	}{
+		{name: "ordinary dotenv fallback", wantProfile: true},
+		{name: "ambient file replaces dotenv fallback", envFiles: emptyEnv},
+		{name: "default dotenv disabled", disable: "true"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(composeEnvFilesVariable, tc.envFiles)
+			if tc.disable == "" {
+				unsetEnvironmentForTest(t, "COMPOSE_DISABLE_ENV_FILE")
+			} else {
+				t.Setenv("COMPOSE_DISABLE_ENV_FILE", tc.disable)
+			}
+			inv, err := ParseComposeInvocation([]string{"-f", composeFile, "up"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			input, err := resolveComposeInput(inv)
+			if err != nil {
+				t.Fatal(err)
+			}
+			opts, err := newComposeProjectOptions(input, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			project, err := opts.LoadProject(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, active := project.Services["dotenv"]
+			if active != tc.wantProfile {
+				t.Fatalf("dotenv profile active = %v, want %v", active, tc.wantProfile)
+			}
+		})
+	}
+}
+
 func TestComposeResolutionCarriesProjectProfilesAndEnvFiles(t *testing.T) {
 	dir := t.TempDir()
 	chdirForTest(t, dir)

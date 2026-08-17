@@ -155,6 +155,69 @@ cat /dev/fd/3 > "$VAKA_CAPTURE_OVERRIDE"
 	}
 }
 
+func TestExecDockerComposeCarriesComposeEnvFilesResolutionOnInheritedFile(t *testing.T) {
+	root := t.TempDir()
+	binDir := filepath.Join(root, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	chdirForTest(t, root)
+	writeComposeFile(t, filepath.Join(root, "compose.yaml"))
+	envFile := filepath.Join(root, "ambient.env")
+	if err := os.WriteFile(envFile, []byte("COMPOSE_PROFILES=debug\nPROJECT_VALUE=ambient\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"COMPOSE_FILE", "COMPOSE_PROFILES", "PROJECT_VALUE"} {
+		unsetEnvironmentForTest(t, key)
+	}
+	t.Setenv(composeEnvFilesVariable, envFile)
+
+	argsPath := filepath.Join(root, "args")
+	envPath := filepath.Join(root, "env")
+	overridePath := filepath.Join(root, "override")
+	dockerScript := `#!/bin/sh
+printf '%s\n' "$@" > "$VAKA_CAPTURE_ARGS"
+cat /dev/fd/4 > "$VAKA_CAPTURE_ENV"
+cat /dev/fd/3 > "$VAKA_CAPTURE_OVERRIDE"
+`
+	if err := os.WriteFile(filepath.Join(binDir, "docker"), []byte(dockerScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("VAKA_CAPTURE_ARGS", argsPath)
+	t.Setenv("VAKA_CAPTURE_ENV", envPath)
+	t.Setenv("VAKA_CAPTURE_OVERRIDE", overridePath)
+
+	inv, err := ParseComposeInvocation([]string{"up", "app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := execDockerCompose(inv, "services: {}\n", nil); err != nil {
+		t.Fatal(err)
+	}
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantArgs := []string{
+		"compose", "--env-file", composeResolvedEnvFilePath,
+		"-f", filepath.Join(root, "compose.yaml"), "-f", composeOverridePath,
+		"up", "app",
+	}
+	assertArgv(t, wantArgs, strings.Split(strings.TrimSpace(string(args)), "\n"))
+	childEnv, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := dotenv.Parse(strings.NewReader(string(childEnv)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed["COMPOSE_PROFILES"] != "debug" || parsed["PROJECT_VALUE"] != "ambient" {
+		t.Fatalf("resolved COMPOSE_ENV_FILES child environment = %#v", parsed)
+	}
+}
+
 func TestReferenceOverrideYAMLInjectsMetadataOnly(t *testing.T) {
 	yaml, err := referenceOverrideYAML()
 	if err != nil {

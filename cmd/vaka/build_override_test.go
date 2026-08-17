@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -661,6 +663,95 @@ services:
 	}
 	if decodePolicyPayloadFromOverride(t, override, "app") == "" {
 		t.Fatal("selected service has no embedded policy payload")
+	}
+}
+
+func TestBuildInjectionIncludesManagedServicesActivatedByComposeEnvFiles(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	writeFixtureFiles(t, dir, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  base:
+    network:
+      egress:
+        defaultAction: reject
+  debug:
+    network:
+      egress:
+        defaultAction: reject
+`, `
+services:
+  base:
+    image: alpine:3.20
+  debug:
+    image: alpine:3.20
+    profiles: [debug]
+`)
+	envFile := filepath.Join(dir, "ambient.env")
+	if err := os.WriteFile(envFile, []byte("COMPOSE_PROFILES=debug\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unsetEnvironmentForTest(t, "COMPOSE_PROFILES")
+	t.Setenv(composeEnvFilesVariable, envFile)
+
+	inv, err := ParseComposeInvocation([]string{"-f", filepath.Join(dir, "docker-compose.yaml"), "up"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	override, extraEnv, err := buildInjectionOverride(context.Background(), &fakeBuilderDockerServices{}, "vaka.yaml", inv, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, service := range []string{"base", "debug"} {
+		if !strings.Contains(override, "    "+service+":\n") {
+			t.Fatalf("override omits managed service %s activated through COMPOSE_ENV_FILES:\n%s", service, override)
+		}
+		if decodePolicyPayloadFromOverride(t, override, service) == "" {
+			t.Fatalf("managed service %s has no embedded policy payload", service)
+		}
+	}
+	if len(extraEnv) != 0 {
+		t.Fatalf("policy payload leaked into host environment: %v", extraEnv)
+	}
+}
+
+func TestMissingComposeEnvFileFailsBeforeImagePreparation(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	writeFixtureFiles(t, dir, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+`, `
+services:
+  app:
+    image: alpine:3.20
+`)
+	missing := filepath.Join(dir, "missing.env")
+	t.Setenv(composeEnvFilesVariable, missing)
+	ds := &fakeBuilderDockerServices{}
+	var composeCalls int
+	setExecDockerComposeForTest(t, func(_ *ComposeInvocation, _ string, _ []string) error {
+		composeCalls++
+		return nil
+	})
+
+	inv, err := ParseComposeInvocation([]string{"up", "--build"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = buildInjectionOverride(context.Background(), ds, "vaka.yaml", inv, false)
+	if err == nil || !strings.Contains(err.Error(), missing) {
+		t.Fatalf("missing COMPOSE_ENV_FILES error = %v, want path %q", err, missing)
+	}
+	if composeCalls != 0 || len(ds.ensureRefs) != 0 {
+		t.Fatalf("missing environment file reached image preparation: composeCalls=%d runtime=%v", composeCalls, ds.ensureRefs)
 	}
 }
 
