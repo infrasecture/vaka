@@ -356,7 +356,7 @@ func TestPlanManagedImagePreparationRejectsUnsupportedOrConflictingPolicy(t *tes
 	}{
 		{name: "timed", svc: composetypes.ServiceConfig{Image: "app:latest", PullPolicy: "daily"}, wantError: "cannot apply"},
 		{name: "bad CLI pull", svc: composetypes.ServiceConfig{Image: "app:latest"}, cliPull: "sometimes", cliSet: true, wantError: "unsupported Compose --pull"},
-		{name: "no build conflict", svc: composetypes.ServiceConfig{Image: "app:latest", Build: &composetypes.BuildConfig{Context: "."}, PullPolicy: composetypes.PullPolicyBuild}, noBuild: true, wantError: "--no-build conflicts"},
+		{name: "missing image with build disabled", svc: composetypes.ServiceConfig{Image: "app:latest", Build: &composetypes.BuildConfig{Context: "."}, PullPolicy: composetypes.PullPolicyBuild}, noBuild: true, wantError: "requires an image build"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -366,6 +366,30 @@ func TestPlanManagedImagePreparationRejectsUnsupportedOrConflictingPolicy(t *tes
 				t.Fatalf("error = %v, want %q", err, tc.wantError)
 			}
 		})
+	}
+}
+
+func TestNoBuildUsesExistingImageForBuildPullPolicy(t *testing.T) {
+	policySvcs := map[string]*policy.ServiceConfig{"app": {}}
+	project := &composetypes.Project{Name: "demo", Services: map[string]composetypes.ServiceConfig{
+		"app": {Image: "app:latest", Build: &composetypes.BuildConfig{Context: "."}, PullPolicy: composetypes.PullPolicyBuild},
+	}}
+	ds := &fakeDS{exists: map[string]bool{"app:latest": true}}
+	plan, err := planManagedImagePreparation(context.Background(), ds, policySvcs, project, "", false, false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.forceBuild["app"] {
+		t.Fatalf("--no-build unexpectedly scheduled a build: %+v", plan)
+	}
+
+	inv, _ := ParseComposeInvocation([]string{"up", "--pull=build", "--no-build", "app"})
+	unmanaged, err := planSelectedUnmanagedRefresh(project, map[string]*policy.ServiceConfig{}, inv, composetypes.PullPolicyBuild, true, false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unmanaged.forceBuild["app"] || !reflect.DeepEqual(unmanaged.prepared, []string{"app"}) {
+		t.Fatalf("unmanaged --no-build plan = %+v", unmanaged)
 	}
 }
 

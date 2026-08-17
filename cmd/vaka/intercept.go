@@ -668,7 +668,7 @@ func planSelectedUnmanagedRefresh(
 			}
 		case composetypes.PullPolicyBuild:
 			prepared[name] = true
-			if svc.Build != nil {
+			if svc.Build != nil && !noBuild {
 				plan.forceBuild[name] = true
 			}
 		}
@@ -819,6 +819,9 @@ func planManagedImagePreparation(
 	if cliPullSet && cliPull != composetypes.PullPolicyAlways && cliPull != composetypes.PullPolicyMissing && cliPull != composetypes.PullPolicyIfNotPresent && cliPull != composetypes.PullPolicyNever && cliPull != composetypes.PullPolicyBuild {
 		return managedImagePreparation{}, fmt.Errorf("unsupported Compose --pull value %q for Vaka-managed services", cliPull)
 	}
+	if noBuild && forceBuildAll {
+		return managedImagePreparation{}, fmt.Errorf("--no-build conflicts with a requested build for Vaka-managed services")
+	}
 	names := make([]string, 0, len(policySvcs))
 	for name := range policySvcs {
 		names = append(names, name)
@@ -873,7 +876,21 @@ func planManagedImagePreparation(
 			}
 		case effective == composetypes.PullPolicyBuild:
 			if svc.Build != nil {
-				plan.forceBuild[name] = true
+				if noBuild {
+					imageRef := strings.TrimSpace(svc.Image)
+					if imageRef == "" {
+						imageRef = project.Name + "-" + name
+					}
+					exists, err := ds.ImageExists(ctx, imageRef)
+					if err != nil {
+						return managedImagePreparation{}, err
+					}
+					if !exists {
+						return managedImagePreparation{}, fmt.Errorf("service %s requires an image build, but --no-build is enabled", name)
+					}
+				} else {
+					plan.forceBuild[name] = true
+				}
 			}
 		case effective == "daily" || effective == "weekly" || strings.HasPrefix(effective, "every_"):
 			return managedImagePreparation{}, fmt.Errorf("service %s uses pull_policy %q, which Vaka cannot apply before exact-image inspection; pull the image explicitly and use pull_policy: never, missing, always, or build", name, svc.PullPolicy)
@@ -882,9 +899,6 @@ func planManagedImagePreparation(
 		}
 	}
 
-	if noBuild && (forceBuildAll || len(plan.forceBuild) > 0) {
-		return managedImagePreparation{}, fmt.Errorf("--no-build conflicts with a requested build for Vaka-managed services")
-	}
 	return plan, nil
 }
 
