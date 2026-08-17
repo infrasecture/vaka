@@ -4,6 +4,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -133,18 +134,25 @@ func unsupportedComposeDryRunError() error {
 
 func validateConsumedComposeBooleans(inv *ComposeInvocation, spec composeCommandSpec) error {
 	if spec.class == verbRender {
-		if inv.Subcommand == "run" {
+		switch inv.Subcommand {
+		case "run":
 			if _, err := parseRun(inv.PostSubcommand); err != nil {
 				return err
 			}
-		}
-		for _, option := range []string{"--build", "--no-build"} {
-			if _, err := composeBoolOptionEnabled(inv.PostSubcommand, option, ""); err != nil {
+			if _, _, err := composePullOption(inv); err != nil {
 				return err
 			}
-		}
-		if inv.Subcommand == "up" || inv.Subcommand == "create" || inv.Subcommand == "run" {
+		case "up", "create":
+			for _, option := range []string{"--build", "--no-build"} {
+				if _, err := composeBoolOptionEnabled(inv.PostSubcommand, option, ""); err != nil {
+					return err
+				}
+			}
 			if _, _, err := composePullOption(inv); err != nil {
+				return err
+			}
+		case "scale", "watch":
+			if err := rejectUnsupportedImageRefreshOptions(inv); err != nil {
 				return err
 			}
 		}
@@ -162,6 +170,20 @@ func validateConsumedComposeBooleans(inv *ComposeInvocation, spec composeCommand
 	if inv.Subcommand == "rm" {
 		if _, err := composeBoolOptionEnabled(inv.PostSubcommand, "--stop", "s"); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+func rejectUnsupportedImageRefreshOptions(inv *ComposeInvocation) error {
+	for _, tok := range inv.PostSubcommand {
+		if tok == "--" {
+			break
+		}
+		name, _, _ := strings.Cut(tok, "=")
+		switch name {
+		case "--build", "--no-build", "--pull":
+			return fmt.Errorf("compose %s does not support image refresh option %s", inv.Subcommand, name)
 		}
 	}
 	return nil

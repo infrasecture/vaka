@@ -287,11 +287,13 @@ func TestReferenceValidationServiceTargets(t *testing.T) {
 	}{
 		{args: []string{"restart", "dep"}, want: map[string]bool{"dep": true, "app": true, "worker": true}},
 		{args: []string{"restart", "app"}, want: map[string]bool{"app": true, "worker": true}},
+		{args: []string{"restart", "-t0", "app"}, want: map[string]bool{"app": true, "worker": true}},
 		{args: []string{"restart", "--no-deps", "app"}, want: map[string]bool{"app": true}},
 		{args: []string{"start", "app"}, want: map[string]bool{"app": true, "dep": true}},
 		{args: []string{"down", "--remove-orphans", "dep"}, want: map[string]bool{"dep": true}},
 		{args: []string{"rm", "-fsv", "app"}, want: map[string]bool{"app": true}},
 		{args: []string{"stop", "--timeout=5", "app"}, want: map[string]bool{"app": true}},
+		{args: []string{"stop", "-t0", "app"}, want: map[string]bool{"app": true}},
 	} {
 		inv, _ := ParseComposeInvocation(tc.args)
 		got, err := referenceValidationServices(project, inv)
@@ -300,6 +302,12 @@ func TestReferenceValidationServiceTargets(t *testing.T) {
 		}
 		if !reflect.DeepEqual(got, tc.want) {
 			t.Errorf("referenceValidationServices(%v) = %v, want %v", tc.args, got, tc.want)
+		}
+	}
+	for _, args := range [][]string{{"restart", "-tbad", "app"}, {"stop", "--timeout=bad", "app"}} {
+		inv, _ := ParseComposeInvocation(args)
+		if _, err := referenceValidationServices(project, inv); err == nil || !strings.Contains(err.Error(), "requires an integer") {
+			t.Errorf("referenceValidationServices(%v) error = %v", args, err)
 		}
 	}
 }

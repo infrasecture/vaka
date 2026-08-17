@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"sort"
+	"strconv"
 	"strings"
 
 	composetypes "github.com/compose-spec/compose-go/v2/types"
@@ -455,7 +456,7 @@ func buildInjectionOverride(
 		return "", nil, fmt.Errorf("build override: %w", err)
 	}
 	consumeBuild := forceRebuild && (inv.Subcommand != "run" || applyManagedCLI)
-	pullMode := strings.ToLower(strings.TrimSpace(pullValue))
+	pullMode := pullValue
 	consumePull := pullRequested && (pullMode == composetypes.PullPolicyAlways || pullMode == composetypes.PullPolicyBuild) && (inv.Subcommand != "run" || applyManagedCLI)
 	if consumeBuild || consumePull {
 		if err := consumeComposeImageRefreshOptions(inv, consumeBuild, consumePull); err != nil {
@@ -616,7 +617,6 @@ func planSelectedUnmanagedRefresh(
 	pullRequested, forceBuild, noBuild bool,
 ) (unmanagedImagePreparation, error) {
 	plan := unmanagedImagePreparation{forceBuild: map[string]bool{}}
-	pullValue = strings.ToLower(strings.TrimSpace(pullValue))
 	consumePull := pullRequested && (pullValue == composetypes.PullPolicyAlways || pullValue == composetypes.PullPolicyBuild)
 	if !forceBuild && !consumePull {
 		return plan, nil
@@ -663,9 +663,9 @@ func planSelectedUnmanagedRefresh(
 				plan.pullAlways = append(plan.pullAlways, name)
 			}
 		case composetypes.PullPolicyBuild:
+			prepared[name] = true
 			if svc.Build != nil {
 				plan.forceBuild[name] = true
-				prepared[name] = true
 			}
 		}
 	}
@@ -750,6 +750,11 @@ func scanCreateServiceTargets(inv *ComposeInvocation) ([]string, error) {
 			if value == "" {
 				return nil, fmt.Errorf("compose %s: %s requires a value", inv.Subcommand, flag)
 			}
+			if flag == "-t" || flag == "--timeout" || flag == "--wait-timeout" {
+				if _, err := strconv.Atoi(value); err != nil {
+					return nil, fmt.Errorf("compose %s: %s requires an integer, got %q", inv.Subcommand, flag, value)
+				}
+			}
 			i += consumed
 			continue
 		}
@@ -766,6 +771,9 @@ func scanCreateServiceTargets(inv *ComposeInvocation) ([]string, error) {
 		}
 		if len(tok) > 2 && tok[0] == '-' && tok[1] != '-' {
 			if inv.Subcommand == "up" && strings.HasPrefix(tok, "-t") {
+				if _, err := strconv.Atoi(tok[2:]); err != nil {
+					return nil, fmt.Errorf("compose up: -t requires an integer, got %q", tok[2:])
+				}
 				i++
 				continue
 			}
@@ -804,7 +812,6 @@ func planManagedImagePreparation(
 		forceBuild:          map[string]bool{},
 		effectivePullPolicy: map[string]string{},
 	}
-	cliPull = strings.ToLower(strings.TrimSpace(cliPull))
 	if cliPullSet && cliPull != composetypes.PullPolicyAlways && cliPull != composetypes.PullPolicyMissing && cliPull != composetypes.PullPolicyIfNotPresent && cliPull != composetypes.PullPolicyNever && cliPull != composetypes.PullPolicyBuild {
 		return managedImagePreparation{}, fmt.Errorf("unsupported Compose --pull value %q for Vaka-managed services", cliPull)
 	}
@@ -856,10 +863,9 @@ func planManagedImagePreparation(
 				plan.pullMissing = append(plan.pullMissing, name)
 			}
 		case effective == composetypes.PullPolicyBuild:
-			if svc.Build == nil {
-				return managedImagePreparation{}, fmt.Errorf("service %s uses pull_policy: build but has no build configuration", name)
+			if svc.Build != nil {
+				plan.forceBuild[name] = true
 			}
-			plan.forceBuild[name] = true
 		case effective == "daily" || effective == "weekly" || strings.HasPrefix(effective, "every_"):
 			return managedImagePreparation{}, fmt.Errorf("service %s uses pull_policy %q, which Vaka cannot apply before exact-image inspection; pull the image explicitly and use pull_policy: never, missing, always, or build", name, svc.PullPolicy)
 		default:
@@ -932,9 +938,8 @@ func validateComposePullValue(subcommand, value string, present bool) error {
 	if !present {
 		return nil
 	}
-	value = strings.ToLower(strings.TrimSpace(value))
 	valid := value == composetypes.PullPolicyAlways || value == composetypes.PullPolicyMissing || value == composetypes.PullPolicyIfNotPresent || value == composetypes.PullPolicyNever
-	if subcommand == "create" {
+	if subcommand == "up" || subcommand == "create" || subcommand == "run" {
 		valid = valid || value == composetypes.PullPolicyBuild
 	}
 	if !valid {

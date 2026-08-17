@@ -275,6 +275,14 @@ func TestPlanManagedImagePreparationCLIOverridesFilePolicy(t *testing.T) {
 		t.Fatalf("--pull=always plan = %+v", always)
 	}
 
+	imageOnly, err := planManagedImagePreparation(context.Background(), ds, policySvcs, project, "build", true, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if imageOnly.forceBuild["app"] || imageOnly.effectivePullPolicy["app"] != composetypes.PullPolicyBuild {
+		t.Fatalf("image-only --pull=build plan = %+v", imageOnly)
+	}
+
 	buildSvc := project.Services["app"]
 	buildSvc.Build = &composetypes.BuildConfig{Context: "."}
 	project.Services["app"] = buildSvc
@@ -315,7 +323,6 @@ func TestPlanManagedImagePreparationRejectsUnsupportedOrConflictingPolicy(t *tes
 	}{
 		{name: "timed", svc: composetypes.ServiceConfig{Image: "app:latest", PullPolicy: "daily"}, wantError: "cannot apply"},
 		{name: "bad CLI pull", svc: composetypes.ServiceConfig{Image: "app:latest"}, cliPull: "sometimes", cliSet: true, wantError: "unsupported Compose --pull"},
-		{name: "build without config", svc: composetypes.ServiceConfig{Image: "app:latest", PullPolicy: composetypes.PullPolicyBuild}, wantError: "no build configuration"},
 		{name: "no build conflict", svc: composetypes.ServiceConfig{Image: "app:latest", Build: &composetypes.BuildConfig{Context: "."}, PullPolicy: composetypes.PullPolicyBuild}, noBuild: true, wantError: "--no-build conflicts"},
 	}
 	for _, tc := range tests {
@@ -362,6 +369,7 @@ func TestScanCreateServiceTargetsAndDependencySelection(t *testing.T) {
 		want []string
 	}{
 		{args: []string{"up", "--build", "--pull=always", "app"}, want: []string{"app", "db"}},
+		{args: []string{"up", "--build", "-t0", "app"}, want: []string{"app", "db"}},
 		{args: []string{"up", "--no-deps=false", "--no-deps", "app", "--build"}, want: []string{"app"}},
 		{args: []string{"create", "--scale", "app=2", "app"}, want: []string{"app", "db"}},
 	}
@@ -389,10 +397,41 @@ func TestScanCreateServiceTargetsAndDependencySelection(t *testing.T) {
 	if _, err := scanCreateServiceTargets(inv); err == nil || !strings.Contains(err.Error(), "unknown option") {
 		t.Fatalf("unknown create option error = %v", err)
 	}
+	for _, args := range [][]string{{"up", "--build", "-tbad", "app"}, {"up", "--build", "--timeout=bad", "app"}} {
+		inv, _ := ParseComposeInvocation(args)
+		if _, err := scanCreateServiceTargets(inv); err == nil || !strings.Contains(err.Error(), "requires an integer") {
+			t.Errorf("invalid timeout %v error = %v", args, err)
+		}
+	}
+}
+
+func TestPullBuildFreezesSelectedUnmanagedImageOnlyService(t *testing.T) {
+	project := &composetypes.Project{Services: composetypes.Services{
+		"app": {Name: "app", Image: "app:latest", DependsOn: map[string]composetypes.ServiceDependency{
+			"policy": {Condition: "service_started"},
+		}},
+		"policy": {Name: "policy", Image: "policy:latest"},
+	}}
+	inv, _ := ParseComposeInvocation([]string{"run", "--pull=build", "app"})
+	plan, err := planSelectedUnmanagedRefresh(
+		project,
+		map[string]*policy.ServiceConfig{"policy": {}},
+		inv,
+		composetypes.PullPolicyBuild,
+		true,
+		false,
+		false,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(plan.prepared, []string{"app"}) || len(plan.forceBuild) != 0 {
+		t.Fatalf("image-only --pull=build plan = %+v", plan)
+	}
 }
 
 func TestComposeImageRefreshOptionsStopAtRunService(t *testing.T) {
-	inv, err := ParseComposeInvocation([]string{"run", "app", "sh", "--pull=always", "--build"})
+	inv, err := ParseComposeInvocation([]string{"run", "app", "sh", "--pull=ALWAYS", "--build=garbage"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -402,6 +441,9 @@ func TestComposeImageRefreshOptionsStopAtRunService(t *testing.T) {
 	}
 	if composePullAlwaysRequested(inv) || buildRequested {
 		t.Fatal("run command payload was interpreted as Compose image options")
+	}
+	if err := validateConsumedComposeBooleans(inv, composeCommandSpecFor("run")); err != nil {
+		t.Fatalf("run command payload was rejected as a Compose option: %v", err)
 	}
 	original := append([]string{}, inv.Args...)
 	if err := consumeComposeImageRefreshOptions(inv, true, true); err != nil {

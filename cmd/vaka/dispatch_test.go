@@ -465,7 +465,8 @@ func TestInvalidPullOptionRejectedBeforeDockerAction(t *testing.T) {
 	for _, args := range [][]string{
 		{"compose", "up", "--pull=policy"},
 		{"up", "--pull=garbage"},
-		{"compose", "up", "--pull=build"},
+		{"compose", "up", "--pull=ALWAYS"},
+		{"compose", "run", "--pull= always", "app"},
 		{"compose", "create", "--pull"},
 	} {
 		calls, err := runRootCapturingExec(t, args)
@@ -474,6 +475,63 @@ func TestInvalidPullOptionRejectedBeforeDockerAction(t *testing.T) {
 		}
 		if len(calls) != 0 {
 			t.Errorf("invalid pull %v executed Docker action: %+v", args, calls)
+		}
+	}
+}
+
+func TestPullBuildAcceptedForContainerCreatingCommands(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	writeFixtureFiles(t, dir, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+`, `
+services:
+  app:
+    image: app:latest
+    build: .
+`)
+
+	for _, args := range [][]string{
+		{"compose", "up", "--pull=build", "app"},
+		{"compose", "create", "--pull", "build", "app"},
+		{"compose", "run", "--pull=build", "app", "id"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			calls, err := runRootCapturingExec(t, args)
+			if err != nil {
+				t.Fatalf("valid --pull=build rejected: %v", err)
+			}
+			if len(calls) == 0 {
+				t.Fatal("valid --pull=build produced no Compose call")
+			}
+			final := calls[len(calls)-1].args
+			if strings.Contains(strings.Join(final, " "), "--pull") {
+				t.Fatalf("consumed --pull=build remains in final call: %v", final)
+			}
+		})
+	}
+}
+
+func TestUnsupportedImageRefreshOptionsRejectedBeforeDockerAction(t *testing.T) {
+	for _, args := range [][]string{
+		{"compose", "scale", "--build", "app=2"},
+		{"compose", "scale", "--pull=always", "app=2"},
+		{"compose", "watch", "--build"},
+		{"compose", "watch", "--no-build=false"},
+		{"compose", "watch", "--pull", "always"},
+	} {
+		calls, err := runRootCapturingExec(t, args)
+		if err == nil || !strings.Contains(err.Error(), "does not support image refresh option") {
+			t.Errorf("unsupported image option %v error = %v", args, err)
+		}
+		if len(calls) != 0 {
+			t.Errorf("unsupported image option %v executed Docker action: %+v", args, calls)
 		}
 	}
 }

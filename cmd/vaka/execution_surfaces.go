@@ -519,7 +519,19 @@ func referenceValidationServices(project *composetypes.Project, inv *ComposeInvo
 			if value == "" {
 				return nil, fmt.Errorf("compose %s: %s requires a value", inv.Subcommand, flag)
 			}
+			if flag == "-t" || flag == "--timeout" || flag == "--wait-timeout" {
+				if _, err := strconv.Atoi(value); err != nil {
+					return nil, fmt.Errorf("compose %s: %s requires an integer, got %q", inv.Subcommand, flag, value)
+				}
+			}
 			i += consumed
+			continue
+		}
+		if (inv.Subcommand == "restart" || inv.Subcommand == "stop" || inv.Subcommand == "down") && len(tok) > 2 && tok[0] == '-' && tok[1] == 't' {
+			if _, err := strconv.Atoi(tok[2:]); err != nil {
+				return nil, fmt.Errorf("compose %s: -t requires an integer, got %q", inv.Subcommand, tok[2:])
+			}
+			i++
 			continue
 		}
 		if booleanOptions[tok] {
