@@ -101,6 +101,10 @@ services:
     command: ["sleep", "3600"]
     user: "65534:0"
     cap_drop: [ALL]
+    depends_on:
+      retained:
+        condition: service_started
+        restart: true
     healthcheck:
       test: ["CMD-SHELL", "{ printf '%s:%s\\n' \"$(id -u)\" \"$(id -g)\"; sed -n '/^Cap/p' /proc/self/status; } > /tmp/vaka-health-state"]
       interval: 1s
@@ -303,5 +307,25 @@ health_caps="${health_state#*$'\n'}"
 assert_no_net_admin "healthcheck" "${health_caps}"
 assert_cap_absent "healthcheck" "${health_caps}" SETGID 6
 assert_cap_absent "healthcheck" "${health_caps}" SETUID 7
+
+printf '==> Verifying targeted restart rejects an unlabeled dependent\n'
+docker compose --project-name "${project}" --file "${compose_file}" rm --stop --force app >/dev/null
+docker compose --project-name "${project}" --file "${compose_file}" up --detach --no-deps app >/dev/null
+retained_started_before="$(docker container inspect "${retained_container_id}" --format '{{.State.StartedAt}}')"
+set +e
+restart_output="$("${VAKA_BIN}" \
+    "--vaka-file=${policy_file}" \
+    compose \
+    --project-name "${project}" \
+    --file "${compose_file}" \
+    restart --timeout 0 retained 2>&1)"
+restart_status=$?
+set -e
+[[ ${restart_status} -ne 0 ]] || die "targeted restart accepted a policy-managed unlabeled dependent"
+[[ "${restart_output}" == *"was not created by Vaka"* ]] || \
+    die "targeted restart returned an unexpected diagnostic: ${restart_output}"
+retained_started_after="$(docker container inspect "${retained_container_id}" --format '{{.State.StartedAt}}')"
+[[ "${retained_started_after}" == "${retained_started_before}" ]] || \
+    die "targeted restart changed the validated dependency before rejecting its unlabeled dependent"
 
 printf 'PASS: exact image ID %s is read-only; exec identity switching works; exec and healthchecks drop temporary capabilities\n' "${runtime_id}"
