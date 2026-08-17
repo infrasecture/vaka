@@ -13,6 +13,7 @@ import (
 	containertypes "github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/mount"
+	"github.com/moby/term"
 	"vaka.dev/vaka/internal/runtimebundle"
 	"vaka.dev/vaka/pkg/compose"
 )
@@ -281,6 +282,11 @@ var execDockerContainerFn = func(args []string) error {
 	return cmd.Run()
 }
 
+var execOutputIsTerminalFn = func() bool {
+	_, isTerminal := term.GetFdInfo(os.Stdout)
+	return isTerminal
+}
+
 var execOptionsWithValue = map[string]bool{
 	"-e": true, "--env": true,
 	"--index": true,
@@ -463,7 +469,7 @@ func secureDockerExecArgs(containerID string, parsed parsedExec) ([]string, erro
 	}
 	if !parsed.detach {
 		args = append(args, "-i")
-		if !parsed.noTTY {
+		if !parsed.noTTY && execOutputIsTerminalFn() {
 			args = append(args, "-t")
 		}
 	}

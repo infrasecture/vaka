@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -278,6 +279,45 @@ func TestSecureDockerExecUsesExactContainerID(t *testing.T) {
 	want := []string{"exec", "-e", "A=1", "-i", "--user=0:0", "exact-container", vakaInitPath, "exec", "--user", "1001", "--", "id"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("docker args = %v, want %v", got, want)
+	}
+}
+
+func TestSecureDockerExecTTYFollowsComposeOutputDetection(t *testing.T) {
+	parsed, err := parseExec([]string{"app", "id"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := execOutputIsTerminalFn
+	t.Cleanup(func() { execOutputIsTerminalFn = original })
+
+	execOutputIsTerminalFn = func() bool { return false }
+	withoutTTY, err := secureDockerExecArgs("exact-container", parsed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(withoutTTY, "-t") {
+		t.Fatalf("non-terminal exec requested a TTY: %v", withoutTTY)
+	}
+
+	execOutputIsTerminalFn = func() bool { return true }
+	withTTY, err := secureDockerExecArgs("exact-container", parsed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(withTTY, "-t") {
+		t.Fatalf("terminal exec omitted its TTY: %v", withTTY)
+	}
+
+	noTTY, err := parseExec([]string{"-T", "app", "id"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	explicitlyDisabled, err := secureDockerExecArgs("exact-container", noTTY)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(explicitlyDisabled, "-t") {
+		t.Fatalf("exec -T requested a TTY: %v", explicitlyDisabled)
 	}
 }
 
