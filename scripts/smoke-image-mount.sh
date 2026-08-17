@@ -98,9 +98,10 @@ services:
   app:
     image: "${VAKA_SMOKE_SERVICE_IMAGE}"
     command: ["sleep", "3600"]
-    cap_drop: [SETUID, SETGID]
+    user: "65534:0"
+    cap_drop: [ALL]
     healthcheck:
-      test: ["CMD-SHELL", "sed -n '/^Cap/p' /proc/self/status > /tmp/vaka-health-caps"]
+      test: ["CMD-SHELL", "{ printf '%s:%s\\n' \"$(id -u)\" \"$(id -g)\"; sed -n '/^Cap/p' /proc/self/status; } > /tmp/vaka-health-state"]
       interval: 1s
       timeout: 5s
       retries: 10
@@ -190,14 +191,31 @@ assert_no_net_admin() {
     assert_cap_absent "$1" "$2" NET_ADMIN 12
 }
 
+printf '==> Verifying startup identity transition\n'
+startup_state="$(docker container exec "${container_id}" sed -n '/^Uid:/p; /^Gid:/p; /^Cap/p' /proc/1/status)"
+startup_uid="$(awk '$1 == "Uid:" {print $2}' <<<"${startup_state}")"
+startup_gid="$(awk '$1 == "Gid:" {print $2}' <<<"${startup_state}")"
+[[ "${startup_uid}:${startup_gid}" == 65534:0 ]] || \
+    die "startup process ran as ${startup_uid:-unknown}:${startup_gid:-unknown}; expected 65534:0"
+startup_caps="$(sed -n '/^Cap/p' <<<"${startup_state}")"
+assert_no_net_admin "startup process" "${startup_caps}"
+assert_cap_absent "startup process" "${startup_caps}" SETGID 6
+assert_cap_absent "startup process" "${startup_caps}" SETUID 7
+
 printf '==> Verifying Vaka exec trampoline capabilities\n'
-exec_caps="$("${VAKA_BIN}" \
+exec_output="$("${VAKA_BIN}" \
     "--vaka-file=${policy_file}" \
     compose \
     --project-name "${project}" \
     --file "${compose_file}" \
-    exec -T app /bin/sh -c "sed -n '/^Cap/p' /proc/self/status")"
+    exec -T app /bin/sh -c 'printf "%s:%s\n" "$(id -u)" "$(id -g)"; sed -n "/^Cap/p" /proc/self/status')"
+exec_identity="${exec_output%%$'\n'*}"
+exec_caps="${exec_output#*$'\n'}"
+[[ "${exec_identity}" == 65534:0 ]] || \
+    die "vaka exec ran as ${exec_identity}; expected 65534:0"
 assert_no_net_admin "vaka exec" "${exec_caps}"
+assert_cap_absent "vaka exec" "${exec_caps}" SETGID 6
+assert_cap_absent "vaka exec" "${exec_caps}" SETUID 7
 
 printf '==> Verifying Vaka exec --user identity transition\n'
 exec_user_output="$("${VAKA_BIN}" \
@@ -235,13 +253,19 @@ if "${VAKA_BIN}" \
 fi
 
 printf '==> Verifying wrapped healthcheck capabilities\n'
-health_caps=""
+health_state=""
 for _ in $(seq 1 20); do
-    health_caps="$(docker container exec "${container_id}" sh -c 'cat /tmp/vaka-health-caps 2>/dev/null' || true)"
-    [[ -n "${health_caps}" ]] && break
+    health_state="$(docker container exec "${container_id}" sh -c 'cat /tmp/vaka-health-state 2>/dev/null' || true)"
+    [[ -n "${health_state}" ]] && break
     sleep 0.5
 done
-[[ -n "${health_caps}" ]] || die "wrapped healthcheck did not record its capabilities"
+[[ -n "${health_state}" ]] || die "wrapped healthcheck did not record its identity and capabilities"
+health_identity="${health_state%%$'\n'*}"
+health_caps="${health_state#*$'\n'}"
+[[ "${health_identity}" == 65534:0 ]] || \
+    die "wrapped healthcheck ran as ${health_identity}; expected 65534:0"
 assert_no_net_admin "healthcheck" "${health_caps}"
+assert_cap_absent "healthcheck" "${health_caps}" SETGID 6
+assert_cap_absent "healthcheck" "${health_caps}" SETUID 7
 
 printf 'PASS: exact image ID %s is read-only; exec identity switching works; exec and healthchecks drop temporary capabilities\n' "${runtime_id}"

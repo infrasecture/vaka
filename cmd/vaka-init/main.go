@@ -166,9 +166,7 @@ func main() {
 	// Step 7: Drop capabilities. For identity transitions, SETUID/SETGID can be
 	// deferred from Effective/Permitted until after switch while still dropping
 	// from Bounding/Inheritable up front.
-	switchNeeded := needsIdentitySwitch(targetUser)
-	deferSetUID := switchNeeded && targetUser.UID != 0
-	deferSetGID := switchNeeded && (targetUser.GID != 0 || len(targetUser.SupplementaryGIDs) > 0)
+	switchNeeded, deferSetUID, deferSetGID := transitionCapabilities(targetUser)
 
 	if len(dropCaps) > 0 {
 		if deferSetUID || deferSetGID {
@@ -495,6 +493,15 @@ func needsIdentitySwitch(u *execIdentity) bool {
 		return false
 	}
 	return u.UID != 0 || u.GID != 0 || len(u.SupplementaryGIDs) > 0
+}
+
+// transitionCapabilities reports which identity-changing capabilities must
+// remain effective and permitted until switchIdentity completes. setgroups(2)
+// requires SETGID even when it only clears supplementary groups and the target
+// primary GID remains 0.
+func transitionCapabilities(u *execIdentity) (switchNeeded, deferSetUID, deferSetGID bool) {
+	switchNeeded = needsIdentitySwitch(u)
+	return switchNeeded, switchNeeded && u.UID != 0, switchNeeded
 }
 
 func switchIdentity(u *execIdentity) error {

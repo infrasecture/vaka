@@ -379,6 +379,31 @@ func TestWithAdditionalGroupsRejectsMissingNamedGroup(t *testing.T) {
 	}
 }
 
+func TestTransitionCapabilities(t *testing.T) {
+	tests := []struct {
+		name                               string
+		identity                           *execIdentity
+		wantSwitch, wantSetUID, wantSetGID bool
+	}{
+		{name: "implicit root"},
+		{name: "explicit root", identity: &execIdentity{}},
+		{name: "nonroot uid with root gid", identity: &execIdentity{UID: 1000}, wantSwitch: true, wantSetUID: true, wantSetGID: true},
+		{name: "root uid with nonroot gid", identity: &execIdentity{GID: 1000}, wantSwitch: true, wantSetGID: true},
+		{name: "supplementary groups only", identity: &execIdentity{SupplementaryGIDs: []int{2000}}, wantSwitch: true, wantSetGID: true},
+		{name: "nonroot uid and gid", identity: &execIdentity{UID: 1000, GID: 1000}, wantSwitch: true, wantSetUID: true, wantSetGID: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			gotSwitch, gotSetUID, gotSetGID := transitionCapabilities(tc.identity)
+			if gotSwitch != tc.wantSwitch || gotSetUID != tc.wantSetUID || gotSetGID != tc.wantSetGID {
+				t.Fatalf("transitionCapabilities(%+v) = (%t, %t, %t), want (%t, %t, %t)",
+					tc.identity, gotSwitch, gotSetUID, gotSetGID, tc.wantSwitch, tc.wantSetUID, tc.wantSetGID)
+			}
+		})
+	}
+}
+
 func TestSwitchIdentityUsesSetgroupsBeforeUidGidSwitch(t *testing.T) {
 	oldSetgroups, oldSetresgid, oldSetresuid := setgroupsFn, setresgidFn, setresuidFn
 	defer func() {
