@@ -189,7 +189,10 @@ func main() {
 		// Ambient automatically. When UID remains 0 (e.g. user "0:1000"),
 		// deferred SETUID/SETGID still need explicit Effective/Permitted drop.
 		if len(dropCaps) > 0 && targetUser.UID == 0 {
-			deferred := deferredTransitionCapNames(deferSetUID, deferSetGID)
+			deferred, err := deferredTransitionCapNames(dropCaps, deferSetUID, deferSetGID)
+			if err != nil {
+				fatal("resolve deferred capability drops: %v", err)
+			}
 			if len(deferred) > 0 {
 				if err := dropCapsFully(deferred); err != nil {
 					fatal("drop deferred caps after identity switch: %v", err)
@@ -523,15 +526,24 @@ func switchIdentity(u *execIdentity) error {
 	return nil
 }
 
-func deferredTransitionCapNames(deferSetUID, deferSetGID bool) []string {
+func deferredTransitionCapNames(dropCaps []string, deferSetUID, deferSetGID bool) ([]string, error) {
+	caps, err := parseCaps(dropCaps)
+	if err != nil {
+		return nil, err
+	}
+	dropSetUID, dropSetGID := false, false
+	for _, cap := range caps {
+		dropSetUID = dropSetUID || cap == capability.CAP_SETUID
+		dropSetGID = dropSetGID || cap == capability.CAP_SETGID
+	}
 	out := []string{}
-	if deferSetUID {
+	if deferSetUID && dropSetUID {
 		out = append(out, "SETUID")
 	}
-	if deferSetGID {
+	if deferSetGID && dropSetGID {
 		out = append(out, "SETGID")
 	}
-	return out
+	return out, nil
 }
 
 // parseCaps converts short-form capability names to capability.Cap values.

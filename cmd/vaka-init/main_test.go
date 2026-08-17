@@ -404,6 +404,35 @@ func TestTransitionCapabilities(t *testing.T) {
 	}
 }
 
+func TestDeferredTransitionCapNamesOnlyReturnsRequestedDrops(t *testing.T) {
+	tests := []struct {
+		name                  string
+		dropCaps              []string
+		deferSetUID, deferGID bool
+		want                  []string
+	}{
+		{name: "unrelated drop", dropCaps: []string{"NET_ADMIN"}, deferSetUID: true, deferGID: true, want: []string{}},
+		{name: "setgid only", dropCaps: []string{"NET_ADMIN", "SETGID"}, deferSetUID: true, deferGID: true, want: []string{"SETGID"}},
+		{name: "both with cap prefix", dropCaps: []string{"CAP_SETGID", "CAP_SETUID"}, deferSetUID: true, deferGID: true, want: []string{"SETUID", "SETGID"}},
+		{name: "not deferred", dropCaps: []string{"SETUID", "SETGID"}, want: []string{}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := deferredTransitionCapNames(tc.dropCaps, tc.deferSetUID, tc.deferGID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("deferredTransitionCapNames() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	if _, err := deferredTransitionCapNames([]string{"NOT_A_CAP"}, true, true); err == nil {
+		t.Fatal("invalid capability was accepted")
+	}
+}
+
 func TestSwitchIdentityUsesSetgroupsBeforeUidGidSwitch(t *testing.T) {
 	oldSetgroups, oldSetresgid, oldSetresuid := setgroupsFn, setresgidFn, setresuidFn
 	defer func() {
