@@ -800,8 +800,11 @@ func scanCreateServiceTargets(inv *ComposeInvocation) ([]string, error) {
 			continue
 		}
 		if strings.HasPrefix(tok, "--") {
-			name, _, hasValue := strings.Cut(tok, "=")
+			name, value, hasValue := strings.Cut(tok, "=")
 			if booleanOptions[name] && hasValue {
+				if _, err := composeBoolValue(name, value); err != nil {
+					return nil, err
+				}
 				i++
 				continue
 			}
@@ -814,14 +817,20 @@ func scanCreateServiceTargets(inv *ComposeInvocation) ([]string, error) {
 				i++
 				continue
 			}
-			validCluster := true
-			for _, flag := range tok[1:] {
+			cluster, value, hasValue := strings.Cut(tok[1:], "=")
+			validCluster := cluster != ""
+			for _, flag := range cluster {
 				if !strings.ContainsRune(shortBooleans, flag) {
 					validCluster = false
 					break
 				}
 			}
 			if validCluster {
+				if hasValue {
+					if _, err := composeBoolValue("-"+cluster[len(cluster)-1:], value); err != nil {
+						return nil, err
+					}
+				}
 				i++
 				continue
 			}
@@ -839,10 +848,26 @@ var watchBooleanOptions = map[string]bool{
 // the reuse guard. Unknown options fail before image or container operations so
 // a future Compose option cannot silently broaden Vaka's selected service set.
 func selectWatchInvocationServices(project *composetypes.Project, inv *ComposeInvocation) (*composetypes.Project, error) {
+	targets, err := scanWatchServiceTargets(inv.PostSubcommand)
+	if err != nil {
+		return nil, err
+	}
+	enabled, err := project.WithServicesEnabled(targets...)
+	if err != nil {
+		return nil, fmt.Errorf("select Compose services for watch: %w", err)
+	}
+	selected, err := enabled.WithSelectedServices(targets)
+	if err != nil {
+		return nil, fmt.Errorf("select Compose services for watch: %w", err)
+	}
+	return selected, nil
+}
+
+func scanWatchServiceTargets(args []string) ([]string, error) {
 	var targets []string
-	for i, tok := range inv.PostSubcommand {
+	for i, tok := range args {
 		if tok == "--" {
-			targets = append(targets, inv.PostSubcommand[i+1:]...)
+			targets = append(targets, args[i+1:]...)
 			break
 		}
 		if !strings.HasPrefix(tok, "-") || tok == "-" {
@@ -859,15 +884,7 @@ func selectWatchInvocationServices(project *composetypes.Project, inv *ComposeIn
 			}
 		}
 	}
-	enabled, err := project.WithServicesEnabled(targets...)
-	if err != nil {
-		return nil, fmt.Errorf("select Compose services for watch: %w", err)
-	}
-	selected, err := enabled.WithSelectedServices(targets)
-	if err != nil {
-		return nil, fmt.Errorf("select Compose services for watch: %w", err)
-	}
-	return selected, nil
+	return targets, nil
 }
 
 // planManagedImagePreparation applies explicit Compose pull policies only to

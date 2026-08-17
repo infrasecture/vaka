@@ -143,6 +143,9 @@ func validateConsumedComposeBooleans(inv *ComposeInvocation, spec composeCommand
 				return err
 			}
 		case "up", "create":
+			if _, err := scanCreateServiceTargets(inv); err != nil {
+				return err
+			}
 			for _, option := range []string{"--build", "--no-build"} {
 				if _, err := composeBoolOptionEnabled(inv.PostSubcommand, option, ""); err != nil {
 					return err
@@ -151,7 +154,14 @@ func validateConsumedComposeBooleans(inv *ComposeInvocation, spec composeCommand
 			if _, _, err := composePullOption(inv); err != nil {
 				return err
 			}
-		case "scale", "watch":
+		case "watch":
+			if err := rejectUnsupportedImageRefreshOptions(inv); err != nil {
+				return err
+			}
+			if _, err := scanWatchServiceTargets(inv.PostSubcommand); err != nil {
+				return err
+			}
+		case "scale":
 			if err := rejectUnsupportedImageRefreshOptions(inv); err != nil {
 				return err
 			}

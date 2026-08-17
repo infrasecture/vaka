@@ -550,6 +550,9 @@ func TestComposeDryRunRespectsOptionBoundaryAndLastValue(t *testing.T) {
 func TestMalformedConsumedBooleanRejectedBeforeDockerAction(t *testing.T) {
 	for _, args := range [][]string{
 		{"compose", "up", "--build=garbage"},
+		{"compose", "up", "--force-recreate=garbage"},
+		{"compose", "create", "-y=garbage"},
+		{"compose", "watch", "--quiet=garbage"},
 		{"up", "--no-recreate=garbage"},
 		{"compose", "run", "--build=garbage", "app"},
 		{"compose", "rm", "--stop=garbage"},
