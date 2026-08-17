@@ -622,13 +622,15 @@ func TestParseComposeInvocationComposeGlobals(t *testing.T) {
 
 func TestComputeCapabilityPlan(t *testing.T) {
 	tests := []struct {
-		name     string
-		capAdd   []string
-		capDrop  []string
-		user     string
-		runtime  *policy.RuntimeConfig
-		wantAdd  []string
-		wantDrop []string
+		name       string
+		capAdd     []string
+		capDrop    []string
+		privileged bool
+		user       string
+		runtime    *policy.RuntimeConfig
+		wantAdd    []string
+		wantDrop   []string
+		wantErr    string
 	}{
 		{name: "default root", wantAdd: []string{"NET_ADMIN"}, wantDrop: []string{"NET_ADMIN"}},
 		{name: "setpcap explicitly dropped", capDrop: []string{"SETPCAP"}, wantAdd: []string{"NET_ADMIN", "SETPCAP"}, wantDrop: []string{"NET_ADMIN", "SETPCAP"}},
@@ -639,11 +641,25 @@ func TestComputeCapabilityPlan(t *testing.T) {
 		{name: "chown gets missing setup caps", capDrop: []string{"ALL"}, runtime: &policy.RuntimeConfig{Chown: []policy.ChownAction{{Path: "/data"}}}, wantAdd: []string{"NET_ADMIN", "SETUID", "SETGID", "CHOWN", "DAC_OVERRIDE", "SETPCAP"}, wantDrop: []string{"NET_ADMIN", "SETUID", "SETGID", "CHOWN", "DAC_OVERRIDE", "SETPCAP"}},
 		{name: "user supplied net admin remains intentional", capAdd: []string{"CAP_NET_ADMIN"}},
 		{name: "cap add wins over cap drop", capAdd: []string{"NET_ADMIN", "SETPCAP"}, capDrop: []string{"ALL"}, wantAdd: []string{"SETUID", "SETGID"}, wantDrop: []string{"SETUID", "SETGID"}},
+		{name: "privileged preserves all capabilities", privileged: true, capDrop: []string{"ALL"}, wantAdd: nil, wantDrop: nil},
+		{name: "privileged honors explicit runtime removal", privileged: true, runtime: &policy.RuntimeConfig{DropCaps: []string{"NET_ADMIN"}}, wantDrop: []string{"NET_ADMIN"}},
+		{name: "all capabilities preserve intentional net admin", capAdd: []string{"ALL"}},
+		{name: "all with required capability specifically dropped", capAdd: []string{"ALL"}, capDrop: []string{"NET_ADMIN"}, wantErr: "runtime.dropCaps"},
+		{name: "all with setpcap dropped and runtime removal", capAdd: []string{"ALL"}, capDrop: []string{"SETPCAP"}, runtime: &policy.RuntimeConfig{DropCaps: []string{"NET_RAW"}}, wantErr: "SETPCAP"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			svc := composetypes.ServiceConfig{CapAdd: tc.capAdd, CapDrop: tc.capDrop}
-			got := computeCapabilityPlan(svc, tc.runtime, tc.user)
+			svc := composetypes.ServiceConfig{CapAdd: tc.capAdd, CapDrop: tc.capDrop, Privileged: tc.privileged}
+			got, err := computeCapabilityPlan(svc, tc.runtime, tc.user)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("error = %v, want %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
 			if strings.Join(got.Add, ",") != strings.Join(tc.wantAdd, ",") {
 				t.Errorf("add = %v, want %v", got.Add, tc.wantAdd)
 			}

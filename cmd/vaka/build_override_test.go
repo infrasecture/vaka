@@ -155,6 +155,76 @@ services:
 	}
 }
 
+func TestBuildInjectionPreservesIntentionallyBroadCapabilities(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		composeCap string
+	}{
+		{name: "privileged", composeCap: "    privileged: true\n"},
+		{name: "cap add all", composeCap: "    cap_add: [ALL]\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			chdirForTest(t, dir)
+			writeFixtureFiles(t, dir, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+`, `
+services:
+  app:
+    image: alpine:3.20
+`+tc.composeCap)
+
+			inv, _ := ParseComposeInvocation([]string{"up", "app"})
+			override, extraEnv, err := buildInjectionOverride(context.Background(), &fakeBuilderDockerServices{}, "vaka.yaml", inv, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(override, "cap_add:") {
+				t.Fatalf("Vaka added temporary capabilities to intentionally broad service:\n%s", override)
+			}
+			encoded := strings.TrimPrefix(extraEnv[0], policyPayloadEnvironmentName("app")+"=")
+			raw, err := base64.StdEncoding.DecodeString(encoded)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(raw), "dropCaps") || strings.Contains(string(raw), "NET_ADMIN") {
+				t.Fatalf("generated policy removed an intentional capability:\n%s", raw)
+			}
+		})
+	}
+}
+
+func TestBuildInjectionRejectsIneffectiveTemporaryCapabilityAdd(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	writeFixtureFiles(t, dir, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+`, `
+services:
+  app:
+    image: alpine:3.20
+    cap_add: [ALL]
+    cap_drop: [NET_ADMIN]
+`)
+	inv, _ := ParseComposeInvocation([]string{"up", "app"})
+	_, _, err := buildInjectionOverride(context.Background(), &fakeBuilderDockerServices{}, "vaka.yaml", inv, false)
+	if err == nil || !strings.Contains(err.Error(), "runtime.dropCaps") {
+		t.Fatalf("ineffective capability error = %v", err)
+	}
+}
+
 func TestPolicyPayloadEnvironmentNamesDoNotCollide(t *testing.T) {
 	left := policyPayloadEnvironmentName("foo-bar")
 	right := policyPayloadEnvironmentName("foo_bar")

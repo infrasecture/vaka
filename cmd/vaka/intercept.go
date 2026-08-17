@@ -395,7 +395,10 @@ func buildInjectionOverride(
 		if restoreUser == "" {
 			restoreUser = strings.TrimSpace(rt.ImageUser)
 		}
-		capPlan := computeCapabilityPlan(composeSvc, svc.Runtime, restoreUser)
+		capPlan, err := computeCapabilityPlan(composeSvc, svc.Runtime, restoreUser)
+		if err != nil {
+			return "", nil, fmt.Errorf("service %s: %w", svcName, err)
+		}
 		svc.Runtime.DropCaps = capPlan.Drop
 		fmt.Fprintf(os.Stderr, "vaka: service %s: dropCaps: %v\n", svcName, svc.Runtime.DropCaps)
 
@@ -1322,10 +1325,9 @@ type capabilityPlan struct {
 }
 
 // computeCapabilityPlan derives Vaka's temporary capabilities from the merged
-// Compose service. Docker applies cap_drop first and cap_add second, including
-// the ALL token, so an explicit add wins. Capabilities already granted by the
-// service remain intentional unless runtime.dropCaps requests their removal.
-func computeCapabilityPlan(svc composetypes.ServiceConfig, runtime *policy.RuntimeConfig, _ string) capabilityPlan {
+// Compose service. Capabilities already granted by the service remain
+// intentional unless runtime.dropCaps requests their removal.
+func computeCapabilityPlan(svc composetypes.ServiceConfig, runtime *policy.RuntimeConfig, _ string) (capabilityPlan, error) {
 	drop := []string{}
 	if runtime != nil {
 		drop = append(drop, runtime.DropCaps...)
@@ -1347,6 +1349,9 @@ func computeCapabilityPlan(svc composetypes.ServiceConfig, runtime *policy.Runti
 		if containerHasCapability(svc, cap) {
 			continue
 		}
+		if !containerCanAddCapability(svc, cap) {
+			return capabilityPlan{}, fmt.Errorf("cap_add: ALL combined with cap_drop: %s prevents Vaka from provisioning required temporary capability %s; remove that cap_drop entry and use runtime.dropCaps to remove it before the workload starts", cap, cap)
+		}
 		add = append(add, cap)
 		drop = appendUniqueCapability(drop, cap)
 	}
@@ -1355,11 +1360,14 @@ func computeCapabilityPlan(svc composetypes.ServiceConfig, runtime *policy.Runti
 	// cap_drop may remove it (including via ALL), so add it temporarily whenever
 	// any post-initialization capability removal is required.
 	if len(drop) > 0 && !containerHasCapabilityWithAdds(svc, add, "SETPCAP") {
+		if !containerCanAddCapability(svc, "SETPCAP") {
+			return capabilityPlan{}, fmt.Errorf("cap_add: ALL combined with cap_drop: SETPCAP prevents Vaka from provisioning required temporary capability SETPCAP; remove that cap_drop entry and use runtime.dropCaps to remove it before the workload starts")
+		}
 		add = append(add, "SETPCAP")
 		drop = appendUniqueCapability(drop, "SETPCAP")
 	}
 
-	return capabilityPlan{Add: add, Drop: drop}
+	return capabilityPlan{Add: add, Drop: drop}, nil
 }
 
 func normalizeCapabilityName(name string) string {
@@ -1389,27 +1397,49 @@ func appendUniqueCapability(names []string, name string) []string {
 
 func containerHasCapability(svc composetypes.ServiceConfig, name string) bool {
 	want := normalizeCapabilityName(name)
-	for _, added := range svc.CapAdd {
-		cap := normalizeCapabilityName(added)
-		if cap == "ALL" || cap == want {
-			return true
-		}
+	if svc.Privileged {
+		return true
 	}
-	for _, dropped := range svc.CapDrop {
-		cap := normalizeCapabilityName(dropped)
-		if cap == "ALL" || cap == want {
-			return false
-		}
+	addAll := capabilityListContains(svc.CapAdd, "ALL")
+	dropAll := capabilityListContains(svc.CapDrop, "ALL")
+	addWant := capabilityListContains(svc.CapAdd, want)
+	dropWant := capabilityListContains(svc.CapDrop, want)
+	switch {
+	case addAll:
+		// Docker's ALL branch returns every capability except specifically
+		// dropped names; a duplicate specific cap_add does not restore one.
+		return !dropWant
+	case dropAll:
+		return addWant
+	case addWant:
+		return true
+	case dropWant:
+		return false
+	default:
+		return defaultDockerCaps["CAP_"+want]
 	}
-	return defaultDockerCaps["CAP_"+want]
 }
 
 func containerHasCapabilityWithAdds(svc composetypes.ServiceConfig, adds []string, name string) bool {
+	withAdds := svc
+	withAdds.CapAdd = append(append([]string{}, svc.CapAdd...), adds...)
+	return containerHasCapability(withAdds, name)
+}
+
+func containerCanAddCapability(svc composetypes.ServiceConfig, name string) bool {
+	if svc.Privileged {
+		return true
+	}
 	want := normalizeCapabilityName(name)
-	for _, added := range adds {
-		if normalizeCapabilityName(added) == want {
+	return !(capabilityListContains(svc.CapAdd, "ALL") && capabilityListContains(svc.CapDrop, want))
+}
+
+func capabilityListContains(names []string, name string) bool {
+	want := normalizeCapabilityName(name)
+	for _, candidate := range names {
+		if normalizeCapabilityName(candidate) == want {
 			return true
 		}
 	}
-	return containerHasCapability(svc, want)
+	return false
 }
