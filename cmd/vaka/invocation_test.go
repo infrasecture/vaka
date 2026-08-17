@@ -109,6 +109,17 @@ func TestParseComposeInvocationMetadata(t *testing.T) {
 			t.Fatalf("BuildRequested=true, want false")
 		}
 	})
+
+	t.Run("accepts compact short global values", func(t *testing.T) {
+		inv, err := ParseComposeInvocation([]string{"-fcompose.yaml", "-p=demo", "up"})
+		if err != nil {
+			t.Fatalf("ParseComposeInvocation: %v", err)
+		}
+		assertArgv(t, []string{"compose.yaml"}, inv.GlobalFiles)
+		if inv.ProjectName != "demo" {
+			t.Fatalf("ProjectName = %q, want demo", inv.ProjectName)
+		}
+	})
 }
 
 func TestParseComposeInvocationRejectsDockerGlobals(t *testing.T) {

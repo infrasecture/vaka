@@ -748,7 +748,7 @@ var upBooleanOptions = map[string]bool{
 	"--no-recreate": true, "--no-start": true, "--quiet-build": true,
 	"--quiet-pull": true, "--remove-orphans": true, "-V": true,
 	"--renew-anon-volumes": true, "--timestamps": true, "--wait": true,
-	"-w": true, "--watch": true, "-y": true, "--yes": true,
+	"-w": true, "--watch": true, "-y": true, "--y": true, "--yes": true,
 }
 
 var createOptionsWithValue = map[string]bool{
@@ -758,7 +758,7 @@ var createOptionsWithValue = map[string]bool{
 var createBooleanOptions = map[string]bool{
 	"--build": true, "--dry-run": true, "--force-recreate": true,
 	"--no-build": true, "--no-recreate": true, "--quiet-pull": true,
-	"--remove-orphans": true, "-y": true, "--yes": true,
+	"--remove-orphans": true, "-y": true, "--y": true, "--yes": true,
 }
 
 // scanCreateServiceTargets is deliberately command-local. It identifies only
@@ -788,8 +788,17 @@ func scanCreateServiceTargets(inv *ComposeInvocation) ([]string, error) {
 				return nil, fmt.Errorf("compose %s: %s requires a value", inv.Subcommand, flag)
 			}
 			if flag == "-t" || flag == "--timeout" || flag == "--wait-timeout" {
-				if _, err := strconv.Atoi(value); err != nil {
+				n, err := strconv.Atoi(value)
+				if err != nil {
 					return nil, fmt.Errorf("compose %s: %s requires an integer, got %q", inv.Subcommand, flag, value)
+				}
+				if flag == "--wait-timeout" && n < 0 {
+					return nil, fmt.Errorf("compose up: --wait-timeout must be a non-negative integer")
+				}
+			}
+			if flag == "--scale" {
+				if _, _, err := parseScaleSpecifier(value); err != nil {
+					return nil, fmt.Errorf("compose %s: %w", inv.Subcommand, err)
 				}
 			}
 			i += consumed
@@ -836,6 +845,55 @@ func scanCreateServiceTargets(inv *ComposeInvocation) ([]string, error) {
 			}
 		}
 		return nil, fmt.Errorf("compose %s: unknown option %q before image preparation; upgrade Vaka if this is a new Docker Compose option", inv.Subcommand, tok)
+	}
+	return targets, nil
+}
+
+func parseScaleSpecifier(value string) (string, int, error) {
+	service, replicasValue, ok := strings.Cut(value, "=")
+	if !ok || service == "" || replicasValue == "" {
+		return "", 0, fmt.Errorf("invalid scale specifier %q; expected SERVICE=REPLICAS", value)
+	}
+	replicas, err := strconv.Atoi(replicasValue)
+	if err != nil {
+		return "", 0, fmt.Errorf("invalid scale specifier %q: replicas must be an integer", value)
+	}
+	return service, replicas, nil
+}
+
+func scanScaleServiceTargets(inv *ComposeInvocation) ([]string, error) {
+	var targets []string
+	for i, tok := range inv.PostSubcommand {
+		if tok == "--" {
+			for _, value := range inv.PostSubcommand[i+1:] {
+				service, _, err := parseScaleSpecifier(value)
+				if err != nil {
+					return nil, fmt.Errorf("compose scale: %w", err)
+				}
+				targets = append(targets, service)
+			}
+			break
+		}
+		if strings.HasPrefix(tok, "-") && tok != "-" {
+			name, value, hasValue := strings.Cut(tok, "=")
+			if name != "--dry-run" && name != "--no-deps" {
+				return nil, fmt.Errorf("compose scale: unknown option %q before image preparation; upgrade Vaka if this is a new Docker Compose option", tok)
+			}
+			if hasValue {
+				if _, err := composeBoolValue(name, value); err != nil {
+					return nil, err
+				}
+			}
+			continue
+		}
+		service, _, err := parseScaleSpecifier(tok)
+		if err != nil {
+			return nil, fmt.Errorf("compose scale: %w", err)
+		}
+		targets = append(targets, service)
+	}
+	if len(targets) == 0 {
+		return nil, fmt.Errorf("compose scale: requires at least one SERVICE=REPLICAS argument")
 	}
 	return targets, nil
 }

@@ -567,6 +567,70 @@ func TestMalformedConsumedBooleanRejectedBeforeDockerAction(t *testing.T) {
 	}
 }
 
+func TestInvalidRenderInvocationRejectedBeforeDockerAction(t *testing.T) {
+	tests := [][]string{
+		{"compose", "scale", "--no-deps=garbage", "app=1"},
+		{"compose", "scale"},
+		{"compose", "scale", "app"},
+		{"compose", "scale", "=1"},
+		{"compose", "up", "--no-start", "--scale", "app=garbage", "app"},
+		{"compose", "up", "--no-start", "--wait-timeout=-1", "app"},
+		{"compose", "up", "--force-recreate", "--no-recreate", "app"},
+		{"compose", "up", "--always-recreate-deps", "--no-recreate", "app"},
+		{"compose", "up", "--renew-anon-volumes", "--no-recreate", "app"},
+		{"compose", "up", "--attach", "app", "--attach-dependencies"},
+		{"compose", "create", "--build", "--no-build", "app"},
+	}
+	for _, args := range tests {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			calls, err := runRootCapturingExec(t, args)
+			if err == nil {
+				t.Fatal("expected validation error")
+			}
+			if len(calls) != 0 {
+				t.Fatalf("invalid render invocation executed Docker action: %+v", calls)
+			}
+		})
+	}
+}
+
+func TestComposeGlobalValidationPrecedesDockerAction(t *testing.T) {
+	tests := [][]string{
+		{"compose", "--ansi=rainbow", "up", "--build"},
+		{"compose", "--progress=loud", "up", "--build"},
+		{"compose", "--parallel=many", "up", "--build"},
+		{"compose", "--future-global", "up", "--build"},
+		{"compose", "--workdir=/tmp", "up", "--build"},
+	}
+	for _, args := range tests {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			calls, err := runRootCapturingExec(t, args)
+			if err == nil {
+				t.Fatal("expected validation error")
+			}
+			if len(calls) != 0 {
+				t.Fatalf("invalid global invocation executed Docker action: %+v", calls)
+			}
+		})
+	}
+}
+
+func TestComposeHelpAfterOptionsDoesNotPrepare(t *testing.T) {
+	for _, args := range [][]string{
+		{"compose", "up", "--build", "--help"},
+		{"compose", "pull", "--quiet", "--help"},
+		{"compose", "--help", "up", "--build"},
+	} {
+		calls, err := runRootCapturingExec(t, args)
+		if err != nil {
+			t.Fatalf("help %v: %v", args, err)
+		}
+		if len(calls) != 1 || calls[0].overrideYAML != "" {
+			t.Fatalf("help %v calls = %+v, want one raw Compose proxy", args, calls)
+		}
+	}
+}
+
 func TestInvalidPullOptionRejectedBeforeDockerAction(t *testing.T) {
 	for _, args := range [][]string{
 		{"compose", "up", "--pull=policy"},

@@ -45,6 +45,32 @@ func TestParseExecCompactEqualsUser(t *testing.T) {
 	}
 }
 
+func TestParseExecBooleanAliasesUseLastValue(t *testing.T) {
+	parsed, err := parseExec([]string{
+		"--privileged", "--privileged=false",
+		"--interactive", "--interactive=0",
+		"--no-TTY", "--no-TTY=false",
+		"--detach=false", "-d",
+		"app", "id",
+	})
+	if err != nil {
+		t.Fatalf("parseExec: %v", err)
+	}
+	if parsed.privileged || parsed.interactive || parsed.noTTY || !parsed.detach {
+		t.Fatalf("last-value state = %+v", parsed)
+	}
+
+	for _, args := range [][]string{
+		{"--tty", "--no-TTY=false", "app", "id"},
+		{"--interactive=garbage", "app", "id"},
+		{"-d=garbage", "app", "id"},
+	} {
+		if _, err := parseExec(args); err == nil {
+			t.Errorf("parseExec(%v) unexpectedly succeeded", args)
+		}
+	}
+}
+
 func TestInspectExecTargetMatchesComposeReplicaSelection(t *testing.T) {
 	containers := []containertypes.Summary{
 		execContainer("oneoff", "1", true),
@@ -318,6 +344,24 @@ func TestSecureDockerExecTTYFollowsComposeOutputDetection(t *testing.T) {
 	}
 	if slices.Contains(explicitlyDisabled, "-t") {
 		t.Fatalf("exec -T requested a TTY: %v", explicitlyDisabled)
+	}
+}
+
+func TestSecureDockerExecSynthesizesFinalBooleanState(t *testing.T) {
+	parsed, err := parseExec([]string{"--interactive=false", "--tty=false", "--detach=false", "app", "id"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := execOutputIsTerminalFn
+	execOutputIsTerminalFn = func() bool { return true }
+	t.Cleanup(func() { execOutputIsTerminalFn = original })
+
+	args, err := secureDockerExecArgs("exact-container", parsed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(args, "-i") || slices.Contains(args, "-t") || slices.Contains(args, "-d") {
+		t.Fatalf("disabled exec booleans leaked into docker exec: %v", args)
 	}
 }
 

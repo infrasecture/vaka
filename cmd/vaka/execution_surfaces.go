@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"path"
 	"strconv"
 	"strings"
 
 	composeformat "github.com/compose-spec/compose-go/v2/format"
 	composetypes "github.com/compose-spec/compose-go/v2/types"
+	"github.com/mattn/go-shellwords"
 	"vaka.dev/vaka/pkg/policy"
 )
 
@@ -23,11 +25,12 @@ var runOptionsWithValue = map[string]bool{
 	"--env-from-file": true,
 	"--entrypoint":    true,
 	"-l":              true, "--label": true,
-	"--name": true,
-	"-p":     true, "--publish": true,
+	"--labels": true,
+	"--name":   true,
+	"-p":       true, "--publish": true,
 	"--pull": true,
 	"-u":     true, "--user": true,
-	"-v": true, "--volume": true,
+	"-v": true, "--volume": true, "--volumes": true,
 	"-w": true, "--workdir": true,
 }
 
@@ -38,12 +41,14 @@ var runBooleanOptions = map[string]bool{
 	"-i":        true, "--interactive": true,
 	"--no-deps": true,
 	"-T":        true, "--no-tty": true,
-	"-q": true, "--quiet": true,
+	"--no-TTY": true,
+	"-q":       true, "--quiet": true,
 	"--quiet-build":    true,
 	"--quiet-pull":     true,
 	"--remove-orphans": true,
 	"--rm":             true,
 	"-P":               true, "--service-ports": true,
+	"-t": true, "--tty": true,
 	"--use-aliases": true,
 }
 
@@ -51,6 +56,7 @@ type parsedRun struct {
 	service            string
 	serviceIndex       int
 	entrypoint         bool
+	entrypointValue    string
 	user               bool
 	build              bool
 	noDeps             bool
@@ -61,9 +67,14 @@ type parsedRun struct {
 	pullAlways         bool
 	capabilityOverride bool
 	volumes            []string
+	publish            []string
 	labels             []string
 	environment        []string
 	environmentFile    bool
+	environmentFiles   []string
+	servicePorts       bool
+	ttySet             bool
+	noTTYSet           bool
 }
 
 func parseRun(args []string) (parsedRun, error) {
@@ -93,6 +104,7 @@ func parseRun(args []string) (parsedRun, error) {
 				parsed.capabilityOverride = true
 			case "--entrypoint":
 				parsed.entrypoint = true
+				parsed.entrypointValue = value
 			case "-u", "--user":
 				parsed.user = true
 			case "-e", "--env":
@@ -103,53 +115,47 @@ func parseRun(args []string) (parsedRun, error) {
 				parsed.pullAlways = value == "always"
 			case "--env-from-file":
 				parsed.environmentFile = true
-			case "-v", "--volume":
+				parsed.environmentFiles = append(parsed.environmentFiles, value)
+			case "-v", "--volume", "--volumes":
 				parsed.volumes = append(parsed.volumes, value)
-			case "-l", "--label":
+			case "-l", "--label", "--labels":
 				parsed.labels = append(parsed.labels, value)
+			case "-p", "--publish":
+				parsed.publish = append(parsed.publish, value)
 			}
 			i += consumed
 			continue
 		}
-		if value, ok := strings.CutPrefix(tok, "--build="); ok {
-			enabled, err := composeBoolValue("--build", value)
+		if strings.HasPrefix(tok, "--") {
+			name, value, hasValue := strings.Cut(tok, "=")
+			if hasValue && runBooleanOptions[name] {
+				enabled, err := composeBoolValue(name, value)
+				if err != nil {
+					return parsedRun{}, err
+				}
+				parsed.recordRunBoolean(name, enabled)
+				i++
+				continue
+			}
+		}
+		if len(tok) > 3 && tok[0] == '-' && tok[1] != '-' && tok[2] == '=' && runBooleanOptions[tok[:2]] {
+			enabled, err := composeBoolValue(tok[:2], tok[3:])
 			if err != nil {
 				return parsedRun{}, err
 			}
-			parsed.build = enabled
+			parsed.recordRunBoolean(tok[:2], enabled)
 			i++
 			continue
 		}
-		if value, ok := strings.CutPrefix(tok, "--dry-run="); ok {
-			enabled, err := composeBoolValue("--dry-run", value)
-			if err != nil {
-				return parsedRun{}, err
+		if runBooleanOptions[tok] {
+			parsed.recordRunBoolean(tok, true)
+			i++
+			continue
+		}
+		if isRunShortBooleanCluster(tok) {
+			for _, flag := range tok[1:] {
+				parsed.recordRunBoolean("-"+string(flag), true)
 			}
-			parsed.dryRun = enabled
-			parsed.dryRunSet = true
-			i++
-			continue
-		}
-		if value, ok := strings.CutPrefix(tok, "--no-deps="); ok {
-			enabled, err := composeBoolValue("--no-deps", value)
-			if err != nil {
-				return parsedRun{}, err
-			}
-			parsed.noDeps = enabled
-			i++
-			continue
-		}
-		if tok == "--build" {
-			parsed.build = true
-		}
-		if tok == "--no-deps" {
-			parsed.noDeps = true
-		}
-		if tok == "--dry-run" {
-			parsed.dryRun = true
-			parsed.dryRunSet = true
-		}
-		if runBooleanOptions[tok] || isRunShortBooleanCluster(tok) {
 			i++
 			continue
 		}
@@ -157,7 +163,11 @@ func parseRun(args []string) (parsedRun, error) {
 			flag := tok[:2]
 			value := tok[2:]
 			switch flag {
-			case "-p", "-w":
+			case "-p":
+				parsed.publish = append(parsed.publish, strings.TrimPrefix(value, "="))
+				i++
+				continue
+			case "-w":
 				i++
 				continue
 			case "-e":
@@ -183,7 +193,61 @@ func parseRun(args []string) (parsedRun, error) {
 	if parsed.service == "" {
 		return parsedRun{}, fmt.Errorf("compose run: missing SERVICE")
 	}
+	if parsed.servicePorts && len(parsed.publish) > 0 {
+		return parsedRun{}, fmt.Errorf("compose run: --service-ports and --publish are incompatible")
+	}
+	if parsed.ttySet && parsed.noTTYSet {
+		return parsedRun{}, fmt.Errorf("compose run: --tty and --no-tty cannot be used together")
+	}
+	if parsed.entrypoint {
+		if _, err := shellwords.Parse(parsed.entrypointValue); err != nil {
+			return parsedRun{}, fmt.Errorf("compose run: parse --entrypoint: %w", err)
+		}
+	}
+	for _, raw := range parsed.publish {
+		if _, err := composetypes.ParsePortConfig(raw); err != nil {
+			return parsedRun{}, fmt.Errorf("compose run: parse published port %q: %w", raw, err)
+		}
+	}
+	for _, raw := range parsed.volumes {
+		if _, err := composeformat.ParseVolume(raw); err != nil {
+			return parsedRun{}, fmt.Errorf("compose run: parse volume %q: %w", raw, err)
+		}
+	}
+	for _, label := range parsed.labels {
+		key, _, ok := strings.Cut(label, "=")
+		if !ok || strings.TrimSpace(key) == "" {
+			return parsedRun{}, fmt.Errorf("compose run: label must be set as KEY=VALUE, got %q", label)
+		}
+	}
+	for _, file := range parsed.environmentFiles {
+		f, err := os.Open(file)
+		if err != nil {
+			return parsedRun{}, fmt.Errorf("compose run: open --env-from-file %q: %w", file, err)
+		}
+		if err := f.Close(); err != nil {
+			return parsedRun{}, fmt.Errorf("compose run: close --env-from-file %q: %w", file, err)
+		}
+	}
 	return parsed, nil
+}
+
+func (p *parsedRun) recordRunBoolean(flag string, enabled bool) {
+	switch flag {
+	case "--build":
+		p.build = enabled
+	case "--dry-run":
+		p.dryRun = enabled
+		p.dryRunSet = true
+	case "--no-deps":
+		p.noDeps = enabled
+	case "-P", "--service-ports":
+		p.servicePorts = enabled
+	case "-t", "--tty":
+		p.ttySet = true
+	case "-T", "--no-tty", "--no-TTY":
+		p.noTTYSet = true
+	}
 }
 
 func selectRunServices(project *composetypes.Project, parsed parsedRun) (*composetypes.Project, error) {
@@ -203,7 +267,7 @@ func isRunShortBooleanCluster(tok string) bool {
 		return false
 	}
 	for _, r := range tok[1:] {
-		if !strings.ContainsRune("diTqP", r) {
+		if !strings.ContainsRune("diTqPt", r) {
 			return false
 		}
 	}
@@ -488,19 +552,22 @@ func referenceValidationServices(project *composetypes.Project, inv *ComposeInvo
 		valueOptions["-t"] = true
 		valueOptions["--timeout"] = true
 	case "rm":
+		booleanOptions["-a"] = true
+		booleanOptions["--all"] = true
 		booleanOptions["-f"] = true
 		booleanOptions["--force"] = true
 		booleanOptions["-s"] = true
 		booleanOptions["--stop"] = true
 		booleanOptions["-v"] = true
 		booleanOptions["--volumes"] = true
-		shortBooleans = "fsv"
+		shortBooleans = "afsv"
 	case "down":
 		valueOptions["-t"] = true
 		valueOptions["--timeout"] = true
 		valueOptions["--rmi"] = true
 		booleanOptions["--remove-orphans"] = true
 		booleanOptions["-v"] = true
+		booleanOptions["--volume"] = true
 		booleanOptions["--volumes"] = true
 		shortBooleans = "v"
 	case "unpause":
@@ -544,14 +611,17 @@ func referenceValidationServices(project *composetypes.Project, inv *ComposeInvo
 			continue
 		}
 		if strings.HasPrefix(tok, "--") {
-			name, _, hasValue := strings.Cut(tok, "=")
+			name, value, hasValue := strings.Cut(tok, "=")
 			if booleanOptions[name] && hasValue {
+				if _, err := composeBoolValue(name, value); err != nil {
+					return nil, err
+				}
 				i++
 				continue
 			}
 		}
 		if shortBooleans != "" && len(tok) > 2 && tok[0] == '-' && tok[1] != '-' {
-			cluster, _, _ := strings.Cut(tok[1:], "=")
+			cluster, value, hasValue := strings.Cut(tok[1:], "=")
 			valid := true
 			for _, flag := range cluster {
 				if !strings.ContainsRune(shortBooleans, flag) {
@@ -560,6 +630,11 @@ func referenceValidationServices(project *composetypes.Project, inv *ComposeInvo
 				}
 			}
 			if valid {
+				if hasValue {
+					if _, err := composeBoolValue("-"+cluster[len(cluster)-1:], value); err != nil {
+						return nil, err
+					}
+				}
 				i++
 				continue
 			}

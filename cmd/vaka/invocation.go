@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -36,6 +37,10 @@ type ComposeInvocation struct {
 	EnvFiles            []string
 	BuildRequested      bool
 	ResolvedProjectName string
+	GlobalHelp          bool
+	GlobalVersion       bool
+	Compatibility       bool
+	AllResources        bool
 
 	lastFileTokenIdx int // index in Args for the last pre-subcommand -f/--file value token
 }
@@ -52,6 +57,20 @@ var composeGlobalFlagsWithValue = map[string]bool{
 	"--parallel":          true,
 	"--ansi":              true,
 	"--progress":          true,
+}
+
+var composeGlobalBoolFlags = map[string]bool{
+	"--all-resources": true,
+	"--compatibility": true,
+	"--dry-run":       true,
+	"-h":              true,
+	"--help":          true,
+	"-v":              true,
+	"--version":       true,
+	// These remain accepted by Compose for compatibility, even though they are
+	// hidden from normal help output.
+	"--no-ansi": true,
+	"--verbose": true,
 }
 
 var dockerGlobalFlagsWithValue = map[string]bool{
@@ -220,6 +239,12 @@ func (inv *ComposeInvocation) scanComposeArgs() error {
 		}
 
 		if matchedFlag, value, consumed, usedEquals, ok := parseValueTakingToken(args, i, composeGlobalFlagsWithValue); ok {
+			if value == "" {
+				return fmt.Errorf("compose global option %s requires a non-empty value", matchedFlag)
+			}
+			if err := validateComposeGlobalValue(matchedFlag, value); err != nil {
+				return err
+			}
 			inv.ComposeGlobals = append(inv.ComposeGlobals, args[i:i+consumed]...)
 			if matchedFlag == "-f" || matchedFlag == "--file" {
 				if value != "" {
@@ -247,15 +272,26 @@ func (inv *ComposeInvocation) scanComposeArgs() error {
 			continue
 		}
 
-		if strings.HasPrefix(tok, "--") && strings.Contains(tok, "=") {
+		if name, enabled, ok, err := parseComposeGlobalBoolToken(tok); ok {
+			if err != nil {
+				return err
+			}
 			inv.ComposeGlobals = append(inv.ComposeGlobals, tok)
+			switch name {
+			case "-h", "--help":
+				inv.GlobalHelp = enabled
+			case "-v", "--version":
+				inv.GlobalVersion = enabled
+			case "--compatibility":
+				inv.Compatibility = enabled
+			case "--all-resources":
+				inv.AllResources = enabled
+			}
 			continue
 		}
 		if strings.HasPrefix(tok, "-") {
-			inv.ComposeGlobals = append(inv.ComposeGlobals, tok)
-			continue
+			return fmt.Errorf("unknown compose global option %q before command; use raw `docker compose` for an option Vaka has not reviewed", tok)
 		}
-
 		inv.SubcommandIdx = i
 		inv.Subcommand = tok
 		inv.PreSubcommand = append(inv.PreSubcommand, args[:i]...)
@@ -267,6 +303,48 @@ func (inv *ComposeInvocation) scanComposeArgs() error {
 
 	inv.PreSubcommand = append(inv.PreSubcommand, args...)
 	return nil
+}
+
+func validateComposeGlobalValue(flag, value string) error {
+	switch flag {
+	case "--ansi":
+		if value != "auto" && value != "always" && value != "never" {
+			return fmt.Errorf("compose global option --ansi has invalid value %q", value)
+		}
+	case "--progress":
+		switch value {
+		case "auto", "tty", "plain", "json", "quiet", "none":
+		default:
+			return fmt.Errorf("compose global option --progress has invalid value %q", value)
+		}
+	case "--parallel":
+		if _, err := strconv.Atoi(value); err != nil {
+			return fmt.Errorf("compose global option --parallel requires an integer, got %q", value)
+		}
+	}
+	return nil
+}
+
+func parseComposeGlobalBoolToken(tok string) (name string, enabled bool, ok bool, err error) {
+	if composeGlobalBoolFlags[tok] {
+		return tok, true, true, nil
+	}
+	if len(tok) > 3 && tok[0] == '-' && tok[1] != '-' && tok[2] == '=' && composeGlobalBoolFlags[tok[:2]] {
+		enabled, err = composeBoolValue(tok[:2], tok[3:])
+		return tok[:2], enabled, true, err
+	}
+	if !strings.HasPrefix(tok, "--") {
+		return "", false, false, nil
+	}
+	name, value, hasValue := strings.Cut(tok, "=")
+	if !hasValue || !composeGlobalBoolFlags[name] {
+		return "", false, false, nil
+	}
+	enabled, err = composeBoolValue(name, value)
+	if err != nil {
+		return name, false, true, err
+	}
+	return name, enabled, true, nil
 }
 
 func (inv *ComposeInvocation) detectBuildRequested() {
@@ -307,6 +385,15 @@ func parseValueTakingToken(args []string, idx int, flags map[string]bool) (flag 
 		if strings.HasPrefix(tok, prefix) {
 			return candidate, strings.TrimPrefix(tok, prefix), 1, true, true
 		}
+	}
+	for candidate := range flags {
+		if len(candidate) != 2 || candidate[0] != '-' || candidate[1] == '-' || !strings.HasPrefix(tok, candidate) || len(tok) <= len(candidate) {
+			continue
+		}
+		value := strings.TrimPrefix(tok, candidate)
+		usedEquals := strings.HasPrefix(value, "=")
+		value = strings.TrimPrefix(value, "=")
+		return candidate, value, 1, usedEquals, true
 	}
 	return "", "", 0, false, false
 }

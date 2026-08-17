@@ -262,16 +262,20 @@ func isComposeOneoff(ctr containertypes.Summary) bool {
 }
 
 type parsedExec struct {
-	service    string
-	command    []string
-	index      int
-	prefix     []string
-	user       string
-	privileged bool
-	detach     bool
-	noTTY      bool
-	dryRun     bool
-	dryRunSet  bool
+	service     string
+	command     []string
+	index       int
+	prefix      []string
+	user        string
+	privileged  bool
+	detach      bool
+	interactive bool
+	noTTY       bool
+	tty         bool
+	ttySet      bool
+	noTTYSet    bool
+	dryRun      bool
+	dryRunSet   bool
 }
 
 var execDockerContainerFn = func(args []string) error {
@@ -298,7 +302,8 @@ var execBooleanOptions = map[string]bool{
 	"-d": true, "--detach": true,
 	"--dry-run": true,
 	"-T":        true, "--no-tty": true,
-	"-i": true, "--interactive": true,
+	"--no-TTY": true,
+	"-i":       true, "--interactive": true,
 	"-t": true, "--tty": true,
 	"--privileged": true,
 }
@@ -307,7 +312,7 @@ var execBooleanOptions = map[string]bool{
 // a future value-taking flag must not cause Vaka to wrap the flag value as if
 // it were a service name.
 func parseExec(args []string) (parsedExec, error) {
-	parsed := parsedExec{}
+	parsed := parsedExec{interactive: true, tty: true}
 	for i := 0; i < len(args); {
 		tok := args[i]
 		if tok == "--" {
@@ -326,24 +331,6 @@ func parseExec(args []string) (parsedExec, error) {
 			parsed.command = append([]string{}, args[i:]...)
 			break
 		}
-		if tok == "--privileged" {
-			parsed.privileged = true
-			parsed.prefix = append(parsed.prefix, tok)
-			i++
-			continue
-		}
-		if value, ok := strings.CutPrefix(tok, "--dry-run="); ok {
-			enabled, err := composeBoolValue("--dry-run", value)
-			if err != nil {
-				return parsedExec{}, err
-			}
-			parsed.dryRun = enabled
-			parsed.dryRunSet = true
-			parsed.prefix = append(parsed.prefix, tok)
-			i++
-			continue
-		}
-
 		if flag, value, consumed, _, ok := parseValueTakingToken(args, i, execOptionsWithValue); ok {
 			if value == "" {
 				return parsedExec{}, fmt.Errorf("compose exec: %s requires a value", flag)
@@ -364,6 +351,29 @@ func parseExec(args []string) (parsedExec, error) {
 			i += consumed
 			continue
 		}
+		if strings.HasPrefix(tok, "--") {
+			name, value, hasValue := strings.Cut(tok, "=")
+			if hasValue && execBooleanOptions[name] {
+				enabled, err := composeBoolValue(name, value)
+				if err != nil {
+					return parsedExec{}, err
+				}
+				parsed.recordExecBoolean(name, enabled)
+				parsed.prefix = append(parsed.prefix, tok)
+				i++
+				continue
+			}
+		}
+		if len(tok) > 3 && tok[0] == '-' && tok[1] != '-' && tok[2] == '=' && execBooleanOptions[tok[:2]] {
+			enabled, err := composeBoolValue(tok[:2], tok[3:])
+			if err != nil {
+				return parsedExec{}, err
+			}
+			parsed.recordExecBoolean(tok[:2], enabled)
+			parsed.prefix = append(parsed.prefix, tok)
+			i++
+			continue
+		}
 		if strings.HasPrefix(tok, "-u") && !strings.HasPrefix(tok, "--") && len(tok) > 2 {
 			parsed.user = strings.TrimPrefix(tok[2:], "=")
 			if parsed.user == "" {
@@ -378,14 +388,14 @@ func parseExec(args []string) (parsedExec, error) {
 			continue
 		}
 		if execBooleanOptions[tok] {
-			parsed.recordExecBoolean(tok)
+			parsed.recordExecBoolean(tok, true)
 			parsed.prefix = append(parsed.prefix, tok)
 			i++
 			continue
 		}
 		if isExecShortBooleanCluster(tok) {
 			for _, flag := range tok[1:] {
-				parsed.recordExecBoolean("-" + string(flag))
+				parsed.recordExecBoolean("-"+string(flag), true)
 			}
 			parsed.prefix = append(parsed.prefix, tok)
 			i++
@@ -399,17 +409,28 @@ func parseExec(args []string) (parsedExec, error) {
 	if len(parsed.command) == 0 {
 		return parsedExec{}, fmt.Errorf("compose exec: missing COMMAND for service %s", parsed.service)
 	}
+	if parsed.ttySet && parsed.noTTYSet {
+		return parsedExec{}, fmt.Errorf("compose exec: --tty and --no-tty cannot be used together")
+	}
 	return parsed, nil
 }
 
-func (p *parsedExec) recordExecBoolean(flag string) {
+func (p *parsedExec) recordExecBoolean(flag string, enabled bool) {
 	switch flag {
 	case "-d", "--detach":
-		p.detach = true
-	case "-T", "--no-tty":
-		p.noTTY = true
+		p.detach = enabled
+	case "-i", "--interactive":
+		p.interactive = enabled
+	case "-T", "--no-tty", "--no-TTY":
+		p.noTTY = enabled
+		p.noTTYSet = true
+	case "-t", "--tty":
+		p.tty = enabled
+		p.ttySet = true
+	case "--privileged":
+		p.privileged = enabled
 	case "--dry-run":
-		p.dryRun = true
+		p.dryRun = enabled
 		p.dryRunSet = true
 	}
 }
@@ -458,20 +479,27 @@ func secureDockerExecArgs(containerID string, parsed parsedExec) ([]string, erro
 		case tok == "--index":
 			i++
 		case strings.HasPrefix(tok, "--index="):
-		case tok == "-T" || tok == "--no-tty" || tok == "-i" || tok == "--interactive" || tok == "-t" || tok == "--tty" || tok == "--dry-run" || strings.HasPrefix(tok, "--dry-run="):
+		case isExecBooleanToken(tok):
 		case isExecShortBooleanCluster(tok):
-			if strings.Contains(tok, "d") {
-				args = append(args, "-d")
-			}
 		default:
 			args = append(args, tok)
 		}
 	}
-	if !parsed.detach {
+	if parsed.detach {
+		args = append(args, "-d")
+	}
+	if parsed.interactive {
 		args = append(args, "-i")
-		if !parsed.noTTY && execOutputIsTerminalFn() {
-			args = append(args, "-t")
-		}
+	}
+	tty := execOutputIsTerminalFn()
+	if parsed.noTTYSet {
+		tty = !parsed.noTTY
+	}
+	if parsed.ttySet {
+		tty = parsed.tty
+	}
+	if tty {
+		args = append(args, "-t")
 	}
 	args = append(args, "--user=0:0", containerID, vakaInitPath, "exec")
 	if parsed.user != "" {
@@ -480,6 +508,14 @@ func secureDockerExecArgs(containerID string, parsed parsedExec) ([]string, erro
 	args = append(args, "--")
 	args = append(args, parsed.command...)
 	return args, nil
+}
+
+func isExecBooleanToken(tok string) bool {
+	if execBooleanOptions[tok] {
+		return true
+	}
+	name, _, hasValue := strings.Cut(tok, "=")
+	return hasValue && execBooleanOptions[name]
 }
 
 func reservedExecEnvironmentOverride(prefix []string) string {

@@ -97,6 +97,38 @@ func TestParseRunNoDepsUsesLastValueAndStopsAtService(t *testing.T) {
 	}
 }
 
+func TestParseRunAcceptsComposeAliasesAndValidatesBeforePreparation(t *testing.T) {
+	parsed, err := parseRun([]string{
+		"--volumes", "scratch:/workspace",
+		"--labels", "purpose=test",
+		"--no-TTY=false",
+		"--service-ports=false",
+		"--publish", "127.0.0.1:8080:80",
+		"app", "id",
+	})
+	if err != nil {
+		t.Fatalf("valid aliases rejected: %v", err)
+	}
+	if parsed.service != "app" || parsed.servicePorts {
+		t.Fatalf("parsed run = %+v", parsed)
+	}
+
+	tests := [][]string{
+		{"--service-ports", "--publish", "8080:80", "app"},
+		{"--publish", "not-a-port", "app"},
+		{"--volume", "bad::volume", "app"},
+		{"--label", "missing-value", "app"},
+		{"--tty", "--no-TTY=false", "app"},
+		{"--entrypoint", "'unterminated", "app"},
+		{"--env-from-file", "does-not-exist.env", "app"},
+	}
+	for _, args := range tests {
+		if _, err := parseRun(args); err == nil {
+			t.Errorf("parseRun(%v) unexpectedly succeeded", args)
+		}
+	}
+}
+
 func TestSelectRunServicesUsesDependencyGraph(t *testing.T) {
 	project := &composetypes.Project{Services: composetypes.Services{
 		"app": {Name: "app", DependsOn: map[string]composetypes.ServiceDependency{
