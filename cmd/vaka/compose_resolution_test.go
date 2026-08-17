@@ -58,6 +58,72 @@ services:
 	}
 }
 
+func TestComposeResolutionUsesComposeProfilesEnvironment(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	composeFile := filepath.Join(dir, "compose.yaml")
+	if err := os.WriteFile(composeFile, []byte(`
+services:
+  app:
+    image: alpine:3.20
+  tool:
+    image: alpine:3.20
+    profiles: [tools]
+  debug:
+    image: alpine:3.20
+    profiles: [debug]
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("COMPOSE_PROFILES", "tools")
+
+	inv, err := ParseComposeInvocation([]string{"up"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, err := resolveComposeInput(inv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts, err := newComposeProjectOptions(input, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := opts.LoadProject(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := project.Services["tool"]; !ok {
+		t.Fatal("COMPOSE_PROFILES did not enable tool")
+	}
+	if _, ok := project.DisabledServices["debug"]; !ok {
+		t.Fatal("unselected debug profile was not retained as a declared service")
+	}
+
+	inv, err = ParseComposeInvocation([]string{"--profile", "debug", "up"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, err = resolveComposeInput(inv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts, err = newComposeProjectOptions(input, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err = opts.LoadProject(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := project.Services["debug"]; !ok {
+		t.Fatal("explicit --profile did not enable debug")
+	}
+	if _, ok := project.DisabledServices["tool"]; !ok {
+		t.Fatal("COMPOSE_PROFILES incorrectly augmented explicit --profile")
+	}
+}
+
 func TestResolveComposeInputDefaultsComposeYaml(t *testing.T) {
 	dir := t.TempDir()
 	chdirForTest(t, dir)

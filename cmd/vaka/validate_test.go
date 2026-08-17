@@ -3,6 +3,7 @@ package main
 import (
 	"io"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -10,6 +11,36 @@ import (
 	composetypes "github.com/compose-spec/compose-go/v2/types"
 	"vaka.dev/vaka/pkg/policy"
 )
+
+func TestLoadAndValidateRecognizesInactiveProfileServices(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	writeFixtureFiles(t, dir, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  tool:
+    network:
+      egress:
+        defaultAction: reject
+`, `
+services:
+  app:
+    image: alpine:3.20
+  tool:
+    image: alpine:3.20
+    profiles: [tools]
+`)
+	_, project, err := loadAndValidateResolved("vaka.yaml", &composeResolution{
+		Files: []string{filepath.Join(dir, "docker-compose.yaml")},
+	})
+	if err != nil {
+		t.Fatalf("inactive managed service was treated as missing: %v", err)
+	}
+	if _, ok := project.DisabledServices["tool"]; !ok {
+		t.Fatal("inactive profile service is not retained in DisabledServices")
+	}
+}
 
 func TestDegradedEnforcementReasons(t *testing.T) {
 	tests := []struct {

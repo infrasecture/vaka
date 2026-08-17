@@ -680,10 +680,11 @@ func referenceValidationServices(project *composetypes.Project, inv *ComposeInvo
 	} else if inv.Subcommand == "start" {
 		selected, err = enabled.WithSelectedServices(targets)
 	} else if inv.Subcommand == "down" {
-		// Compose down SERVICE removes that service and every transitive
-		// dependent, stopping dependents before their dependencies. Those
-		// dependents can run pre_stop hooks and must be validated too.
-		selected, err = enabled.WithSelectedServices(targets, composetypes.IncludeDependents)
+		// Compose's config-backed down path prunes the project to explicit
+		// service arguments before backend traversal. Untargeted down is handled
+		// above; targeted down must not let an untouched dependent block safe
+		// containment of the requested service.
+		selected, err = enabled.WithSelectedServices(targets, composetypes.IgnoreDependencies)
 	} else {
 		selected, err = enabled.WithSelectedServices(targets, composetypes.IgnoreDependencies)
 	}

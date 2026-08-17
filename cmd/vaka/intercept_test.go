@@ -315,9 +315,8 @@ func TestBuildTakesPrecedenceOverPullForBuildableServices(t *testing.T) {
 		t.Fatalf("managed pull plan = %+v, want only image-only pull", managed)
 	}
 
-	inv, _ := ParseComposeInvocation([]string{"up", "--pull=always", "--build", "buildable", "image-only"})
 	unmanaged, err := planSelectedUnmanagedRefresh(
-		project, map[string]*policy.ServiceConfig{}, inv,
+		project, map[string]*policy.ServiceConfig{},
 		composetypes.PullPolicyAlways, true, true, false,
 	)
 	if err != nil {
@@ -340,6 +339,24 @@ func TestImageUsesLatestTag(t *testing.T) {
 		if got := imageUsesLatestTag(image); got != want {
 			t.Errorf("imageUsesLatestTag(%q) = %t, want %t", image, got, want)
 		}
+	}
+}
+
+func TestDefaultComposeImageNameHonorsCompatibilityMode(t *testing.T) {
+	project := &composetypes.Project{Name: "demo", Environment: map[string]string{}, Services: composetypes.Services{
+		"app": {Name: "app", Build: &composetypes.BuildConfig{Context: "."}},
+	}}
+	inv, _ := ParseComposeInvocation([]string{"up"})
+	applyDefaultImageNames(project, inv)
+	if got := project.Services["app"].Image; got != "demo-app" {
+		t.Fatalf("default image = %q, want demo-app", got)
+	}
+
+	project.Services["app"] = composetypes.ServiceConfig{Name: "app", Build: &composetypes.BuildConfig{Context: "."}}
+	project.Environment["COMPOSE_COMPATIBILITY"] = "y"
+	applyDefaultImageNames(project, inv)
+	if got := project.Services["app"].Image; got != "demo_app" {
+		t.Fatalf("compatible image = %q, want demo_app", got)
 	}
 }
 
@@ -383,8 +400,7 @@ func TestNoBuildUsesExistingImageForBuildPullPolicy(t *testing.T) {
 		t.Fatalf("--no-build unexpectedly scheduled a build: %+v", plan)
 	}
 
-	inv, _ := ParseComposeInvocation([]string{"up", "--pull=build", "--no-build", "app"})
-	unmanaged, err := planSelectedUnmanagedRefresh(project, map[string]*policy.ServiceConfig{}, inv, composetypes.PullPolicyBuild, true, false, true)
+	unmanaged, err := planSelectedUnmanagedRefresh(project, map[string]*policy.ServiceConfig{}, composetypes.PullPolicyBuild, true, false, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -469,11 +485,9 @@ func TestPullBuildFreezesSelectedUnmanagedImageOnlyService(t *testing.T) {
 		}},
 		"policy": {Name: "policy", Image: "policy:latest"},
 	}}
-	inv, _ := ParseComposeInvocation([]string{"run", "--pull=build", "app"})
 	plan, err := planSelectedUnmanagedRefresh(
 		project,
 		map[string]*policy.ServiceConfig{"policy": {}},
-		inv,
 		composetypes.PullPolicyBuild,
 		true,
 		false,

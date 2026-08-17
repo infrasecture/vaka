@@ -351,8 +351,8 @@ func TestReferenceValidationServiceTargets(t *testing.T) {
 		{args: []string{"restart", "-t0", "app"}, want: map[string]bool{"app": true, "worker": true}},
 		{args: []string{"restart", "--no-deps", "app"}, want: map[string]bool{"app": true}},
 		{args: []string{"start", "app"}, want: map[string]bool{"app": true, "dep": true}},
-		{args: []string{"down", "--remove-orphans", "dep"}, want: map[string]bool{"dep": true, "app": true, "worker": true, "inert": true}},
-		{args: []string{"down", "app"}, want: map[string]bool{"app": true, "worker": true}},
+		{args: []string{"down", "--remove-orphans", "dep"}, want: map[string]bool{"dep": true}},
+		{args: []string{"down", "app"}, want: map[string]bool{"app": true}},
 		{args: []string{"rm", "-fsv", "app"}, want: map[string]bool{"app": true}},
 		{args: []string{"stop", "--timeout=5", "app"}, want: map[string]bool{"app": true}},
 		{args: []string{"stop", "-t0", "app"}, want: map[string]bool{"app": true}},
@@ -442,7 +442,7 @@ services:
 	}
 }
 
-func TestLifecycleDownValidatesTransitiveDependents(t *testing.T) {
+func TestLifecycleTargetedDownValidatesOnlyExplicitServices(t *testing.T) {
 	dir := t.TempDir()
 	chdirForTest(t, dir)
 	writeFixtureFiles(t, dir, `
@@ -474,9 +474,8 @@ services:
 	}})
 
 	inv, _ := ParseComposeInvocation([]string{"down", "dep"})
-	err := validateReferenceExecutionSurfaces("vaka.yaml", inv)
-	if err == nil || !strings.Contains(err.Error(), "service worker") || !strings.Contains(err.Error(), "pre_stop") {
-		t.Fatalf("down dependent validation error = %v", err)
+	if err := validateReferenceExecutionSurfaces("vaka.yaml", inv); err != nil {
+		t.Fatalf("targeted down validated an untouched dependent: %v", err)
 	}
 }
 

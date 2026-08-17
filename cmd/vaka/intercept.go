@@ -208,9 +208,6 @@ func runFull(vakaFile string, inv *ComposeInvocation, vakaInitPresent bool, pull
 	if captureErr != nil {
 		fmt.Fprintf(os.Stderr, "vaka: warning: cannot inspect legacy runtime state: %v\n", captureErr)
 	}
-	if !legacyState.Empty() {
-		extraEnv = append(extraEnv, "COMPOSE_IGNORE_ORPHANS=true")
-	}
 	execErr := execDockerComposeFn(inv, overrideYAML, extraEnv)
 	cleanupLegacyRuntime(ctx, ds, legacyState)
 	return execErr
@@ -236,10 +233,19 @@ func buildInjectionOverride(
 	if err != nil {
 		return "", nil, err
 	}
-	if err := validateManagedExecutionSurfaces(p, project); err != nil {
+	selected, err := selectRenderInvocationServices(project, inv)
+	if err != nil {
 		return "", nil, err
 	}
-	if vakaInitPresent && len(p.Services) > 0 {
+	if err := validateSelectedRenderOptions(selected, inv); err != nil {
+		return "", nil, err
+	}
+	applyDefaultImageNames(selected, inv)
+	managedServices := policyServicesInProject(p.Services, selected)
+	if err := validateManagedExecutionSurfaces(&policy.ServicePolicy{Services: managedServices}, selected); err != nil {
+		return "", nil, err
+	}
+	if vakaInitPresent && len(managedServices) > 0 {
 		return "", nil, fmt.Errorf("--vaka-init-present is not supported for managed services: the exec security boundary requires Vaka's verified read-only runtime mount")
 	}
 	if inv.Subcommand == "run" {
@@ -253,11 +259,7 @@ func buildInjectionOverride(
 			return "", nil, err
 		}
 		if noRecreate {
-			selected, err := selectCreateInvocationServices(project, inv)
-			if err != nil {
-				return "", nil, err
-			}
-			if selectionContainsManagedService(selected, p.Services) {
+			if selectionContainsManagedService(selected, managedServices) {
 				return "", nil, fmt.Errorf("compose %s --no-recreate can reuse containers with an older unsafe runtime; remove --no-recreate so managed services are recreated", inv.Subcommand)
 			}
 		}
@@ -268,11 +270,7 @@ func buildInjectionOverride(
 			return "", nil, err
 		}
 		if noUp {
-			selected, err := selectWatchInvocationServices(project, inv)
-			if err != nil {
-				return "", nil, err
-			}
-			if selectionContainsManagedService(selected, p.Services) {
+			if selectionContainsManagedService(selected, managedServices) {
 				return "", nil, fmt.Errorf("compose watch --no-up can reuse containers with an older unsafe runtime; remove --no-up so managed services are recreated")
 			}
 		}
@@ -300,38 +298,36 @@ func buildInjectionOverride(
 	if forceRebuild && noBuild {
 		return "", nil, fmt.Errorf("compose options --build and --no-build cannot both be enabled")
 	}
-	applyManagedCLI := true
-	if inv.Subcommand == "run" {
-		parsed, parseErr := parseRun(inv.PostSubcommand)
-		if parseErr != nil {
-			return "", nil, parseErr
-		}
-		selected, selectErr := selectRunServices(project, parsed)
-		if selectErr != nil {
-			return "", nil, fmt.Errorf("select Compose run services for image preparation: %w", selectErr)
-		}
-		applyManagedCLI = false
-		for name := range selected.Services {
-			if _, managed := p.Services[name]; managed {
-				applyManagedCLI = true
-				break
-			}
-		}
-	}
+	applyManagedCLI := len(managedServices) > 0
 	managedPullRequested := pullRequested && applyManagedCLI
 	managedForceRebuild := forceRebuild && applyManagedCLI
-	preparation, err := planManagedImagePreparation(ctx, ds, p.Services, project, pullValue, managedPullRequested, managedForceRebuild, noBuild)
+	preparation, err := planManagedImagePreparation(ctx, ds, managedServices, selected, pullValue, managedPullRequested, managedForceRebuild, noBuild)
 	if err != nil {
 		return "", nil, err
 	}
-	unmanaged, err := planSelectedUnmanagedRefresh(project, p.Services, inv, pullValue, pullRequested && applyManagedCLI, forceRebuild && applyManagedCLI, noBuild)
-	if err != nil {
-		return "", nil, err
+	unmanaged := unmanagedImagePreparation{forceBuild: map[string]bool{}}
+	if inv.Subcommand == "up" || inv.Subcommand == "create" || inv.Subcommand == "run" {
+		unmanaged, err = planSelectedUnmanagedRefresh(selected, managedServices, pullValue, pullRequested && applyManagedCLI, forceRebuild && applyManagedCLI, noBuild)
+		if err != nil {
+			return "", nil, err
+		}
 	}
 	preparation.pullAlways = append(preparation.pullAlways, unmanaged.pullAlways...)
 	preparation.pullOrBuild = append(preparation.pullOrBuild, unmanaged.pullOrBuild...)
 	for name := range unmanaged.forceBuild {
 		preparation.forceBuild[name] = true
+	}
+	quietPull, err := composeBoolOptionEnabled(inv.PostSubcommand, "--quiet-pull", "")
+	if err != nil {
+		return "", nil, err
+	}
+	quietBuildOption := "--quiet-build"
+	if inv.Subcommand == "watch" {
+		quietBuildOption = "--quiet"
+	}
+	quietBuild, err := composeBoolOptionEnabled(inv.PostSubcommand, quietBuildOption, "")
+	if err != nil {
+		return "", nil, err
 	}
 	for _, pull := range []struct {
 		policy   string
@@ -345,7 +341,11 @@ func buildInjectionOverride(
 		}
 		fmt.Fprintf(os.Stderr, "vaka: pre-pulling services with policy %s before image preparation: %v\n", pull.policy, pull.services)
 		pullArgs := append([]string{}, inv.ComposeGlobals...)
-		pullArgs = append(pullArgs, "pull", "--policy", pull.policy)
+		pullArgs = append(pullArgs, "pull")
+		if quietPull {
+			pullArgs = append(pullArgs, "--quiet")
+		}
+		pullArgs = append(pullArgs, "--policy", pull.policy)
 		pullArgs = append(pullArgs, pull.services...)
 		if err := execDockerComposeFn(&ComposeInvocation{Args: pullArgs}, "", nil); err != nil {
 			return "", nil, fmt.Errorf("pre-pull (%s): %w", pull.policy, err)
@@ -354,7 +354,11 @@ func buildInjectionOverride(
 	for _, pull := range preparation.pullOrBuild {
 		fmt.Fprintf(os.Stderr, "vaka: pre-pulling buildable service %s with policy %s before image preparation\n", pull.service, pull.policy)
 		pullArgs := append([]string{}, inv.ComposeGlobals...)
-		pullArgs = append(pullArgs, "pull", "--policy", pull.policy, pull.service)
+		pullArgs = append(pullArgs, "pull")
+		if quietPull {
+			pullArgs = append(pullArgs, "--quiet")
+		}
+		pullArgs = append(pullArgs, "--policy", pull.policy, pull.service)
 		if err := execDockerComposeFn(&ComposeInvocation{Args: pullArgs}, "", nil); err != nil {
 			if noBuild {
 				return "", nil, fmt.Errorf("pre-pull %s (%s): %w", pull.service, pull.policy, err)
@@ -368,7 +372,7 @@ func buildInjectionOverride(
 	// inspectable image. --build is consumed for every buildable managed service
 	// before inspection; this preserves final-image identity without touching
 	// unrelated unmanaged services.
-	toBuild, err := servicesNeedingPrebuild(ctx, ds, p.Services, project, managedForceRebuild, preparation.forceBuild, noBuild)
+	toBuild, err := servicesNeedingPrebuild(ctx, ds, managedServices, selected, managedForceRebuild, preparation.forceBuild, noBuild)
 	if err != nil {
 		return "", nil, err
 	}
@@ -376,6 +380,9 @@ func buildInjectionOverride(
 		fmt.Fprintf(os.Stderr, "vaka: pre-building services to resolve entrypoints: %v\n", toBuild)
 		buildArgs := append([]string{}, inv.ComposeGlobals...)
 		buildArgs = append(buildArgs, "build")
+		if quietBuild {
+			buildArgs = append(buildArgs, "--quiet")
+		}
 		buildArgs = append(buildArgs, toBuild...)
 		buildInv := &ComposeInvocation{
 			Args: buildArgs,
@@ -388,13 +395,10 @@ func buildInjectionOverride(
 	var entries []compose.ServiceEntry
 	extraEnv = nil
 
-	for svcName, svc := range p.Services {
-		composeSvc, ok := project.Services[svcName]
+	for svcName, svc := range managedServices {
+		composeSvc, ok := selected.Services[svcName]
 		if !ok {
 			return "", nil, fmt.Errorf("service %q: not found in compose files %v", svcName, composeInput.Files)
-		}
-		if strings.TrimSpace(composeSvc.Image) == "" && composeSvc.Build != nil {
-			composeSvc.Image = project.Name + "-" + svcName
 		}
 		composeSvc.PullPolicy = preparation.effectivePullPolicy[svcName]
 
@@ -467,9 +471,9 @@ func buildInjectionOverride(
 	if err != nil {
 		return "", nil, fmt.Errorf("build override: %w", err)
 	}
-	consumeBuild := forceRebuild && (inv.Subcommand != "run" || applyManagedCLI)
+	consumeBuild := forceRebuild && applyManagedCLI
 	pullMode := pullValue
-	consumePull := pullRequested && (pullMode == composetypes.PullPolicyAlways || pullMode == composetypes.PullPolicyBuild) && (inv.Subcommand != "run" || applyManagedCLI)
+	consumePull := pullRequested && (pullMode == composetypes.PullPolicyAlways || pullMode == composetypes.PullPolicyBuild) && applyManagedCLI
 	if consumeBuild || consumePull {
 		if err := consumeComposeImageRefreshOptions(inv, consumeBuild, consumePull); err != nil {
 			return "", nil, err
@@ -512,11 +516,7 @@ func runReference(inv *ComposeInvocation) error {
 	if captureErr != nil {
 		fmt.Fprintf(os.Stderr, "vaka: warning: cannot inspect legacy runtime state: %v\n", captureErr)
 	}
-	extraEnv := []string(nil)
-	if !legacyState.Empty() {
-		extraEnv = append(extraEnv, "COMPOSE_IGNORE_ORPHANS=true")
-	}
-	execErr := execDockerComposeFn(inv, overrideYAML, extraEnv)
+	execErr := execDockerComposeFn(inv, overrideYAML, nil)
 	cleanupLegacyRuntime(ctx, ds, legacyState)
 	return execErr
 }
@@ -618,13 +618,11 @@ type unmanagedImagePreparation struct {
 
 // planSelectedUnmanagedRefresh preserves native Compose --build/--pull
 // behavior when Vaka must consume a project-wide option to protect managed
-// services. It prepares only selected unmanaged services, including run
-// dependencies. A run graph containing no managed service keeps native Compose
-// handling and reaches this function with refresh options disabled.
+// services. The caller supplies the already validated selected graph, so
+// unrelated services cannot be pulled or built here.
 func planSelectedUnmanagedRefresh(
-	project *composetypes.Project,
+	selected *composetypes.Project,
 	policySvcs map[string]*policy.ServiceConfig,
-	inv *ComposeInvocation,
 	pullValue string,
 	pullRequested, forceBuild, noBuild bool,
 ) (unmanagedImagePreparation, error) {
@@ -632,27 +630,6 @@ func planSelectedUnmanagedRefresh(
 	consumePull := pullRequested && (pullValue == composetypes.PullPolicyAlways || pullValue == composetypes.PullPolicyBuild)
 	if !forceBuild && !consumePull {
 		return plan, nil
-	}
-	var selected *composetypes.Project
-	var err error
-	switch inv.Subcommand {
-	case "up", "create":
-		targets, scanErr := scanCreateServiceTargets(inv)
-		if scanErr != nil {
-			return unmanagedImagePreparation{}, scanErr
-		}
-		selected, err = selectComposeServices(project, targets, inv.PostSubcommand)
-	case "run":
-		parsed, parseErr := parseRun(inv.PostSubcommand)
-		if parseErr != nil {
-			return unmanagedImagePreparation{}, parseErr
-		}
-		selected, err = selectRunServices(project, parsed)
-	default:
-		return plan, nil
-	}
-	if err != nil {
-		return unmanagedImagePreparation{}, fmt.Errorf("select Compose services for image preparation: %w", err)
 	}
 	prepared := map[string]bool{}
 	for name, svc := range selected.Services {
@@ -722,6 +699,143 @@ func selectCreateInvocationServices(project *composetypes.Project, inv *ComposeI
 		return nil, fmt.Errorf("select Compose services for %s: %w", inv.Subcommand, err)
 	}
 	return selected, nil
+}
+
+func selectRenderInvocationServices(project *composetypes.Project, inv *ComposeInvocation) (*composetypes.Project, error) {
+	if project == nil {
+		return nil, fmt.Errorf("select Compose services for %s: no project was loaded", inv.Subcommand)
+	}
+	var (
+		selected *composetypes.Project
+		err      error
+	)
+	switch inv.Subcommand {
+	case "up", "create":
+		selected, err = selectCreateInvocationServices(project, inv)
+	case "run":
+		var parsed parsedRun
+		parsed, err = parseRun(inv.PostSubcommand)
+		if err == nil {
+			selected, err = selectRunServices(project, parsed)
+		}
+	case "scale":
+		var targets []string
+		targets, err = scanScaleServiceTargets(inv)
+		if err == nil {
+			selected, err = selectComposeServices(project, targets, inv.PostSubcommand)
+		}
+	case "watch":
+		selected, err = selectWatchInvocationServices(project, inv)
+	case "show-compose":
+		selected, err = project.WithSelectedServices(nil)
+	default:
+		err = fmt.Errorf("unsupported render command %q", inv.Subcommand)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("select Compose services for %s: %w", inv.Subcommand, err)
+	}
+	return selected, nil
+}
+
+func validateSelectedRenderOptions(selected *composetypes.Project, inv *ComposeInvocation) error {
+	if len(selected.Services) == 0 {
+		return fmt.Errorf("compose %s: no service selected", inv.Subcommand)
+	}
+	if inv.Subcommand == "up" || inv.Subcommand == "create" {
+		for _, raw := range composeValueOptionValues(inv.PostSubcommand, map[string]bool{"--scale": true}) {
+			name, _, err := parseScaleSpecifier(raw)
+			if err != nil {
+				return fmt.Errorf("compose %s: %w", inv.Subcommand, err)
+			}
+			if _, err := selected.GetService(name); err != nil {
+				return fmt.Errorf("compose %s --scale: %w", inv.Subcommand, err)
+			}
+		}
+	}
+	if inv.Subcommand == "up" {
+		removeOrphans, err := composeBoolOptionEnabled(inv.PostSubcommand, "--remove-orphans", "")
+		if err != nil {
+			return err
+		}
+		if removeOrphans && composeEnvironmentBool(selected.Environment["COMPOSE_IGNORE_ORPHANS"]) {
+			return fmt.Errorf("compose up: cannot combine COMPOSE_IGNORE_ORPHANS and --remove-orphans")
+		}
+		for _, option := range []string{"--attach", "--exit-code-from"} {
+			for _, name := range composeValueOptionValues(inv.PostSubcommand, map[string]bool{option: true}) {
+				if _, err := selected.GetService(name); err != nil {
+					return fmt.Errorf("compose up %s: %w", option, err)
+				}
+			}
+		}
+	}
+	if inv.Subcommand == "watch" {
+		for _, svc := range selected.Services {
+			if svc.Develop != nil {
+				return nil
+			}
+			if _, ok := svc.Extensions["x-develop"]; ok {
+				return nil
+			}
+		}
+		return fmt.Errorf("compose watch: none of the selected services is configured for watch")
+	}
+	return nil
+}
+
+func composeEnvironmentBool(value string) bool {
+	value = strings.TrimSpace(value)
+	if strings.EqualFold(value, "y") {
+		return true
+	}
+	enabled, _ := strconv.ParseBool(value)
+	return enabled
+}
+
+func composeValueOptionValues(args []string, options map[string]bool) []string {
+	var values []string
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--" {
+			break
+		}
+		_, value, consumed, _, ok := parseValueTakingToken(args, i, options)
+		if !ok {
+			continue
+		}
+		values = append(values, value)
+		i += consumed - 1
+	}
+	return values
+}
+
+func policyServicesInProject(all map[string]*policy.ServiceConfig, project *composetypes.Project) map[string]*policy.ServiceConfig {
+	selected := make(map[string]*policy.ServiceConfig)
+	for name := range project.Services {
+		if svc, ok := all[name]; ok {
+			selected[name] = svc
+		}
+	}
+	return selected
+}
+
+func defaultComposeImageName(project *composetypes.Project, inv *ComposeInvocation, service string) string {
+	separator := "-"
+	compatibility := inv.Compatibility
+	if !compatibility {
+		compatibility = composeEnvironmentBool(project.Environment["COMPOSE_COMPATIBILITY"])
+	}
+	if compatibility {
+		separator = "_"
+	}
+	return project.Name + separator + service
+}
+
+func applyDefaultImageNames(project *composetypes.Project, inv *ComposeInvocation) {
+	for name, svc := range project.Services {
+		if strings.TrimSpace(svc.Image) == "" && svc.Build != nil {
+			svc.Image = defaultComposeImageName(project, inv, name)
+			project.Services[name] = svc
+		}
+	}
 }
 
 func selectionContainsManagedService(project *composetypes.Project, policySvcs map[string]*policy.ServiceConfig) bool {

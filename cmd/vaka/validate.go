@@ -90,7 +90,7 @@ func loadAndValidateResolved(vakaFile string, input *composeResolution) (*policy
 			return nil, nil, fmt.Errorf("load compose project: %w", err)
 		}
 		networkModes = make(map[string]string)
-		for name, svc := range project.Services {
+		for name, svc := range project.AllServices() {
 			networkModes[name] = svc.NetworkMode
 		}
 	}
@@ -128,9 +128,10 @@ func warnDegradedEnforcement(p *policy.ServicePolicy, project *composetypes.Proj
 		names = append(names, name)
 	}
 	sort.Strings(names)
+	allServices := project.AllServices()
 
 	for _, name := range names {
-		composeSvc, ok := project.Services[name]
+		composeSvc, ok := allServices[name]
 		if !ok {
 			continue
 		}

@@ -94,9 +94,6 @@ func newComposeProjectOptions(input *composeResolution, autoDiscover bool) (*com
 	if strings.TrimSpace(input.ProjectName) != "" {
 		opts = append(opts, composecli.WithName(input.ProjectName))
 	}
-	if len(input.Profiles) > 0 {
-		opts = append(opts, composecli.WithProfiles(input.Profiles))
-	}
 	opts = append(opts, composecli.WithOsEnv)
 	if len(input.EnvFiles) > 0 {
 		opts = append(opts, composecli.WithEnvFiles(input.EnvFiles...))
@@ -104,6 +101,9 @@ func newComposeProjectOptions(input *composeResolution, autoDiscover bool) (*com
 		opts = append(opts, composecli.WithEnvFiles())
 	}
 	opts = append(opts, composecli.WithDotEnv)
+	// Match Compose's profile precedence: explicit --profile values win; when
+	// absent, COMPOSE_PROFILES is read after OS, env-file, and .env loading.
+	opts = append(opts, composecli.WithDefaultProfiles(input.Profiles...))
 	if autoDiscover && len(input.Files) == 0 {
 		opts = append(opts,
 			composecli.WithConfigFileEnv,

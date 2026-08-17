@@ -268,6 +268,10 @@ services:
     user: "1000:1000"
     entrypoint: ["sleep"]
     command: ["infinity"]
+    develop:
+      watch:
+        - action: restart
+          path: .
 `)
 
 	calls, err := runRootCapturingExec(t, []string{"compose", "-f", "docker-compose.yaml", "up", "-d"})
@@ -301,6 +305,10 @@ services:
     user: "1000:1000"
     entrypoint: ["sleep"]
     command: ["infinity"]
+    develop:
+      watch:
+        - action: restart
+          path: .
 `)
 
 	for _, args := range [][]string{
@@ -338,6 +346,10 @@ services:
 services:
   app:
     image: alpine:3.20
+    develop:
+      watch:
+        - action: restart
+          path: .
 `)
 
 	calls, err := runRootCapturingExec(t, []string{"compose", "watch", "--no-up"})
@@ -364,6 +376,10 @@ services:
 services:
   app:
     image: alpine:3.20
+    develop:
+      watch:
+        - action: restart
+          path: .
 `)
 
 	for _, verb := range []string{"up", "create"} {
@@ -407,6 +423,10 @@ services:
     depends_on:
       policy:
         condition: service_started
+    develop:
+      watch:
+        - action: restart
+          path: .
 `
 
 	for _, verb := range []string{"up", "create"} {
@@ -419,6 +439,10 @@ services:
     image: alpine:3.20
   app:
     image: alpine:3.20
+    develop:
+      watch:
+        - action: restart
+          path: .
 `)
 
 			calls, err := runRootCapturingExec(t, []string{"compose", verb, "--no-recreate", "app"})
@@ -466,6 +490,10 @@ services:
     image: alpine:3.20
   app:
     image: alpine:3.20
+    develop:
+      watch:
+        - action: restart
+          path: .
 `)
 
 		calls, err := runRootCapturingExec(t, []string{"compose", "watch", "--no-up", "app"})
@@ -628,6 +656,71 @@ func TestComposeHelpAfterOptionsDoesNotPrepare(t *testing.T) {
 		if len(calls) != 1 || calls[0].overrideYAML != "" {
 			t.Fatalf("help %v calls = %+v, want one raw Compose proxy", args, calls)
 		}
+	}
+}
+
+func TestRenderSelectionErrorsPrecedePreparation(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	writeFixtureFiles(t, dir, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+`, `
+services:
+  app:
+    image: app:latest
+    build: .
+`)
+
+	for _, args := range [][]string{
+		{"compose", "up", "--build", "missing"},
+		{"compose", "up", "--build", "--scale", "missing=2", "app"},
+		{"compose", "scale", "missing=2"},
+		{"compose", "run", "--build", "missing", "id"},
+		{"compose", "watch"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			calls, err := runRootCapturingExec(t, args)
+			if err == nil {
+				t.Fatal("expected service-selection error")
+			}
+			if len(calls) != 0 {
+				t.Fatalf("selection error executed Docker action: %+v", calls)
+			}
+		})
+	}
+}
+
+func TestComposeIgnoreOrphansConflictPrecedesPreparation(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	writeFixtureFiles(t, dir, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+`, `
+services:
+  app:
+    image: app:latest
+    build: .
+`)
+	t.Setenv("COMPOSE_IGNORE_ORPHANS", "true")
+
+	calls, err := runRootCapturingExec(t, []string{"compose", "up", "--build", "--remove-orphans", "app"})
+	if err == nil || !strings.Contains(err.Error(), "COMPOSE_IGNORE_ORPHANS") {
+		t.Fatalf("orphan conflict error = %v", err)
+	}
+	if len(calls) != 0 {
+		t.Fatalf("orphan conflict executed Docker action: %+v", calls)
 	}
 }
 

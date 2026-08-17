@@ -426,7 +426,7 @@ func flattenArgs(calls [][]string) []string {
 	return out
 }
 
-func TestUpBuildPreparesOnlySelectedUnmanagedServices(t *testing.T) {
+func TestUpBuildKeepsNativeBehaviorForUnmanagedSelection(t *testing.T) {
 	dir := t.TempDir()
 	chdirForTest(t, dir)
 	writeFixtureFiles(t, dir, `
@@ -461,18 +461,105 @@ services:
 	if err != nil {
 		t.Fatal(err)
 	}
-	joined := strings.Join(buildArgs, " ")
-	if !strings.Contains(joined, "selected") || strings.Contains(joined, "unrelated") {
-		t.Fatalf("build args = %v", buildArgs)
+	if len(buildArgs) != 0 {
+		t.Fatalf("Vaka pre-built an entirely unmanaged selection: %v", buildArgs)
 	}
-	if strings.Contains(strings.Join(inv.Args, " "), "--build") {
-		t.Fatalf("consumed build flag remains: %v", inv.Args)
+	if !strings.Contains(strings.Join(inv.Args, " "), "--build") {
+		t.Fatalf("native Compose build flag was consumed: %v", inv.Args)
 	}
-	if !strings.Contains(override, "selected:") || !strings.Contains(override, "pull_policy: never") {
-		t.Fatalf("override does not freeze prepared unmanaged service:\n%s", override)
+	if strings.Contains(override, "selected:") {
+		t.Fatalf("override unexpectedly freezes an unmanaged service:\n%s", override)
 	}
 	if strings.Contains(override, "unrelated:") {
 		t.Fatalf("override includes unrelated unmanaged service:\n%s", override)
+	}
+}
+
+func TestBuildInjectionUsesOnlySelectedManagedServices(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	writeFixtureFiles(t, dir, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+  tool:
+    network:
+      egress:
+        defaultAction: reject
+`, `
+services:
+  app:
+    image: alpine:3.20
+  tool:
+    image: alpine:3.20
+    profiles: [tools]
+`)
+
+	inv, _ := ParseComposeInvocation([]string{"up", "app"})
+	override, extraEnv, err := buildInjectionOverride(context.Background(), &fakeBuilderDockerServices{}, "vaka.yaml", inv, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(override, "app:") || strings.Contains(override, "tool:") {
+		t.Fatalf("selected override contains wrong services:\n%s", override)
+	}
+	if len(extraEnv) != 1 || !strings.HasPrefix(extraEnv[0], policyPayloadEnvironmentName("app")+"=") {
+		t.Fatalf("selected policy payloads = %v", extraEnv)
+	}
+}
+
+func TestGeneratedPreparationPreservesQuietOptions(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	writeFixtureFiles(t, dir, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+  image:
+    network:
+      egress:
+        defaultAction: reject
+`, `
+services:
+  app:
+    image: app:latest
+    build: .
+  image:
+    image: image:latest
+`)
+
+	var calls [][]string
+	setExecDockerComposeForTest(t, func(inv *ComposeInvocation, _ string, _ []string) error {
+		calls = append(calls, append([]string{}, inv.Args...))
+		return nil
+	})
+	inv, _ := ParseComposeInvocation([]string{
+		"up", "--build", "--pull=always", "--quiet-build", "--quiet-pull", "app", "image",
+	})
+	if _, _, err := buildInjectionOverride(context.Background(), &fakeBuilderDockerServices{}, "vaka.yaml", inv, false); err != nil {
+		t.Fatal(err)
+	}
+
+	foundPull, foundBuild := false, false
+	for _, args := range calls {
+		joined := strings.Join(args, " ")
+		if strings.HasPrefix(joined, "pull ") {
+			foundPull = strings.Contains(joined, "--quiet") && strings.Contains(joined, "image")
+		}
+		if strings.HasPrefix(joined, "build ") {
+			foundBuild = strings.Contains(joined, "--quiet") && strings.Contains(joined, "app")
+		}
+	}
+	if !foundPull || !foundBuild {
+		t.Fatalf("quiet preparation calls = %v", calls)
 	}
 }
 
