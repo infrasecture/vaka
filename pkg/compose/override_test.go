@@ -67,8 +67,8 @@ func TestBuildOverrideInjectsPolicyRuntime(t *testing.T) {
 	doc := parseOverride(t, out)
 	svc := doc.Services["codex"]
 
-	if len(svc.Entrypoint) != 2 || svc.Entrypoint[0] != "/opt/vaka/sbin/vaka-init" || svc.Entrypoint[1] != "--" {
-		t.Errorf("entrypoint = %v, want [/opt/vaka/sbin/vaka-init --]", svc.Entrypoint)
+	if got := strings.Join(svc.Entrypoint, " "); got != "/opt/vaka/sbin/vaka-init -- claude" {
+		t.Errorf("entrypoint = %q", got)
 	}
 	if svc.User != "0:0" {
 		t.Errorf("user = %q, want 0:0", svc.User)
@@ -76,7 +76,7 @@ func TestBuildOverrideInjectsPolicyRuntime(t *testing.T) {
 	if svc.Image != singleEntry("codex")[0].ImageID || svc.PullPolicy != "never" {
 		t.Errorf("service image identity = %q pull_policy=%q, want exact inspected ID with pulling disabled", svc.Image, svc.PullPolicy)
 	}
-	if got := strings.Join(svc.Command, " "); got != "claude --dangerously-skip-permissions" {
+	if got := strings.Join(svc.Command, " "); got != "--dangerously-skip-permissions" {
 		t.Errorf("command = %q", got)
 	}
 	if len(svc.CapAdd) != 1 || svc.CapAdd[0] != "NET_ADMIN" {
@@ -84,6 +84,24 @@ func TestBuildOverrideInjectsPolicyRuntime(t *testing.T) {
 	}
 	if svc.Environment["AGENT_VAKA_POLICY"] != "${VAKA_CODEX_CONF}" || svc.Environment["AGENT_VAKA_POLICY_REVISION"] != "sha256:policy" {
 		t.Errorf("policy environment = %+v", svc.Environment)
+	}
+}
+
+func TestBuildOverrideKeepsEntrypointSeparateForComposeRunCommandReplacement(t *testing.T) {
+	entries := singleEntry("app")
+	entries[0].Entrypoint = []string{"/usr/local/bin/app", "serve"}
+	entries[0].Command = []string{"--default"}
+
+	out, err := compose.BuildOverride(entries, testRuntime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := parseOverride(t, out).Services["app"]
+	if got := strings.Join(svc.Entrypoint, " "); got != "/opt/vaka/sbin/vaka-init -- /usr/local/bin/app serve" {
+		t.Fatalf("entrypoint = %q", got)
+	}
+	if got := strings.Join(svc.Command, " "); got != "--default" {
+		t.Fatalf("command = %q", got)
 	}
 }
 

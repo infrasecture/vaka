@@ -120,16 +120,16 @@ func BuildOverride(entries []ServiceEntry, runtime RuntimeMount, preparedUnmanag
 		if _, err := runtimeImageMountSource(e.ImageID, ""); err != nil {
 			return "", fmt.Errorf("build compose override: service %s has invalid inspected image identity: %w", e.Name, err)
 		}
-		cmd := make([]string, 0, len(e.Entrypoint)+len(e.Command))
-		cmd = append(cmd, e.Entrypoint...)
-		cmd = append(cmd, e.Command...)
+		entrypoint := make([]string, 0, 2+len(e.Entrypoint))
+		entrypoint = append(entrypoint, vakaInitPath, "--")
+		entrypoint = append(entrypoint, e.Entrypoint...)
 
 		svc := serviceOverride{
 			Image:      e.ImageID,
 			PullPolicy: "never",
 			User:       "0:0",
-			Entrypoint: []string{vakaInitPath, "--"},
-			Command:    cmd,
+			Entrypoint: entrypoint,
+			Command:    append([]string(nil), e.Command...),
 			CapAdd:     e.CapDelta,
 			Labels: map[string]string{
 				ManagedLabel:        "true",

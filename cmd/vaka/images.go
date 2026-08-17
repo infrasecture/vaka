@@ -406,7 +406,10 @@ func (d *dockerServices) ResolveRuntime(ctx context.Context, svcName string, svc
 		resolved.Healthcheck = append([]string{}, svc.HealthCheck.Test...)
 	}
 
-	needImageEntrypoint := len(svc.Entrypoint) == 0
+	// A nil Compose value inherits the image field. An explicitly empty value
+	// clears it and must remain empty; this distinction also matters when
+	// `compose run SERVICE COMMAND` replaces only Command in the final model.
+	needImageEntrypoint := svc.Entrypoint == nil
 	needImageUser := strings.TrimSpace(svc.User) == ""
 	needImageHealthcheck := svc.HealthCheck == nil || (!svc.HealthCheck.Disable && len(svc.HealthCheck.Test) == 0)
 	needImageHealthcheckShell := len(resolved.Healthcheck) > 0 && resolved.Healthcheck[0] == "CMD-SHELL"
@@ -459,7 +462,7 @@ func (d *dockerServices) ResolveRuntime(ctx context.Context, svcName string, svc
 
 	if needImageEntrypoint {
 		resolved.Entrypoint = inspect.Config.Entrypoint
-		if len(resolved.Command) == 0 {
+		if svc.Command == nil {
 			resolved.Command = inspect.Config.Cmd
 		}
 	}
