@@ -20,6 +20,10 @@ type composeExecCall struct {
 // every compose execution it produced, with the docker services factory and
 // compose exec hook faked out.
 func runRootCapturingExec(t *testing.T, argv []string) ([]composeExecCall, error) {
+	return runRootCapturingExecWithDockerServices(t, argv, &fakeBuilderDockerServices{})
+}
+
+func runRootCapturingExecWithDockerServices(t *testing.T, argv []string, ds DockerServices) ([]composeExecCall, error) {
 	t.Helper()
 	var calls []composeExecCall
 	setExecDockerComposeForTest(t, func(inv *ComposeInvocation, overrideYAML string, extraEnv []string) error {
@@ -36,7 +40,7 @@ func runRootCapturingExec(t *testing.T, argv []string) ([]composeExecCall, error
 		return nil
 	}
 	t.Cleanup(func() { execDockerContainerFn = oldContainerExec })
-	setDockerServicesFactoryForTest(t, &fakeBuilderDockerServices{})
+	setDockerServicesFactoryForTest(t, ds)
 
 	root := newRootCmd(&RootInvocation{VakaFile: "vaka.yaml", Rest: argv})
 	root.SetArgs(argv)
@@ -352,8 +356,10 @@ services:
           path: .
 `)
 
-	calls, err := runRootCapturingExec(t, []string{"compose", "watch", "--no-up"})
-	if err == nil || !strings.Contains(err.Error(), "older unsafe runtime") {
+	calls, err := runRootCapturingExecWithDockerServices(t, []string{"compose", "watch", "--no-up"}, &fakeBuilderDockerServices{
+		projectTargets: map[string][]execTarget{"app": {{Managed: true}}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "would reuse") {
 		t.Fatalf("watch --no-up error = %v", err)
 	}
 	if len(calls) != 0 {
@@ -384,8 +390,10 @@ services:
 
 	for _, verb := range []string{"up", "create"} {
 		t.Run(verb+" enabled last", func(t *testing.T) {
-			calls, err := runRootCapturingExec(t, []string{"compose", verb, "--no-recreate=false", "--no-recreate"})
-			if err == nil || !strings.Contains(err.Error(), "older unsafe runtime") {
+			calls, err := runRootCapturingExecWithDockerServices(t, []string{"compose", verb, "--no-recreate=false", "--no-recreate"}, &fakeBuilderDockerServices{
+				projectTargets: map[string][]execTarget{"app": {{Managed: true}}},
+			})
+			if err == nil || !strings.Contains(err.Error(), "would reuse") {
 				t.Fatalf("%s --no-recreate error = %v", verb, err)
 			}
 			if len(calls) != 0 {
@@ -393,7 +401,9 @@ services:
 			}
 		})
 		t.Run(verb+" disabled last", func(t *testing.T) {
-			calls, err := runRootCapturingExec(t, []string{"compose", verb, "--no-recreate", "--no-recreate=0"})
+			calls, err := runRootCapturingExecWithDockerServices(t, []string{"compose", verb, "--no-recreate", "--no-recreate=0"}, &fakeBuilderDockerServices{
+				projectTargets: map[string][]execTarget{"app": {{Managed: true}}},
+			})
 			if err != nil {
 				t.Fatalf("%s disabled no-recreate: %v", verb, err)
 			}
@@ -445,7 +455,9 @@ services:
           path: .
 `)
 
-			calls, err := runRootCapturingExec(t, []string{"compose", verb, "--no-recreate", "app"})
+			calls, err := runRootCapturingExecWithDockerServices(t, []string{"compose", verb, "--no-recreate", "app"}, &fakeBuilderDockerServices{
+				projectTargets: map[string][]execTarget{"app": {{}}},
+			})
 			if err != nil {
 				t.Fatalf("%s unmanaged selection: %v", verb, err)
 			}
@@ -458,8 +470,10 @@ services:
 			chdirForTest(t, dir)
 			writeFixtureFiles(t, dir, policyYAML, composeYAML)
 
-			calls, err := runRootCapturingExec(t, []string{"compose", verb, "--no-recreate", "app"})
-			if err == nil || !strings.Contains(err.Error(), "older unsafe runtime") {
+			calls, err := runRootCapturingExecWithDockerServices(t, []string{"compose", verb, "--no-recreate", "app"}, &fakeBuilderDockerServices{
+				projectTargets: map[string][]execTarget{"app": {{}}, "policy": {{Managed: true}}},
+			})
+			if err == nil || !strings.Contains(err.Error(), "would reuse") {
 				t.Fatalf("%s managed dependency error = %v", verb, err)
 			}
 			if len(calls) != 0 {
@@ -472,7 +486,9 @@ services:
 		chdirForTest(t, dir)
 		writeFixtureFiles(t, dir, policyYAML, composeYAML)
 
-		calls, err := runRootCapturingExec(t, []string{"compose", "up", "--no-recreate", "--no-deps", "app"})
+		calls, err := runRootCapturingExecWithDockerServices(t, []string{"compose", "up", "--no-recreate", "--no-deps", "app"}, &fakeBuilderDockerServices{
+			projectTargets: map[string][]execTarget{"app": {{}}},
+		})
 		if err != nil {
 			t.Fatalf("up unmanaged selection: %v", err)
 		}
@@ -496,7 +512,9 @@ services:
           path: .
 `)
 
-		calls, err := runRootCapturingExec(t, []string{"compose", "watch", "--no-up", "app"})
+		calls, err := runRootCapturingExecWithDockerServices(t, []string{"compose", "watch", "--no-up", "app"}, &fakeBuilderDockerServices{
+			projectTargets: map[string][]execTarget{"app": {{}}},
+		})
 		if err != nil {
 			t.Fatalf("watch unmanaged selection: %v", err)
 		}
@@ -509,14 +527,50 @@ services:
 		chdirForTest(t, dir)
 		writeFixtureFiles(t, dir, policyYAML, composeYAML)
 
-		calls, err := runRootCapturingExec(t, []string{"compose", "watch", "--no-up", "app"})
-		if err == nil || !strings.Contains(err.Error(), "older unsafe runtime") {
+		calls, err := runRootCapturingExecWithDockerServices(t, []string{"compose", "watch", "--no-up", "app"}, &fakeBuilderDockerServices{
+			projectTargets: map[string][]execTarget{"app": {{}}, "policy": {{Managed: true}}},
+		})
+		if err == nil || !strings.Contains(err.Error(), "would reuse") {
 			t.Fatalf("watch managed dependency error = %v", err)
 		}
 		if len(calls) != 0 {
 			t.Fatalf("watch must not execute Compose, got %+v", calls)
 		}
 	})
+}
+
+func TestContainerReuseGuardDetectsLiveVakaContainerAfterPolicyRemoval(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	writeFixtureFiles(t, dir, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services: {}
+`, `
+services:
+  app:
+    image: alpine:3.20
+    develop:
+      watch:
+        - action: restart
+          path: .
+`)
+
+	for _, args := range [][]string{
+		{"compose", "up", "--no-recreate", "app"},
+		{"compose", "create", "--no-recreate", "app"},
+		{"compose", "watch", "--no-up", "app"},
+	} {
+		calls, err := runRootCapturingExecWithDockerServices(t, args, &fakeBuilderDockerServices{
+			projectTargets: map[string][]execTarget{"app": {{Managed: true}}},
+		})
+		if err == nil || !strings.Contains(err.Error(), "would reuse") || !strings.Contains(err.Error(), "raw `docker compose`") {
+			t.Errorf("reuse %v error = %v", args, err)
+		}
+		if len(calls) != 0 {
+			t.Errorf("reuse %v executed Docker action: %+v", args, calls)
+		}
+	}
 }
 
 func TestUnknownComposeCommandFailsClosed(t *testing.T) {
@@ -693,6 +747,38 @@ services:
 				t.Fatalf("selection error executed Docker action: %+v", calls)
 			}
 		})
+	}
+}
+
+func TestManagedDeprecatedWatchConfigFailsBeforeDockerAction(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	writeFixtureFiles(t, dir, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+`, `
+services:
+  app:
+    image: alpine:3.20
+    x-develop:
+      watch:
+        - action: sync+exec
+          path: .
+          target: /workspace
+          exec:
+            command: ["id"]
+`)
+	calls, err := runRootCapturingExec(t, []string{"compose", "watch", "--no-up", "app"})
+	if err == nil || !strings.Contains(err.Error(), "x-develop") {
+		t.Fatalf("x-develop error = %v", err)
+	}
+	if len(calls) != 0 {
+		t.Fatalf("x-develop executed Docker action: %+v", calls)
 	}
 }
 

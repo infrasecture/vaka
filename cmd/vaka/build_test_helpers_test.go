@@ -18,10 +18,24 @@ type fakeBuilderDockerServices struct {
 	ensureRefs     []string
 	execTargets    map[string]execTarget
 	projectTargets map[string][]execTarget
+	inspections    []projectContainerSelection
 }
 
-func (f *fakeBuilderDockerServices) InspectProjectContainers(_ context.Context, _ string) (map[string][]execTarget, error) {
-	return f.projectTargets, nil
+func (f *fakeBuilderDockerServices) InspectProjectContainers(_ context.Context, _ string, selection projectContainerSelection) (map[string][]execTarget, error) {
+	f.inspections = append(f.inspections, selection)
+	filtered := make(map[string][]execTarget)
+	for service, targets := range f.projectTargets {
+		if selection.Services != nil && !selection.Services[service] {
+			continue
+		}
+		for _, target := range targets {
+			if target.Oneoff && !selection.IncludeOneoffs {
+				continue
+			}
+			filtered[service] = append(filtered[service], target)
+		}
+	}
+	return filtered, nil
 }
 
 func (f *fakeBuilderDockerServices) InspectExecTarget(_ context.Context, _ string, service string, index int) (execTarget, error) {

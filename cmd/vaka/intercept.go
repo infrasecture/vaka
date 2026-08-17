@@ -253,29 +253,10 @@ func buildInjectionOverride(
 			return "", nil, err
 		}
 	}
-	if inv.Subcommand == "up" || inv.Subcommand == "create" {
-		noRecreate, err := composeBoolOptionEnabled(inv.PostSubcommand, "--no-recreate", "")
-		if err != nil {
-			return "", nil, err
-		}
-		if noRecreate {
-			if selectionContainsManagedService(selected, managedServices) {
-				return "", nil, fmt.Errorf("compose %s --no-recreate can reuse containers with an older unsafe runtime; remove --no-recreate so managed services are recreated", inv.Subcommand)
-			}
-		}
-	}
-	if inv.Subcommand == "watch" {
-		noUp, err := composeBoolOptionEnabled(inv.PostSubcommand, "--no-up", "")
-		if err != nil {
-			return "", nil, err
-		}
-		if noUp {
-			if selectionContainsManagedService(selected, managedServices) {
-				return "", nil, fmt.Errorf("compose watch --no-up can reuse containers with an older unsafe runtime; remove --no-up so managed services are recreated")
-			}
-		}
-	}
 	inv.ResolvedProjectName = project.Name
+	if err := validateRenderContainerReuse(ctx, ds, selected, managedServices, inv); err != nil {
+		return "", nil, err
+	}
 
 	// Consume image-refresh operations before inspection. The final Compose
 	// invocation receives exact image IDs, so it must not rebuild or repull a
@@ -838,13 +819,58 @@ func applyDefaultImageNames(project *composetypes.Project, inv *ComposeInvocatio
 	}
 }
 
-func selectionContainsManagedService(project *composetypes.Project, policySvcs map[string]*policy.ServiceConfig) bool {
-	for name := range project.Services {
-		if _, managed := policySvcs[name]; managed {
-			return true
+func validateRenderContainerReuse(
+	ctx context.Context,
+	ds DockerServices,
+	selected *composetypes.Project,
+	policySvcs map[string]*policy.ServiceConfig,
+	inv *ComposeInvocation,
+) error {
+	reuse := false
+	switch inv.Subcommand {
+	case "up", "create":
+		var err error
+		reuse, err = composeBoolOptionEnabled(inv.PostSubcommand, "--no-recreate", "")
+		if err != nil {
+			return err
+		}
+	case "watch":
+		var err error
+		reuse, err = composeBoolOptionEnabled(inv.PostSubcommand, "--no-up", "")
+		if err != nil {
+			return err
 		}
 	}
-	return false
+	if !reuse {
+		return nil
+	}
+	inspector, ok := ds.(projectExecutionInspector)
+	if !ok {
+		return fmt.Errorf("inspect Compose project before %s reuse: Docker service implementation does not support live container metadata", inv.Subcommand)
+	}
+	services := make(map[string]bool, len(selected.Services))
+	for name := range selected.Services {
+		services[name] = true
+	}
+	live, err := inspector.InspectProjectContainers(ctx, selected.Name, projectContainerSelection{Services: services})
+	if err != nil {
+		return err
+	}
+	for name, targets := range live {
+		if len(targets) == 0 {
+			continue
+		}
+		_, policyManaged := policySvcs[name]
+		if !policyManaged && !targetsContainVakaRuntime(targets) {
+			continue
+		}
+		option := "--no-recreate"
+		if inv.Subcommand == "watch" {
+			option = "--no-up"
+		}
+		return fmt.Errorf("compose %s %s would reuse live Vaka-managed or policy-managed service %s without applying the verified runtime; remove %s so it is recreated, or use raw `docker compose` for a deliberate bypass", inv.Subcommand, option, name, option)
+	}
+	return nil
 }
 
 var upOptionsWithValue = map[string]bool{

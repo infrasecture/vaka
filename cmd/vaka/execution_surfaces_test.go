@@ -179,6 +179,7 @@ func TestValidateManagedExecutionSurfaces(t *testing.T) {
 		{name: "sync exec", svc: composetypes.ServiceConfig{Develop: &composetypes.DevelopConfig{Watch: []composetypes.Trigger{{Action: composetypes.WatchActionSyncExec}}}}, want: "action sync+exec"},
 		{name: "rebuild", svc: composetypes.ServiceConfig{Develop: &composetypes.DevelopConfig{Watch: []composetypes.Trigger{{Action: composetypes.WatchActionRebuild}}}}, want: "action rebuild"},
 		{name: "future watch action", svc: composetypes.ServiceConfig{Develop: &composetypes.DevelopConfig{Watch: []composetypes.Trigger{{Action: composetypes.WatchAction("future")}}}}, want: "has not been reviewed"},
+		{name: "deprecated x-develop", svc: composetypes.ServiceConfig{Extensions: composetypes.Extensions{"x-develop": map[string]any{"watch": []any{}}}}, want: "x-develop"},
 		{name: "nested volume", svc: composetypes.ServiceConfig{Volumes: []composetypes.ServiceVolumeConfig{{Target: "/opt/vaka/sbin"}}}, want: "volume target"},
 		{name: "ancestor volume", svc: composetypes.ServiceConfig{Volumes: []composetypes.ServiceVolumeConfig{{Target: "/opt"}}}, want: "volume target"},
 		{name: "config", svc: composetypes.ServiceConfig{Configs: []composetypes.ServiceConfigObjConfig{{Source: "cfg", Target: "/opt/vaka/config"}}}, want: "config target"},
@@ -476,6 +477,64 @@ services:
 	inv, _ := ParseComposeInvocation([]string{"down", "dep"})
 	if err := validateReferenceExecutionSurfaces("vaka.yaml", inv); err != nil {
 		t.Fatalf("targeted down validated an untouched dependent: %v", err)
+	}
+}
+
+func TestDownRemoveOrphansValidatesCurrentHooksForOneoffs(t *testing.T) {
+	tests := []struct {
+		name       string
+		policyBody string
+		target     execTarget
+	}{
+		{
+			name: "policy managed but unlabelled",
+			policyBody: `
+  app:
+    network:
+      egress:
+        defaultAction: reject`,
+			target: execTarget{Oneoff: true},
+		},
+		{name: "live labelled after policy removal", policyBody: " {}", target: execTarget{Oneoff: true, Managed: true}},
+		{name: "legacy oneoff", policyBody: " {}", target: execTarget{Oneoff: true, LegacyManaged: true}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			chdirForTest(t, dir)
+			writeFixtureFiles(t, dir, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:`+tc.policyBody, `
+services:
+  app:
+    image: alpine:3.20
+    pre_stop:
+      - command: ["id"]
+`)
+			ds := &fakeBuilderDockerServices{projectTargets: map[string][]execTarget{"app": {tc.target}}}
+			setDockerServicesFactoryForTest(t, ds)
+
+			inv, _ := ParseComposeInvocation([]string{"down", "--remove-orphans", "app"})
+			err := validateReferenceExecutionSurfaces("vaka.yaml", inv)
+			if err == nil || !strings.Contains(err.Error(), "pre_stop") {
+				t.Fatalf("one-off hook error = %v", err)
+			}
+			if len(ds.inspections) != 1 || !ds.inspections[0].IncludeOneoffs {
+				t.Fatalf("one-offs were not included in inspection: %+v", ds.inspections)
+			}
+
+			inv, _ = ParseComposeInvocation([]string{"down", "--remove-orphans=false", "app"})
+			if err := validateReferenceExecutionSurfaces("vaka.yaml", inv); err != nil {
+				t.Fatalf("disabled --remove-orphans inspected one-off hook: %v", err)
+			}
+
+			t.Setenv("COMPOSE_REMOVE_ORPHANS", "true")
+			inv, _ = ParseComposeInvocation([]string{"down", "app"})
+			if err := validateReferenceExecutionSurfaces("vaka.yaml", inv); err == nil || !strings.Contains(err.Error(), "pre_stop") {
+				t.Fatalf("COMPOSE_REMOVE_ORPHANS did not include one-off hook: %v", err)
+			}
+		})
 	}
 }
 

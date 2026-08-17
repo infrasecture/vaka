@@ -27,6 +27,7 @@ const (
 
 type execTarget struct {
 	ContainerID     string
+	Oneoff          bool
 	Managed         bool
 	LegacyManaged   bool
 	RuntimeVersion  string
@@ -211,10 +212,15 @@ func imageMountSubpath(configured mount.Mount) string {
 }
 
 type projectExecutionInspector interface {
-	InspectProjectContainers(context.Context, string) (map[string][]execTarget, error)
+	InspectProjectContainers(context.Context, string, projectContainerSelection) (map[string][]execTarget, error)
 }
 
-func (d *dockerServices) InspectProjectContainers(ctx context.Context, project string) (map[string][]execTarget, error) {
+type projectContainerSelection struct {
+	Services       map[string]bool
+	IncludeOneoffs bool
+}
+
+func (d *dockerServices) InspectProjectContainers(ctx context.Context, project string, selection projectContainerSelection) (map[string][]execTarget, error) {
 	if d.legacy == nil {
 		return nil, fmt.Errorf("inspect Compose project: Docker client is unavailable")
 	}
@@ -230,20 +236,22 @@ func (d *dockerServices) InspectProjectContainers(ctx context.Context, project s
 	}
 	targets := make(map[string][]execTarget)
 	for _, ctr := range containers {
-		// Compose lifecycle verbs operate on regular service containers, not
-		// one-offs left by `compose run`; stale one-offs must not block start or
-		// restart of the declared service.
-		if isComposeOneoff(ctr) {
+		oneoff := isComposeOneoff(ctr)
+		if oneoff && !selection.IncludeOneoffs {
 			continue
 		}
 		service := ctr.Labels[composeServiceLabel]
 		if service == "" {
 			continue
 		}
+		if selection.Services != nil && !selection.Services[service] {
+			continue
+		}
 		target, err := d.inspectExecContainer(ctx, ctr)
 		if err != nil {
 			return nil, err
 		}
+		target.Oneoff = oneoff
 		targets[service] = append(targets[service], target)
 	}
 	return targets, nil

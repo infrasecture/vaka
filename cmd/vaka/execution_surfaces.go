@@ -361,6 +361,9 @@ func validateServiceExecutionSurfaces(name string, svc composetypes.ServiceConfi
 	if err := validateLifecycleHooks(name, svc, true, true); err != nil {
 		return err
 	}
+	if _, ok := svc.Extensions["x-develop"]; ok {
+		return fmt.Errorf("service %s: deprecated x-develop is not supported on Vaka-managed services because Compose can execute watch actions outside vaka-init; migrate it to develop", name)
+	}
 	if svc.Develop != nil {
 		for _, trigger := range svc.Develop.Watch {
 			switch trigger.Action {
@@ -472,7 +475,15 @@ func validateReferenceExecutionSurfaces(vakaFile string, inv *ComposeInvocation)
 	if !ok {
 		return fmt.Errorf("inspect Compose project: Docker service implementation does not support live container metadata")
 	}
-	live, err := inspector.InspectProjectContainers(context.Background(), project.Name)
+	inspection := projectContainerSelection{Services: selected}
+	if inv.Subcommand == "down" {
+		removeOrphans, err := effectiveDownRemoveOrphans(project, inv)
+		if err != nil {
+			return err
+		}
+		inspection.IncludeOneoffs = removeOrphans
+	}
+	live, err := inspector.InspectProjectContainers(context.Background(), project.Name, inspection)
 	if err != nil {
 		return err
 	}
@@ -498,6 +509,17 @@ func validateReferenceExecutionSurfaces(vakaFile string, inv *ComposeInvocation)
 		}
 	}
 	return nil
+}
+
+func effectiveDownRemoveOrphans(project *composetypes.Project, inv *ComposeInvocation) (bool, error) {
+	state, err := scanComposeBoolOption(inv.PostSubcommand, "--remove-orphans", "")
+	if err != nil {
+		return false, err
+	}
+	if state.present {
+		return state.enabled, nil
+	}
+	return composeEnvironmentBool(project.Environment["COMPOSE_REMOVE_ORPHANS"]), nil
 }
 
 func targetsContainVakaRuntime(targets []execTarget) bool {
