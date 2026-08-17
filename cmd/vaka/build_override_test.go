@@ -348,8 +348,8 @@ services:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(flattenArgs(pulls), " "); !strings.Contains(got, "app") || !strings.Contains(got, "helper") {
-		t.Fatalf("pull calls = %v, want managed target and unmanaged dependency", pulls)
+	if got := strings.Join(flattenArgs(pulls), " "); !strings.Contains(got, "app") || strings.Contains(got, "helper") {
+		t.Fatalf("pull calls = %v, want only image-only managed target", pulls)
 	}
 	if got := strings.Join(flattenArgs(builds), " "); !strings.Contains(got, "helper") {
 		t.Fatalf("build calls = %v, want unmanaged dependency", builds)
@@ -404,8 +404,8 @@ services:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(flattenArgs(pulls), " "); !strings.Contains(got, "app") || !strings.Contains(got, "policy") {
-		t.Fatalf("pull calls = %v, want unmanaged target and managed dependency", pulls)
+	if got := strings.Join(flattenArgs(pulls), " "); strings.Contains(got, "app") || !strings.Contains(got, "policy") {
+		t.Fatalf("pull calls = %v, want only image-only managed dependency", pulls)
 	}
 	if got := strings.Join(flattenArgs(builds), " "); !strings.Contains(got, "app") {
 		t.Fatalf("build calls = %v, want unmanaged target", builds)

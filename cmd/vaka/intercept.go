@@ -650,6 +650,10 @@ func planSelectedUnmanagedRefresh(
 		if forceBuild && svc.Build != nil {
 			plan.forceBuild[name] = true
 			prepared[name] = true
+			// Compose applies --build after --pull and therefore gives a
+			// buildable service build precedence. Do not also pull the service
+			// image; image-only services still follow the requested pull policy.
+			continue
 		}
 		switch pullValue {
 		case composetypes.PullPolicyAlways:
@@ -829,6 +833,11 @@ func planManagedImagePreparation(
 		effective := strings.ToLower(strings.TrimSpace(svc.PullPolicy))
 		if cliPullSet {
 			effective = cliPull
+		}
+		// Compose applies --build after --pull, replacing the effective pull
+		// policy with build for services that have a build definition.
+		if forceBuildAll && svc.Build != nil {
+			effective = composetypes.PullPolicyBuild
 		}
 		plan.effectivePullPolicy[name] = effective
 		switch {

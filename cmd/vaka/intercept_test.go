@@ -295,6 +295,39 @@ func TestPlanManagedImagePreparationCLIOverridesFilePolicy(t *testing.T) {
 	}
 }
 
+func TestBuildTakesPrecedenceOverPullForBuildableServices(t *testing.T) {
+	policySvcs := map[string]*policy.ServiceConfig{"buildable": {}, "image-only": {}}
+	project := &composetypes.Project{Services: map[string]composetypes.ServiceConfig{
+		"buildable":  {Name: "buildable", Image: "buildable:latest", Build: &composetypes.BuildConfig{Context: "."}},
+		"image-only": {Name: "image-only", Image: "image-only:latest"},
+	}}
+	managed, err := planManagedImagePreparation(
+		context.Background(), &fakeDS{}, policySvcs, project,
+		composetypes.PullPolicyAlways, true, true, false,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !managed.forceBuild["buildable"] || managed.effectivePullPolicy["buildable"] != composetypes.PullPolicyBuild {
+		t.Fatalf("buildable service did not use build precedence: %+v", managed)
+	}
+	if !reflect.DeepEqual(managed.pullAlways, []string{"image-only"}) || len(managed.pullOrBuild) != 0 {
+		t.Fatalf("managed pull plan = %+v, want only image-only pull", managed)
+	}
+
+	inv, _ := ParseComposeInvocation([]string{"up", "--pull=always", "--build", "buildable", "image-only"})
+	unmanaged, err := planSelectedUnmanagedRefresh(
+		project, map[string]*policy.ServiceConfig{}, inv,
+		composetypes.PullPolicyAlways, true, true, false,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !unmanaged.forceBuild["buildable"] || !reflect.DeepEqual(unmanaged.pullAlways, []string{"image-only"}) || len(unmanaged.pullOrBuild) != 0 {
+		t.Fatalf("unmanaged refresh plan did not preserve build precedence: %+v", unmanaged)
+	}
+}
+
 func TestImageUsesLatestTag(t *testing.T) {
 	tests := map[string]bool{
 		"alpine":                      true,
