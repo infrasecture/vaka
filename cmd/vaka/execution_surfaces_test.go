@@ -406,6 +406,22 @@ func TestReferenceValidationServiceTargets(t *testing.T) {
 			t.Errorf("referenceValidationServices(%v) error = %v", args, err)
 		}
 	}
+	for _, tc := range []struct {
+		args    []string
+		wantErr bool
+	}{
+		{args: []string{"down", "--rmi=all", "--rmi", "garbage", "app"}, wantErr: true},
+		{args: []string{"down", "--rmi", "garbage", "--rmi=local", "app"}},
+	} {
+		inv, _ := ParseComposeInvocation(tc.args)
+		_, err := referenceValidationServices(project, inv)
+		if tc.wantErr && (err == nil || !strings.Contains(err.Error(), `--rmi must be "all" or "local"`)) {
+			t.Errorf("referenceValidationServices(%v) error = %v", tc.args, err)
+		}
+		if !tc.wantErr && err != nil {
+			t.Errorf("referenceValidationServices(%v) unexpected error = %v", tc.args, err)
+		}
+	}
 }
 
 func TestReferenceValidationServiceTargetsRespectProfiles(t *testing.T) {

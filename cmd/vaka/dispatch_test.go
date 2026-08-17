@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -694,6 +696,152 @@ func TestComposeGlobalValidationPrecedesDockerAction(t *testing.T) {
 				t.Fatalf("invalid global invocation executed Docker action: %+v", calls)
 			}
 		})
+	}
+}
+
+func TestComposeGlobalConflictsPrecedeDockerAction(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	writeFixtureFiles(t, dir, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+`, `
+services:
+  app:
+    image: alpine:3.20
+`)
+	t.Setenv("COMPOSE_ANSI", "")
+	t.Setenv("COMPOSE_PROGRESS", "")
+
+	for _, args := range [][]string{
+		{"compose", "--no-ansi", "--ansi=always", "up", "app"},
+		{"compose", "--ansi=always", "--no-ansi", "up", "app"},
+		{"compose", "--ansi=never", "--progress=tty", "up", "app"},
+		{"compose", "--progress=plain", "--ansi=always", "up", "app"},
+		{"compose", "--ansi=never", "--ansi=always", "--progress=plain", "up", "app"},
+		{"compose", "--progress=plain", "--progress=tty", "--ansi=never", "up", "app"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			ds := &fakeBuilderDockerServices{}
+			calls, err := runRootCapturingExecWithDockerServices(t, args, ds)
+			if err == nil {
+				t.Fatal("expected validation error")
+			}
+			if len(calls) != 0 || len(ds.ensureRefs) != 0 {
+				t.Fatalf("invalid global invocation mutated Docker: calls=%+v runtime=%v", calls, ds.ensureRefs)
+			}
+		})
+	}
+}
+
+func TestComposeGlobalEnvironmentConflictsPrecedeDockerAction(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	writeFixtureFiles(t, dir, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+`, `
+services:
+  app:
+    image: alpine:3.20
+`)
+
+	for _, tc := range []struct {
+		name     string
+		ansi     string
+		progress string
+	}{
+		{name: "disabled ansi tty progress", ansi: "never", progress: "tty"},
+		{name: "forced ansi plain progress", ansi: "always", progress: "plain"},
+		{name: "invalid progress", ansi: "auto", progress: "TTY"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("COMPOSE_ANSI", tc.ansi)
+			t.Setenv("COMPOSE_PROGRESS", tc.progress)
+			ds := &fakeBuilderDockerServices{}
+			calls, err := runRootCapturingExecWithDockerServices(t, []string{"compose", "up", "app"}, ds)
+			if err == nil {
+				t.Fatal("expected validation error")
+			}
+			if len(calls) != 0 || len(ds.ensureRefs) != 0 {
+				t.Fatalf("invalid environment mutated Docker: calls=%+v runtime=%v", calls, ds.ensureRefs)
+			}
+		})
+	}
+}
+
+func TestComposeANSIFromDotEnvIsValidatedBeforeDockerAction(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	writeFixtureFiles(t, dir, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+`, `
+services:
+  app:
+    image: alpine:3.20
+`)
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("COMPOSE_ANSI=never\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldANSI, hadANSI := os.LookupEnv("COMPOSE_ANSI")
+	if err := os.Unsetenv("COMPOSE_ANSI"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if hadANSI {
+			_ = os.Setenv("COMPOSE_ANSI", oldANSI)
+		} else {
+			_ = os.Unsetenv("COMPOSE_ANSI")
+		}
+	})
+	t.Setenv("COMPOSE_PROGRESS", "tty")
+
+	ds := &fakeBuilderDockerServices{}
+	calls, err := runRootCapturingExecWithDockerServices(t, []string{"compose", "up", "app"}, ds)
+	if err == nil || !strings.Contains(err.Error(), "ANSI support is disabled") {
+		t.Fatalf(".env ANSI conflict error = %v", err)
+	}
+	if len(calls) != 0 || len(ds.ensureRefs) != 0 {
+		t.Fatalf(".env conflict mutated Docker: calls=%+v runtime=%v", calls, ds.ensureRefs)
+	}
+}
+
+func TestInvalidDownRMIRejectedBeforeLifecycleInspection(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	writeFixtureFiles(t, dir, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services: {}
+`, `
+services:
+  app:
+    image: alpine:3.20
+`)
+	ds := &fakeBuilderDockerServices{}
+	calls, err := runRootCapturingExecWithDockerServices(t,
+		[]string{"compose", "down", "--rmi=all", "--rmi=garbage"}, ds)
+	if err == nil || !strings.Contains(err.Error(), `--rmi must be "all" or "local"`) {
+		t.Fatalf("invalid --rmi error = %v", err)
+	}
+	if len(calls) != 0 || len(ds.inspections) != 0 {
+		t.Fatalf("invalid down reached execution: calls=%+v inspections=%+v", calls, ds.inspections)
 	}
 }
 

@@ -49,6 +49,11 @@ func runComposeCLI(root *RootInvocation, argv []string) error {
 		return execDockerComposeFn(inv, "", nil)
 	}
 	spec := composeCommandSpecFor(inv.Subcommand)
+	if spec.class != verbMetadata && spec.class != verbUnknown {
+		if err := validateComposeGlobalExecutionOptions(inv); err != nil {
+			return err
+		}
+	}
 	if err := validateConsumedComposeBooleans(inv, spec); err != nil {
 		return err
 	}
@@ -85,6 +90,59 @@ func runComposeCLI(root *RootInvocation, argv []string) error {
 	default:
 		return fmt.Errorf("internal error: unhandled compose command class for %q", inv.Subcommand)
 	}
+}
+
+// validateComposeGlobalExecutionOptions mirrors the Compose global-option
+// conflicts which would otherwise be discovered only by Compose's persistent
+// pre-run hook. Vaka must reject them before a translated exec or runtime-image
+// repair can bypass that hook. Most invocations return without loading the
+// Compose environment; ANSI resolution is needed only for tty/plain progress.
+func validateComposeGlobalExecutionOptions(inv *ComposeInvocation) error {
+	ansi := "auto"
+	if inv.globalANSISet {
+		ansi = inv.globalANSI
+	}
+	if inv.globalNoANSI {
+		if ansi != "auto" {
+			return fmt.Errorf(`cannot specify DEPRECATED "--no-ansi" and "--ansi". Please use only "--ansi"`)
+		}
+		ansi = "never"
+	}
+
+	progress := os.Getenv("COMPOSE_PROGRESS")
+	if inv.globalProgressSet {
+		progress = inv.globalProgress
+	}
+	switch progress {
+	case "", "auto", "json", "quiet", "none":
+		return nil
+	case "tty", "plain":
+		// Continue below; these modes have an ANSI compatibility constraint.
+	default:
+		return fmt.Errorf("unsupported --progress value %q", progress)
+	}
+
+	if !inv.globalANSISet {
+		input, err := resolveComposeInput(inv)
+		if err != nil {
+			return err
+		}
+		opts, err := newComposeProjectOptions(input, false)
+		if err != nil {
+			return fmt.Errorf("compose project options: %w", err)
+		}
+		if value, ok := opts.Environment["COMPOSE_ANSI"]; ok {
+			ansi = value
+		}
+	}
+
+	if progress == "tty" && ansi == "never" {
+		return fmt.Errorf("can't use --progress tty while ANSI support is disabled")
+	}
+	if progress == "plain" && ansi == "always" {
+		return fmt.Errorf("can't use --progress plain while ANSI support is forced")
+	}
+	return nil
 }
 
 func rejectComposeDryRun(inv *ComposeInvocation) error {

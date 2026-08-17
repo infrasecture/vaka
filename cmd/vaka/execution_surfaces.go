@@ -568,6 +568,7 @@ func referenceValidationServices(project *composetypes.Project, inv *ComposeInvo
 	valueOptions := map[string]bool{}
 	booleanOptions := map[string]bool{"--dry-run": true}
 	shortBooleans := ""
+	rmi := ""
 	switch inv.Subcommand {
 	case "start":
 		valueOptions["--wait-timeout"] = true
@@ -624,6 +625,9 @@ func referenceValidationServices(project *composetypes.Project, inv *ComposeInvo
 					return nil, fmt.Errorf("compose %s: %s requires an integer, got %q", inv.Subcommand, flag, value)
 				}
 			}
+			if flag == "--rmi" {
+				rmi = value
+			}
 			i += consumed
 			continue
 		}
@@ -668,6 +672,9 @@ func referenceValidationServices(project *composetypes.Project, inv *ComposeInvo
 			}
 		}
 		return nil, fmt.Errorf("compose %s: unknown option %q before lifecycle validation; upgrade Vaka if this is a new Docker Compose option", inv.Subcommand, tok)
+	}
+	if inv.Subcommand == "down" && rmi != "" && rmi != "all" && rmi != "local" {
+		return nil, fmt.Errorf(`compose down: --rmi must be "all" or "local", got %q`, rmi)
 	}
 	if len(targets) == 0 {
 		// Compose operates on active services when no targets are given. Live

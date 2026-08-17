@@ -41,6 +41,11 @@ type ComposeInvocation struct {
 	GlobalVersion       bool
 	Compatibility       bool
 	AllResources        bool
+	globalANSI          string
+	globalANSISet       bool
+	globalProgress      string
+	globalProgressSet   bool
+	globalNoANSI        bool
 
 	lastFileTokenIdx int // index in Args for the last pre-subcommand -f/--file value token
 }
@@ -268,6 +273,14 @@ func (inv *ComposeInvocation) scanComposeArgs() error {
 			if matchedFlag == "--env-file" {
 				inv.EnvFiles = append(inv.EnvFiles, value)
 			}
+			if matchedFlag == "--ansi" {
+				inv.globalANSI = value
+				inv.globalANSISet = true
+			}
+			if matchedFlag == "--progress" {
+				inv.globalProgress = value
+				inv.globalProgressSet = true
+			}
 			i += consumed - 1
 			continue
 		}
@@ -286,6 +299,8 @@ func (inv *ComposeInvocation) scanComposeArgs() error {
 				inv.Compatibility = enabled
 			case "--all-resources":
 				inv.AllResources = enabled
+			case "--no-ansi":
+				inv.globalNoANSI = enabled
 			}
 			continue
 		}
