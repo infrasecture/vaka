@@ -27,10 +27,12 @@ If service A needs to reach service B, allow service B's Compose hostname or IP 
 vaka needs `NET_ADMIN` temporarily to load nftables rules. The normal path is:
 
 1. vaka computes and adds any capability missing for startup, including
-   temporary `SETPCAP` when bounding-set removal requires it.
+   temporary `SETPCAP`, `SETUID`, and `SETGID` when required.
 2. `vaka-init` loads the firewall.
-3. `vaka-init` drops the capabilities vaka added.
-4. `vaka-init` switches to the service's effective Compose/image user.
+3. `vaka-init` begins dropping the capabilities vaka added, retaining only
+   identity-transition capabilities until they have been used.
+4. `vaka-init` switches to the service's effective Compose/image user, drops
+   any deferred capabilities, and verifies the final capability sets.
 5. The application starts.
 
 If the original Compose service already had `NET_ADMIN`, vaka treats that as
@@ -68,7 +70,10 @@ Run the second command from each project's directory (and with its usual Vaka
 and Compose options). Restarting, starting, or unpausing an existing container
 is not sufficient because Docker retains that container's original user,
 capabilities, healthcheck, and runtime mount. Fixed Vaka releases block these
-resume operations when they detect an older or mutable managed runtime.
+resume operations when they detect an older or mutable managed runtime, or a
+current policy-managed service that was created without Vaka. Ordinary
+unmanaged services retain native Compose behavior; stop, down, and remove
+remain available for containment, subject to executable-hook validation.
 
 Compose `post_start` and `pre_stop` hooks and `develop.watch` actions `sync`,
 `sync+restart`, `sync+exec`, and `rebuild` are currently rejected on managed

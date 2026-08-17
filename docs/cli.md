@@ -215,12 +215,14 @@ all Vaka-managed services in the project, even when the Compose command targets
 one service. When a mixed-project `up` or `create` must consume
 `--build`, `--pull=always`, or `--pull=build`, Vaka also prepares only the
 selected unmanaged services (and their Compose dependencies) so their native
-result is preserved. `run` leaves these flags entirely to Compose when its
-target is unmanaged. Safe `--pull=missing`, `if_not_present`, and `never`
-remain on the final Compose invocation. An absent service `pull_policy` uses
-`--vaka-pull`; explicit Compose policies take precedence. Timed policies fail
-with guidance to pull explicitly so Vaka does not inspect one image and execute
-another.
+result is preserved. For `run`, Vaka applies the same rule to the selected
+target and its dependency graph unless `--no-deps` is enabled; when that entire
+graph is unmanaged, the flags remain with Compose. Safe `--pull=missing`,
+`if_not_present`, and `never` remain on the final Compose invocation. An absent
+service `pull_policy` uses `--vaka-pull`; explicit Compose policies take
+precedence. Invalid values and refresh options unsupported by the selected
+command are rejected before preparation. Timed policies fail with guidance to
+pull explicitly so Vaka does not inspect one image and execute another.
 
 Known non-creating commands use a metadata-only reference override. Examples
 include `logs`, `ps`, `pull`, `down`, `start`, `stop`, `kill`, and `rm`.
@@ -239,8 +241,12 @@ label overrides; `post_start` and `pre_stop` hooks; and Watch actions `sync`,
 `up/create --no-recreate` and `watch --no-up`, and requires old, mutable, or
 policy-managed-but-unlabeled containers to be recreated before Vaka-controlled
 resume or exec operations.
-`rm --stop` receives the same hook validation. Watch actions without those
-process or filesystem mutation surfaces remain available.
+For `restart`, the resume guard follows Compose's selected transitive
+`restart: true` dependents unless `--no-deps` is enabled, and validates every
+selected replica. Fully unmanaged services retain native Compose behavior.
+`stop`, `down`, and `rm --stop` remain available for containment; executable
+`pre_stop` hooks still receive the same validation. Watch actions without
+those process or filesystem mutation surfaces remain available.
 
 `vaka compose version`, `vaka compose ls`, bare `vaka compose`, and help forms
 are proxied directly without loading a project.

@@ -152,9 +152,10 @@ Vaka applies `--build` and forced pulls before inspecting managed service
 images. It then runs each managed service by the exact local image ID it
 inspected, with pulling disabled in the generated override. In a mixed project,
 selected unmanaged services are prepared only when a project-wide refresh flag
-must be consumed; an unmanaged `run` target retains native Compose handling.
-This covers inherited entrypoints, users, healthchecks, shells, and
-image-declared volumes.
+must be consumed. For `run`, that decision covers the selected target and its
+dependency graph unless `--no-deps` is enabled; an entirely unmanaged graph
+retains native Compose handling. This covers inherited entrypoints, users,
+healthchecks, shells, and image-declared volumes.
 
 For example, this refreshes `app:latest` first and then pins the resulting ID:
 
