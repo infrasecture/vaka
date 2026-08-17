@@ -57,24 +57,45 @@ func TestDegradedEnforcementReasons(t *testing.T) {
 		},
 		{
 			name: "dangerous capabilities",
-			svc:  composetypes.ServiceConfig{CapAdd: []string{"CAP_SYS_ADMIN", "net_admin"}},
+			svc:  composetypes.ServiceConfig{CapAdd: []string{"CAP_SYS_ADMIN", "net_admin", "sys_ptrace"}},
 			want: []string{
 				"retains SYS_ADMIN and can replace Vaka's runtime",
 				"retains NET_ADMIN and can modify Vaka's nftables policy",
+				"retains SYS_PTRACE and can interfere with Vaka's runtime processes",
 			},
 		},
 		{
 			name: "all capabilities with explicit policy drops",
 			svc:  composetypes.ServiceConfig{CapAdd: []string{"ALL"}},
 			runtime: &policy.RuntimeConfig{DropCaps: []string{
-				"CAP_SYS_ADMIN", "NET_ADMIN",
+				"ALL",
 			}},
 		},
 		{
 			name:    "only one dangerous capability retained",
-			svc:     composetypes.ServiceConfig{CapAdd: []string{"ALL"}},
-			runtime: &policy.RuntimeConfig{DropCaps: []string{"SYS_ADMIN"}},
-			want:    []string{"retains NET_ADMIN and can modify Vaka's nftables policy"},
+			svc:     composetypes.ServiceConfig{CapAdd: []string{"ALL"}, CapDrop: []string{"NET_ADMIN"}},
+			runtime: &policy.RuntimeConfig{DropCaps: []string{"SYS_ADMIN", "SYS_PTRACE"}},
+			want:    []string{"requests all Linux capabilities and can weaken Vaka's runtime boundary"},
+		},
+		{
+			name: "daemon and pid namespace access",
+			svc: composetypes.ServiceConfig{
+				UseAPISocket: true,
+				Pid:          "service:peer",
+			},
+			want: []string{
+				"has Docker daemon access and can bypass the container security boundary",
+				"shares a PID namespace and can interfere with Vaka's runtime processes",
+			},
+		},
+		{
+			name: "docker socket bind",
+			svc: composetypes.ServiceConfig{Volumes: []composetypes.ServiceVolumeConfig{{
+				Type:   composetypes.VolumeTypeBind,
+				Source: "/var/run/docker.sock",
+				Target: "/var/run/docker.sock",
+			}}},
+			want: []string{"has Docker daemon access and can bypass the container security boundary"},
 		},
 	}
 
@@ -114,10 +135,52 @@ func TestWarnDegradedEnforcementReportsOnlyManagedServices(t *testing.T) {
 
 	got := string(out)
 	if !strings.Contains(got, "Vaka warning: service managed retains NET_ADMIN") ||
-		!strings.Contains(got, "Egress enforcement is best-effort for this service.") {
+		!strings.Contains(got, "Vaka enforcement is best-effort for this service.") {
 		t.Fatalf("warning = %q", got)
 	}
 	if strings.Contains(got, "unmanaged") {
 		t.Fatalf("warning unexpectedly includes unmanaged service: %q", got)
+	}
+}
+
+func TestWarnDegradedEnforcementReportsReverseNamespaceSharing(t *testing.T) {
+	p := &policy.ServicePolicy{Services: map[string]*policy.ServiceConfig{
+		"managed": {},
+	}}
+	project := &composetypes.Project{Services: map[string]composetypes.ServiceConfig{
+		"managed": {},
+		"network-peer": {
+			NetworkMode: "service:managed",
+		},
+		"pid-peer": {
+			Pid: "service:managed",
+		},
+		"unrelated": {
+			NetworkMode: "service:elsewhere",
+		},
+	}}
+
+	old := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stderr = w
+	warnDegradedEnforcement(p, project)
+	_ = w.Close()
+	os.Stderr = old
+	out, err := io.ReadAll(r)
+	_ = r.Close()
+	if err != nil {
+		t.Fatalf("read warning: %v", err)
+	}
+
+	got := string(out)
+	if !strings.Contains(got, "unmanaged service network-peer joins managed service managed's network namespace") ||
+		!strings.Contains(got, "unmanaged service pid-peer joins managed service managed's PID namespace") {
+		t.Fatalf("warnings = %q", got)
+	}
+	if strings.Contains(got, "unrelated") {
+		t.Fatalf("warning unexpectedly includes unrelated service: %q", got)
 	}
 }
