@@ -73,6 +73,8 @@ type parsedRun struct {
 	environmentFile    bool
 	environmentFiles   []string
 	servicePorts       bool
+	quietPull          bool
+	quietBuild         bool
 	ttySet             bool
 	noTTYSet           bool
 }
@@ -243,6 +245,10 @@ func (p *parsedRun) recordRunBoolean(flag string, enabled bool) {
 		p.noDeps = enabled
 	case "-P", "--service-ports":
 		p.servicePorts = enabled
+	case "--quiet-pull":
+		p.quietPull = enabled
+	case "--quiet-build":
+		p.quietBuild = enabled
 	case "-t", "--tty":
 		p.ttySet = true
 	case "-T", "--no-tty", "--no-TTY":

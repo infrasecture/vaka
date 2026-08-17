@@ -97,6 +97,39 @@ func TestParseRunNoDepsUsesLastValueAndStopsAtService(t *testing.T) {
 	}
 }
 
+func TestParseRunQuietOptionsUseLastValueAndStopAtService(t *testing.T) {
+	tests := []struct {
+		args           []string
+		wantQuietPull  bool
+		wantQuietBuild bool
+	}{
+		{
+			args:           []string{"--quiet-pull=false", "--quiet-pull", "--quiet-build=0", "--quiet-build", "app"},
+			wantQuietPull:  true,
+			wantQuietBuild: true,
+		},
+		{
+			args: []string{"--quiet-pull", "--quiet-pull=false", "--quiet-build", "--quiet-build=0", "app"},
+		},
+		{
+			args: []string{"app", "tool", "--quiet-pull=garbage", "--quiet-build=garbage"},
+		},
+		{
+			args: []string{"app", "--", "--quiet-pull", "--quiet-build"},
+		},
+	}
+	for _, tc := range tests {
+		parsed, err := parseRun(tc.args)
+		if err != nil {
+			t.Fatalf("parseRun(%v): %v", tc.args, err)
+		}
+		if parsed.quietPull != tc.wantQuietPull || parsed.quietBuild != tc.wantQuietBuild {
+			t.Errorf("parseRun(%v) quiet pull/build = %t/%t, want %t/%t", tc.args,
+				parsed.quietPull, parsed.quietBuild, tc.wantQuietPull, tc.wantQuietBuild)
+		}
+	}
+}
+
 func TestParseRunAcceptsComposeAliasesAndValidatesBeforePreparation(t *testing.T) {
 	parsed, err := parseRun([]string{
 		"--volumes", "scratch:/workspace",

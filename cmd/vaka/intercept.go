@@ -298,17 +298,26 @@ func buildInjectionOverride(
 	for name := range unmanaged.forceBuild {
 		preparation.forceBuild[name] = true
 	}
-	quietPull, err := composeBoolOptionEnabled(inv.PostSubcommand, "--quiet-pull", "")
-	if err != nil {
-		return "", nil, err
-	}
-	quietBuildOption := "--quiet-build"
-	if inv.Subcommand == "watch" {
-		quietBuildOption = "--quiet"
-	}
-	quietBuild, err := composeBoolOptionEnabled(inv.PostSubcommand, quietBuildOption, "")
-	if err != nil {
-		return "", nil, err
+	quietPull, quietBuild := false, false
+	if inv.Subcommand == "run" {
+		parsed, err := parseRun(inv.PostSubcommand)
+		if err != nil {
+			return "", nil, err
+		}
+		quietPull, quietBuild = parsed.quietPull, parsed.quietBuild
+	} else {
+		quietPull, err = composeBoolOptionEnabled(inv.PostSubcommand, "--quiet-pull", "")
+		if err != nil {
+			return "", nil, err
+		}
+		quietBuildOption := "--quiet-build"
+		if inv.Subcommand == "watch" {
+			quietBuildOption = "--quiet"
+		}
+		quietBuild, err = composeBoolOptionEnabled(inv.PostSubcommand, quietBuildOption, "")
+		if err != nil {
+			return "", nil, err
+		}
 	}
 	for _, pull := range []struct {
 		policy   string

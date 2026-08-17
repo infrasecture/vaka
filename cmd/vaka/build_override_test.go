@@ -633,6 +633,49 @@ services:
 	}
 }
 
+func TestRunPreparationDoesNotParseCommandPayloadAsQuietOptions(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	writeFixtureFiles(t, dir, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+`, `
+services:
+  app:
+    image: app:latest
+    build: .
+`)
+
+	var calls [][]string
+	setExecDockerComposeForTest(t, func(inv *ComposeInvocation, _ string, _ []string) error {
+		calls = append(calls, append([]string{}, inv.Args...))
+		return nil
+	})
+	inv, _ := ParseComposeInvocation([]string{
+		"run", "--build", "--pull=always", "app", "tool",
+		"--quiet-pull=garbage", "--quiet-build=garbage",
+	})
+	if _, _, err := buildInjectionOverride(context.Background(), &fakeBuilderDockerServices{}, "vaka.yaml", inv, false); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(calls) == 0 {
+		t.Fatal("run preparation did not execute")
+	}
+	for _, args := range calls {
+		for _, arg := range args {
+			if arg == "--quiet" {
+				t.Fatalf("run payload enabled quiet preparation: %v", calls)
+			}
+		}
+	}
+}
+
 func TestUpMissingPullRemainsForUnmanagedComposeBehavior(t *testing.T) {
 	dir := t.TempDir()
 	chdirForTest(t, dir)
