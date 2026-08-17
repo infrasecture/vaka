@@ -52,7 +52,7 @@ Compose override mounts that local ID, never the mutable tag:
 volumes:
   - type: image
     source: sha256:<exact-local-image-id>
-    target: /opt/vaka
+    target: /vaka
     read_only: true
     image:
       subpath: opt/vaka
@@ -66,8 +66,11 @@ and service labels. Engine 29.2 and newer fix the underlying issue. Compose 5.1
 and newer expand image-volume sources back to full IDs, so Vaka rejects that
 Compose version when it is paired with an affected Engine.
 
-Both `/opt/vaka/sbin/vaka-init` and `/opt/vaka/sbin/nft` are mode `0555` in the
-runtime image. A read-only image mount preserves their execute bits; it does not
+The image keeps its internal `opt/vaka` bundle layout, but Docker exposes that
+subpath directly at `/vaka` in the managed container. Because `/vaka` is itself
+a mountpoint directly below `/`, a workload cannot replace it by renaming a
+writable parent directory. Both `/vaka/sbin/vaka-init` and `/vaka/sbin/nft` are
+mode `0555`. A read-only image mount preserves their execute bits; it does not
 make non-executable files executable. There is no helper container or helper
 volume in the normal path.
 

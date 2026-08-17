@@ -22,7 +22,6 @@ const (
 	composeContainerNumberLabel = "com.docker.compose.container-number"
 	composeConfigHashLabel      = "com.docker.compose.config-hash"
 	composeOneoffLabel          = "com.docker.compose.oneoff"
-	vakaInitPath                = "/opt/vaka/sbin/vaka-init"
 )
 
 type execTarget struct {
@@ -135,7 +134,7 @@ func containerAcceptsExec(inspect containertypes.InspectResponse) bool {
 }
 
 func legacyManagedSignature(inspect containertypes.InspectResponse) bool {
-	if inspect.Config == nil || len(inspect.Config.Entrypoint) == 0 || inspect.Config.Entrypoint[0] != vakaInitPath {
+	if inspect.Config == nil || len(inspect.Config.Entrypoint) == 0 || inspect.Config.Entrypoint[0] != legacyVakaInitPath {
 		return false
 	}
 	if !dockerUserIsRoot(inspect.Config.User) {
@@ -147,7 +146,7 @@ func legacyManagedSignature(inspect containertypes.InspectResponse) bool {
 	hasRuntime := false
 	for _, mounted := range inspect.Mounts {
 		destination := path.Clean(mounted.Destination)
-		hasRuntime = hasRuntime || destination == protectedRuntimePath
+		hasRuntime = hasRuntime || destination == legacyRuntimePath
 	}
 	return hasRuntime
 }
@@ -192,7 +191,7 @@ func (d *dockerServices) verifyManagedContainerMounts(ctx context.Context, inspe
 		if path.Clean(configured.Target) != protectedRuntimePath || configured.Type != mount.TypeImage || !configured.ReadOnly {
 			return fmt.Errorf("configured mount %s (%s, readOnly=%t) overlaps protected runtime", configured.Target, configured.Type, configured.ReadOnly)
 		}
-		if configured.ImageOptions == nil || path.Clean("/"+configured.ImageOptions.Subpath) != protectedRuntimePath {
+		if configured.ImageOptions == nil || configured.ImageOptions.Subpath != runtimebundle.ImageSubpath {
 			return fmt.Errorf("runtime image mount has unexpected subpath %q", imageMountSubpath(configured))
 		}
 		resolved, err := d.c.ImageInspect(ctx, configured.Source)

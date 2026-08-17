@@ -25,8 +25,9 @@ Vaka has exactly two release identities:
    into the binary. Nightlies use the 12-character lowercase Git commit ID.
 2. **Runtime bundle version.** The stable base is committed in
    `internal/runtimebundle/VERSION`. It covers `vaka-init`, the bundled `nft`
-   executable, the `/opt/vaka` image layout and modes, and the generated policy
-   contract consumed inside containers.
+   executable, the internal `/opt/vaka` image layout, the container-visible
+   `/vaka` mount contract and modes, and the generated policy contract consumed
+   inside containers.
 
 There is deliberately no separate `vaka-init` version. It cannot be selected
 independently from the generated policy and bundled `nft`, so another public
@@ -319,7 +320,7 @@ Run the real image-mount smoke after a native build:
 ./scripts/smoke-image-mount.sh
 ```
 
-The smoke starts a service through Vaka and verifies that `/opt/vaka` is an
+The smoke starts a service through Vaka and verifies that `/vaka` is an
 image mount whose source resolves to the exact local runtime image ID, is
 read-only, exposes
 both executables with execute permission, and reports the selected stable or

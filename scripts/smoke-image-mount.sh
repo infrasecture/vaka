@@ -156,19 +156,19 @@ configured_init="$(docker container inspect "${container_id}" --format '{{json .
 [[ "${configured_init}" == false ]] || \
     die "managed service HostConfig.Init is ${configured_init}; expected explicit false to override daemon defaults"
 
-requested_mount="$(docker container inspect "${container_id}" --format '{{range .HostConfig.Mounts}}{{if eq .Target "/opt/vaka"}}{{printf "%s|%s|%t|%s" .Type .Source .ReadOnly .ImageOptions.Subpath}}{{end}}{{end}}')"
+requested_mount="$(docker container inspect "${container_id}" --format '{{range .HostConfig.Mounts}}{{if eq .Target "/vaka"}}{{printf "%s|%s|%t|%s" .Type .Source .ReadOnly .ImageOptions.Subpath}}{{end}}{{end}}')"
 IFS='|' read -r requested_type requested_source requested_read_only requested_subpath <<<"${requested_mount}"
 [[ "${requested_type}" == image && "${requested_read_only}" == true && "${requested_subpath}" == opt/vaka ]] || \
-    die "/opt/vaka mount request is ${requested_mount:-absent}; expected image|<runtime-image-id-or-prefix>|true|opt/vaka"
+    die "/vaka mount request is ${requested_mount:-absent}; expected image|<runtime-image-id-or-prefix>|true|opt/vaka"
 requested_source_id="$(docker image inspect "${requested_source}" --format '{{.Id}}' 2>/dev/null)" || \
-    die "/opt/vaka mount source ${requested_source:-absent} does not resolve on the selected Docker target"
+    die "/vaka mount source ${requested_source:-absent} does not resolve on the selected Docker target"
 [[ "${requested_source_id}" == "${runtime_id}" ]] || \
-    die "/opt/vaka mount source ${requested_source} resolves to ${requested_source_id}; expected ${runtime_id}"
+    die "/vaka mount source ${requested_source} resolves to ${requested_source_id}; expected ${runtime_id}"
 
-realized_mount="$(docker container inspect "${container_id}" --format '{{range .Mounts}}{{if eq .Destination "/opt/vaka"}}{{printf "%s|%s|%t" .Type .Destination .RW}}{{end}}{{end}}')"
-expected_realized="image|/opt/vaka|false"
+realized_mount="$(docker container inspect "${container_id}" --format '{{range .Mounts}}{{if eq .Destination "/vaka"}}{{printf "%s|%s|%t" .Type .Destination .RW}}{{end}}{{end}}')"
+expected_realized="image|/vaka|false"
 [[ "${realized_mount}" == "${expected_realized}" ]] || \
-    die "/opt/vaka realized mount is ${realized_mount:-absent}; expected ${expected_realized}"
+    die "/vaka realized mount is ${realized_mount:-absent}; expected ${expected_realized}"
 
 label_image="$(docker container inspect "${container_id}" --format '{{index .Config.Labels "agent.vaka.runtime-image"}}')"
 [[ "${label_image}" == "${runtime_id}" ]] || \
@@ -178,19 +178,22 @@ label_version="$(docker container inspect "${container_id}" --format '{{index .C
 [[ "${label_version}" == "${runtime_version}" ]] || \
     die "container runtime-version label is ${label_version}; expected ${runtime_version}"
 
-docker container exec "${container_id}" test -x /opt/vaka/sbin/vaka-init || \
+docker container exec "${container_id}" test -x /vaka/sbin/vaka-init || \
     die "mounted vaka-init is not executable"
-docker container exec "${container_id}" test -x /opt/vaka/sbin/nft || \
+docker container exec "${container_id}" test -x /vaka/sbin/nft || \
     die "mounted nft is not executable"
 
-reported_version="$(docker container exec "${container_id}" /opt/vaka/sbin/vaka-init --version)"
+reported_version="$(docker container exec "${container_id}" /vaka/sbin/vaka-init --version)"
 [[ "${reported_version}" == "${runtime_version}" ]] || \
     die "mounted vaka-init reports ${reported_version}; expected ${runtime_version}"
-docker container exec "${container_id}" /opt/vaka/sbin/nft --version >/dev/null || \
+docker container exec "${container_id}" /vaka/sbin/nft --version >/dev/null || \
     die "mounted nft cannot execute"
 
-if docker container exec "${container_id}" /bin/sh -c 'printf smoke > /opt/vaka/.vaka-smoke-write' >/dev/null 2>&1; then
-    die "write to read-only /opt/vaka mount unexpectedly succeeded"
+if docker container exec "${container_id}" /bin/sh -c 'printf smoke > /vaka/.vaka-smoke-write' >/dev/null 2>&1; then
+    die "write to read-only /vaka mount unexpectedly succeeded"
+fi
+if docker container exec "${container_id}" mv /vaka /vaka-replaced >/dev/null 2>&1; then
+    die "direct-root /vaka mountpoint was unexpectedly renameable"
 fi
 
 assert_cap_absent() {
@@ -292,7 +295,7 @@ if "${VAKA_BIN}" \
     compose \
     --project-name "${project}" \
     --file "${compose_file}" \
-    exec -T app /opt/vaka/sbin/nft delete table inet vaka >/dev/null 2>&1; then
+    exec -T app /vaka/sbin/nft delete table inet vaka >/dev/null 2>&1; then
     die "vaka exec command modified nftables despite dropped NET_ADMIN"
 fi
 

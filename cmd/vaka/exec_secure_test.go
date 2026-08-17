@@ -158,7 +158,7 @@ func execContainer(id, number string, oneoff bool) containertypes.Summary {
 			compose.RuntimeVersionLabel: runtimeBundleVersion,
 			compose.RuntimeImageLabel:   "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		},
-		Mounts: []containertypes.MountPoint{{Type: mount.Type("image"), Destination: "/opt/vaka", RW: false}},
+		Mounts: []containertypes.MountPoint{{Type: mount.Type("image"), Destination: protectedRuntimePath, RW: false}},
 	}
 }
 
@@ -223,20 +223,20 @@ func TestVerifyManagedContainerMountsFailsClosed(t *testing.T) {
 func TestLegacyManagedSignature(t *testing.T) {
 	tests := []containertypes.InspectResponse{
 		{
-			Config: &containertypes.Config{User: "0:0", Entrypoint: []string{vakaInitPath, "--"}},
-			Mounts: []containertypes.MountPoint{{Type: mount.TypeVolume, Destination: protectedRuntimePath, RW: true}},
+			Config: &containertypes.Config{User: "0:0", Entrypoint: []string{legacyVakaInitPath, "--"}},
+			Mounts: []containertypes.MountPoint{{Type: mount.TypeVolume, Destination: legacyRuntimePath, RW: true}},
 		},
 		{
 			Config: &containertypes.Config{
 				User:       "",
-				Entrypoint: []string{vakaInitPath},
+				Entrypoint: []string{legacyVakaInitPath},
 				Labels:     map[string]string{vakaInitLabel: "present"},
 			},
 		},
 		{
 			Config: &containertypes.Config{
 				User:       "root:staff",
-				Entrypoint: []string{vakaInitPath},
+				Entrypoint: []string{legacyVakaInitPath},
 				Labels:     map[string]string{vakaInitLabel: "present"},
 			},
 		},
@@ -286,7 +286,7 @@ func TestSecureExecInvocationUsesRootOnlyForTrampoline(t *testing.T) {
 	}
 	want := []string{
 		"-f", "compose.yml", "exec", "-T", "--user=0:0", "app",
-		"/opt/vaka/sbin/vaka-init", "exec", "--user", "1001", "--", "id", "-u",
+		"/vaka/sbin/vaka-init", "exec", "--user", "1001", "--", "id", "-u",
 	}
 	if !reflect.DeepEqual(secured.Args, want) {
 		t.Fatalf("secured args = %v, want %v", secured.Args, want)

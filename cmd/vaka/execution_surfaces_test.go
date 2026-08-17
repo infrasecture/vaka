@@ -36,8 +36,8 @@ func TestValidateRunInvocationRejectsSecurityOverrides(t *testing.T) {
 		{name: "cap add", args: []string{"run", "--cap-add=NET_ADMIN", "app"}, want: "--cap-add/--cap-drop"},
 		{name: "policy environment", args: []string{"run", "-e", "AGENT_VAKA_POLICY=bad", "app"}, want: "reserved Vaka environment"},
 		{name: "environment file", args: []string{"run", "--env-from-file", "override.env", "app"}, want: "--env-from-file"},
-		{name: "runtime child mount", args: []string{"run", "-v", "scratch:/opt/vaka/sbin", "app"}, want: "protected runtime"},
-		{name: "runtime ancestor mount", args: []string{"run", "--volume=scratch:/opt", "app"}, want: "protected runtime"},
+		{name: "runtime child mount", args: []string{"run", "-v", "scratch:/vaka/sbin", "app"}, want: "protected runtime"},
+		{name: "runtime mount", args: []string{"run", "--volume=scratch:/vaka", "app"}, want: "protected runtime"},
 		{name: "root mount", args: []string{"run", "-v", "scratch:/", "app"}, want: "protected runtime"},
 		{name: "secret mount", args: []string{"run", "-v", "scratch:/run/secrets/vaka.yaml", "app"}, want: "policy mounts"},
 		{name: "protected label", args: []string{"run", "--label", "agent.vaka.managed=false", "app"}, want: "security metadata"},
@@ -215,13 +215,13 @@ func TestValidateManagedExecutionSurfaces(t *testing.T) {
 		{name: "rebuild", svc: composetypes.ServiceConfig{Develop: &composetypes.DevelopConfig{Watch: []composetypes.Trigger{{Action: composetypes.WatchActionRebuild}}}}, want: "action rebuild"},
 		{name: "future watch action", svc: composetypes.ServiceConfig{Develop: &composetypes.DevelopConfig{Watch: []composetypes.Trigger{{Action: composetypes.WatchAction("future")}}}}, want: "has not been reviewed"},
 		{name: "deprecated x-develop", svc: composetypes.ServiceConfig{Extensions: composetypes.Extensions{"x-develop": map[string]any{"watch": []any{}}}}, want: "x-develop"},
-		{name: "nested volume", svc: composetypes.ServiceConfig{Volumes: []composetypes.ServiceVolumeConfig{{Target: "/opt/vaka/sbin"}}}, want: "volume target"},
-		{name: "ancestor volume", svc: composetypes.ServiceConfig{Volumes: []composetypes.ServiceVolumeConfig{{Target: "/opt"}}}, want: "volume target"},
-		{name: "config", svc: composetypes.ServiceConfig{Configs: []composetypes.ServiceConfigObjConfig{{Source: "cfg", Target: "/opt/vaka/config"}}}, want: "config target"},
+		{name: "nested volume", svc: composetypes.ServiceConfig{Volumes: []composetypes.ServiceVolumeConfig{{Target: "/vaka/sbin"}}}, want: "volume target"},
+		{name: "runtime volume", svc: composetypes.ServiceConfig{Volumes: []composetypes.ServiceVolumeConfig{{Target: "/vaka"}}}, want: "volume target"},
+		{name: "config", svc: composetypes.ServiceConfig{Configs: []composetypes.ServiceConfigObjConfig{{Source: "cfg", Target: "/vaka/config"}}}, want: "config target"},
 		{name: "secret", svc: composetypes.ServiceConfig{Secrets: []composetypes.ServiceSecretConfig{{Source: "replacement", Target: "/run/secrets/vaka.yaml"}}}, want: "secret target"},
-		{name: "tmpfs", svc: composetypes.ServiceConfig{Tmpfs: []string{"/opt/vaka/sbin:rw"}}, want: "tmpfs target"},
+		{name: "tmpfs", svc: composetypes.ServiceConfig{Tmpfs: []string{"/vaka/sbin:rw"}}, want: "tmpfs target"},
 		{name: "volumes from", svc: composetypes.ServiceConfig{VolumesFrom: []string{"sidecar:rw"}}, want: "volumes_from"},
-		{name: "device", svc: composetypes.ServiceConfig{Devices: []composetypes.DeviceMapping{{Source: "/dev/null", Target: "/opt/vaka/sbin/vaka-init"}}}, want: "device target"},
+		{name: "device", svc: composetypes.ServiceConfig{Devices: []composetypes.DeviceMapping{{Source: "/dev/null", Target: "/vaka/sbin/vaka-init"}}}, want: "device target"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -272,12 +272,12 @@ services:
 }
 
 func TestPathsOverlap(t *testing.T) {
-	for _, pair := range [][2]string{{"/", "/opt/vaka"}, {"/opt", "/opt/vaka"}, {"/opt/vaka", "/opt/vaka"}, {"/opt/vaka/sbin", "/opt/vaka"}} {
+	for _, pair := range [][2]string{{"/", "/vaka"}, {"/vaka", "/vaka"}, {"/vaka/sbin", "/vaka"}} {
 		if !pathsOverlap(pair[0], pair[1]) {
 			t.Errorf("pathsOverlap(%q, %q) = false", pair[0], pair[1])
 		}
 	}
-	if pathsOverlap("/workspace", "/opt/vaka") {
+	if pathsOverlap("/opt/vaka", "/vaka") || pathsOverlap("/workspace", "/vaka") {
 		t.Fatal("unrelated paths overlap")
 	}
 }

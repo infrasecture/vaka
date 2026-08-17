@@ -21,6 +21,7 @@ const (
 	composeServiceLabel        = "com.docker.compose.service"
 	legacyHelperService        = "__vaka-init"
 	legacyRuntimePath          = "/opt/vaka"
+	legacyVakaInitPath         = legacyRuntimePath + "/sbin/vaka-init"
 	dockerAnonymousVolumeLabel = "com.docker.volume.anonymous"
 )
 

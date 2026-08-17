@@ -11,12 +11,14 @@ import (
 	composeformat "github.com/compose-spec/compose-go/v2/format"
 	composetypes "github.com/compose-spec/compose-go/v2/types"
 	"github.com/mattn/go-shellwords"
+	"vaka.dev/vaka/internal/runtimebundle"
 	"vaka.dev/vaka/pkg/policy"
 )
 
 const (
-	protectedRuntimePath = "/opt/vaka"
+	protectedRuntimePath = runtimebundle.MountPath
 	protectedPolicyPath  = "/run/secrets/vaka.yaml"
+	vakaInitPath         = runtimebundle.InitPath
 )
 
 var runOptionsWithValue = map[string]bool{

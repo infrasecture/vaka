@@ -11,9 +11,6 @@ import (
 )
 
 const (
-	vakaInitPath        = "/opt/vaka/sbin/vaka-init"
-	runtimeMountTarget  = "/opt/vaka"
-	runtimeImageSubpath = "opt/vaka"
 	// Engine 29.0 and 29.1 hex-encode the container ID, mount source, and
 	// destination into one filesystem component. Forty hex characters retain
 	// 160 bits of immutable image identity while keeping that component below
@@ -126,7 +123,7 @@ func BuildOverride(entries []ServiceEntry, runtime RuntimeMount, preparedUnmanag
 			return "", fmt.Errorf("build compose override: service %s has invalid inspected image identity: %w", e.Name, err)
 		}
 		entrypoint := make([]string, 0, 2+len(e.Entrypoint))
-		entrypoint = append(entrypoint, vakaInitPath, "--")
+		entrypoint = append(entrypoint, runtimebundle.InitPath, "--")
 		entrypoint = append(entrypoint, e.Entrypoint...)
 		// Never delegate an unset Compose value to the daemon-wide init
 		// default. The caller sets this only for an explicit init: true.
@@ -168,9 +165,9 @@ func BuildOverride(entries []ServiceEntry, runtime RuntimeMount, preparedUnmanag
 			svc.Volumes = []composetypes.ServiceVolumeConfig{{
 				Type:     composetypes.VolumeTypeImage,
 				Source:   mountSource,
-				Target:   runtimeMountTarget,
+				Target:   runtimebundle.MountPath,
 				ReadOnly: true,
-				Image:    &composetypes.ServiceVolumeImage{SubPath: runtimeImageSubpath},
+				Image:    &composetypes.ServiceVolumeImage{SubPath: runtimebundle.ImageSubpath},
 			}}
 		}
 
@@ -189,7 +186,7 @@ func wrapHealthcheck(test, imageShell []string) ([]string, error) {
 		if len(test) == 1 {
 			return nil, fmt.Errorf("healthcheck CMD has no command")
 		}
-		out := []string{"CMD", vakaInitPath, "exec", "--"}
+		out := []string{"CMD", runtimebundle.InitPath, "exec", "--"}
 		return append(out, test[1:]...), nil
 	case "CMD-SHELL":
 		if len(test) < 2 {
@@ -199,7 +196,7 @@ func wrapHealthcheck(test, imageShell []string) ([]string, error) {
 		if len(shell) == 0 {
 			shell = []string{"/bin/sh", "-c"}
 		}
-		out := []string{"CMD", vakaInitPath, "exec", "--"}
+		out := []string{"CMD", runtimebundle.InitPath, "exec", "--"}
 		out = append(out, shell...)
 		return append(out, test[1:]...), nil
 	default:

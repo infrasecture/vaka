@@ -21,7 +21,7 @@ import (
 )
 
 // vakaInitLabel is the compose service label that signals the image already
-// ships the vaka-init binaries at /opt/vaka/sbin/. When present, the service
+// ships the vaka-init binaries at /vaka/sbin/. When present, the service
 // does not depend on the __vaka-init volume helper container.
 const vakaInitLabel = "agent.vaka.init"
 

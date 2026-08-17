@@ -68,7 +68,7 @@ func TestBuildOverrideInjectsPolicyRuntime(t *testing.T) {
 	doc := parseOverride(t, out)
 	svc := doc.Services["codex"]
 
-	if got := strings.Join(svc.Entrypoint, " "); got != "/opt/vaka/sbin/vaka-init -- claude" {
+	if got := strings.Join(svc.Entrypoint, " "); got != "/vaka/sbin/vaka-init -- claude" {
 		t.Errorf("entrypoint = %q", got)
 	}
 	if svc.User != "0:0" {
@@ -114,7 +114,7 @@ func TestBuildOverrideKeepsEntrypointSeparateForComposeRunCommandReplacement(t *
 		t.Fatal(err)
 	}
 	svc := parseOverride(t, out).Services["app"]
-	if got := strings.Join(svc.Entrypoint, " "); got != "/opt/vaka/sbin/vaka-init -- /usr/local/bin/app serve" {
+	if got := strings.Join(svc.Entrypoint, " "); got != "/vaka/sbin/vaka-init -- /usr/local/bin/app serve" {
 		t.Fatalf("entrypoint = %q", got)
 	}
 	if got := strings.Join(svc.Command, " "); got != "--default" {
@@ -159,8 +159,8 @@ func TestBuildOverrideUsesReadOnlyExactIDImageMount(t *testing.T) {
 		t.Fatalf("volumes = %+v, want one image mount", svc.Volumes)
 	}
 	mount := svc.Volumes[0]
-	if mount.Type != composetypes.VolumeTypeImage || mount.Source != testImageID || mount.Target != "/opt/vaka" || !mount.ReadOnly {
-		t.Errorf("mount = %+v, want read-only image %s at /opt/vaka", mount, testImageID)
+	if mount.Type != composetypes.VolumeTypeImage || mount.Source != testImageID || mount.Target != "/vaka" || !mount.ReadOnly {
+		t.Errorf("mount = %+v, want read-only image %s at /vaka", mount, testImageID)
 	}
 	if mount.Image == nil || mount.Image.SubPath != "opt/vaka" {
 		t.Errorf("image options = %+v, want subpath opt/vaka", mount.Image)
@@ -221,18 +221,18 @@ func TestBuildOverrideWrapsHealthchecksThroughTrampoline(t *testing.T) {
 		{
 			name: "exec form",
 			test: []string{"CMD", "curl", "-f", "http://localhost"},
-			want: []string{"CMD", "/opt/vaka/sbin/vaka-init", "exec", "--", "curl", "-f", "http://localhost"},
+			want: []string{"CMD", "/vaka/sbin/vaka-init", "exec", "--", "curl", "-f", "http://localhost"},
 		},
 		{
 			name: "shell form default shell",
 			test: []string{"CMD-SHELL", "curl -f http://localhost || exit 1"},
-			want: []string{"CMD", "/opt/vaka/sbin/vaka-init", "exec", "--", "/bin/sh", "-c", "curl -f http://localhost || exit 1"},
+			want: []string{"CMD", "/vaka/sbin/vaka-init", "exec", "--", "/bin/sh", "-c", "curl -f http://localhost || exit 1"},
 		},
 		{
 			name:  "shell form image shell",
 			test:  []string{"CMD-SHELL", "Test-Path C:\\ready"},
 			shell: []string{"pwsh", "-Command"},
-			want:  []string{"CMD", "/opt/vaka/sbin/vaka-init", "exec", "--", "pwsh", "-Command", "Test-Path C:\\ready"},
+			want:  []string{"CMD", "/vaka/sbin/vaka-init", "exec", "--", "pwsh", "-Command", "Test-Path C:\\ready"},
 		},
 	}
 	for _, tc := range tests {

@@ -26,7 +26,7 @@ import (
 
 var runtimeVersion = runtimebundle.Version()
 
-const nftBin = "/opt/vaka/sbin/nft"
+const nftBin = runtimebundle.NftPath
 const passwdPath = "/etc/passwd"
 const groupPath = "/etc/group"
 
