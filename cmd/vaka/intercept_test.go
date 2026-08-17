@@ -3,12 +3,15 @@ package main
 
 import (
 	"context"
+	"io"
 	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
 	"testing"
 
+	"github.com/compose-spec/compose-go/v2/dotenv"
 	composetypes "github.com/compose-spec/compose-go/v2/types"
 	"vaka.dev/vaka/pkg/policy"
 )
@@ -41,6 +44,114 @@ func TestClassifyComposeVerb(t *testing.T) {
 		if got := classifyComposeVerb(tc.verb); got != tc.want {
 			t.Errorf("classifyComposeVerb(%q) = %v, want %v", tc.verb, got, tc.want)
 		}
+	}
+}
+
+func TestAnonymousComposeEnvironmentFileIsSeekableAndUnlinked(t *testing.T) {
+	f, err := createAnonymousComposeEnvironmentFile("VALUE='resolved'\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := os.Stat(f.Name()); !os.IsNotExist(err) {
+		t.Fatalf("anonymous environment path still exists: %v", err)
+	}
+	for read := 0; read < 2; read++ {
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			t.Fatal(err)
+		}
+		got, err := io.ReadAll(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != "VALUE='resolved'\n" {
+			t.Fatalf("read %d = %q", read, got)
+		}
+	}
+}
+
+func TestExecDockerComposeCarriesResolvedDotEnvOnInheritedFile(t *testing.T) {
+	root := t.TempDir()
+	launcher := filepath.Join(root, "launcher")
+	projectDir := filepath.Join(root, "project")
+	binDir := filepath.Join(root, "bin")
+	for _, dir := range []string{launcher, projectDir, binDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	chdirForTest(t, launcher)
+	for _, key := range []string{"COMPOSE_FILE", "COMPOSE_PROFILES", "PROJECT_VALUE"} {
+		unsetEnvironmentForTest(t, key)
+	}
+	if err := os.WriteFile(filepath.Join(launcher, ".env"), []byte("COMPOSE_FILE=../project/compose.yaml\nCOMPOSE_PROFILES=debug\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, ".env"), []byte("PROJECT_VALUE=resolved\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeComposeFile(t, filepath.Join(projectDir, "compose.yaml"))
+
+	argsPath := filepath.Join(root, "args")
+	firstEnvPath := filepath.Join(root, "env-first")
+	secondEnvPath := filepath.Join(root, "env-second")
+	overridePath := filepath.Join(root, "override")
+	dockerScript := `#!/bin/sh
+printf '%s\n' "$@" > "$VAKA_CAPTURE_ARGS"
+cat /dev/fd/4 > "$VAKA_CAPTURE_ENV_FIRST"
+cat /dev/fd/4 > "$VAKA_CAPTURE_ENV_SECOND"
+cat /dev/fd/3 > "$VAKA_CAPTURE_OVERRIDE"
+`
+	if err := os.WriteFile(filepath.Join(binDir, "docker"), []byte(dockerScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("VAKA_CAPTURE_ARGS", argsPath)
+	t.Setenv("VAKA_CAPTURE_ENV_FIRST", firstEnvPath)
+	t.Setenv("VAKA_CAPTURE_ENV_SECOND", secondEnvPath)
+	t.Setenv("VAKA_CAPTURE_OVERRIDE", overridePath)
+
+	inv, err := ParseComposeInvocation([]string{"up", "app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := execDockerCompose(inv, "x-vaka:\n  runtime-version: test\n", nil); err != nil {
+		t.Fatal(err)
+	}
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantArgs := []string{
+		"compose", "--env-file", composeResolvedEnvFilePath,
+		"-f", filepath.Join(projectDir, "compose.yaml"), "-f", composeOverridePath,
+		"up", "app",
+	}
+	assertArgv(t, wantArgs, strings.Split(strings.TrimSpace(string(args)), "\n"))
+	first, err := os.ReadFile(firstEnvPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := os.ReadFile(secondEnvPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(first) != string(second) {
+		t.Fatalf("inherited dotenv was not seekable: first=%q second=%q", first, second)
+	}
+	parsed, err := dotenv.Parse(strings.NewReader(string(first)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed["COMPOSE_FILE"] != "../project/compose.yaml" || parsed["COMPOSE_PROFILES"] != "debug" || parsed["PROJECT_VALUE"] != "resolved" {
+		t.Fatalf("resolved child environment = %#v", parsed)
+	}
+	override, err := os.ReadFile(overridePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(override) != "x-vaka:\n  runtime-version: test\n" {
+		t.Fatalf("override = %q", override)
 	}
 }
 

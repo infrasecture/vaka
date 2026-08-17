@@ -4,7 +4,10 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/compose-spec/compose-go/v2/dotenv"
 )
 
 func TestComposeResolutionCarriesProjectProfilesAndEnvFiles(t *testing.T) {
@@ -121,6 +124,168 @@ services:
 	}
 	if _, ok := project.DisabledServices["tool"]; !ok {
 		t.Fatal("COMPOSE_PROFILES incorrectly augmented explicit --profile")
+	}
+}
+
+func TestComposeResolutionPreservesLauncherAndProjectDotEnv(t *testing.T) {
+	root := t.TempDir()
+	launcher := filepath.Join(root, "launcher")
+	projectDir := filepath.Join(root, "project")
+	for _, dir := range []string{launcher, projectDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	chdirForTest(t, launcher)
+	for _, key := range []string{
+		"COMPOSE_FILE", "COMPOSE_PROFILES", "COMPOSE_PROJECT_NAME",
+		"APP_IMAGE", "SHARED_VALUE", "PROJECT_ONLY",
+	} {
+		unsetEnvironmentForTest(t, key)
+	}
+
+	if err := os.WriteFile(filepath.Join(launcher, ".env"), []byte(strings.TrimSpace(`
+COMPOSE_FILE=../project/compose.yaml
+COMPOSE_PROFILES=debug
+COMPOSE_PROJECT_NAME=launcher-project
+APP_IMAGE=busybox:1.36
+SHARED_VALUE=launcher
+`)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, ".env"), []byte(strings.TrimSpace(`
+SHARED_VALUE=project
+PROJECT_ONLY=from-project
+`)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "compose.yaml"), []byte(`
+services:
+  base:
+    image: ${APP_IMAGE}
+    environment:
+      SHARED_VALUE: ${SHARED_VALUE}
+      PROJECT_ONLY: ${PROJECT_ONLY}
+      COMPOSE_FILE_VALUE: ${COMPOSE_FILE}
+  debug:
+    image: alpine:3.20
+    profiles: [debug]
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	inv, err := ParseComposeInvocation([]string{"up"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, err := resolveComposeInput(inv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !input.ImplicitFiles || !input.EnvironmentResolved {
+		t.Fatalf("implicit resolution metadata = %+v", input)
+	}
+	assertArgv(t, []string{filepath.Join(projectDir, "compose.yaml")}, input.Files)
+	if input.Environment["SHARED_VALUE"] != "launcher" {
+		t.Fatalf("launcher dotenv did not retain precedence: %q", input.Environment["SHARED_VALUE"])
+	}
+	if input.Environment["PROJECT_ONLY"] != "from-project" {
+		t.Fatalf("project dotenv value = %q", input.Environment["PROJECT_ONLY"])
+	}
+
+	opts, err := newComposeProjectOptions(input, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := opts.LoadProject(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if project.Name != "launcher-project" {
+		t.Fatalf("project name = %q", project.Name)
+	}
+	if _, ok := project.Services["debug"]; !ok {
+		t.Fatal("launcher COMPOSE_PROFILES did not enable debug")
+	}
+	base := project.Services["base"]
+	if base.Image != "busybox:1.36" {
+		t.Fatalf("base image = %q", base.Image)
+	}
+	for key, want := range map[string]string{
+		"SHARED_VALUE":       "launcher",
+		"PROJECT_ONLY":       "from-project",
+		"COMPOSE_FILE_VALUE": "../project/compose.yaml",
+	} {
+		value, ok := base.Environment[key]
+		if !ok || value == nil || *value != want {
+			t.Errorf("base environment %s = %v, want %q", key, value, want)
+		}
+	}
+}
+
+func TestComposeResolutionExplicitProfileAndOSStillWin(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("COMPOSE_PROFILES=dotenv\nVALUE=dotenv\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "compose.yaml"), []byte(`
+services:
+  explicit:
+    image: ${VALUE}
+    profiles: [explicit]
+  dotenv:
+    image: alpine:3.20
+    profiles: [dotenv]
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VALUE", "from-os")
+	unsetEnvironmentForTest(t, "COMPOSE_PROFILES")
+
+	inv, err := ParseComposeInvocation([]string{"--profile", "explicit", "up"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, err := resolveComposeInput(inv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts, err := newComposeProjectOptions(input, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := opts.LoadProject(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if project.Services["explicit"].Image != "from-os" {
+		t.Fatalf("OS interpolation lost precedence: %q", project.Services["explicit"].Image)
+	}
+	if _, ok := project.Services["dotenv"]; ok {
+		t.Fatal("dotenv profile augmented explicit --profile")
+	}
+}
+
+func TestResolvedComposeDotEnvRoundTripsWithoutOSPromotion(t *testing.T) {
+	unsetEnvironmentForTest(t, "VAKA_TEST_EMPTY")
+	unsetEnvironmentForTest(t, "VAKA_TEST_COMPLEX")
+	t.Setenv("VAKA_TEST_OS", "from-os")
+
+	raw := resolvedComposeDotEnv(map[string]string{
+		"VAKA_TEST_EMPTY":   "",
+		"VAKA_TEST_COMPLEX": "line one\nline 'two' $VALUE \\ tail",
+		"VAKA_TEST_OS":      "must-not-be-written",
+	})
+	if strings.Contains(raw, "VAKA_TEST_OS") {
+		t.Fatalf("real OS value was serialized: %q", raw)
+	}
+	parsed, err := dotenv.Parse(strings.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed["VAKA_TEST_EMPTY"] != "" || parsed["VAKA_TEST_COMPLEX"] != "line one\nline 'two' $VALUE \\ tail" {
+		t.Fatalf("dotenv round trip = %#v", parsed)
 	}
 }
 
@@ -284,4 +449,19 @@ func writeComposeFile(t *testing.T, path string) {
 	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
 		t.Fatalf("write compose file %s: %v", path, err)
 	}
+}
+
+func unsetEnvironmentForTest(t *testing.T, key string) {
+	t.Helper()
+	value, present := os.LookupEnv(key)
+	if err := os.Unsetenv(key); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if present {
+			_ = os.Setenv(key, value)
+		} else {
+			_ = os.Unsetenv(key)
+		}
+	})
 }

@@ -11,7 +11,7 @@ func TestInjectFDOverride(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ParseComposeInvocation: %v", err)
 		}
-		got := injectFDOverride(inv, nil)
+		got := injectFDOverride(inv, nil, "")
 		want := []string{"compose", "-f", "a.yaml", "-f", "b.yaml", "-f", composeOverridePath, "up", "--build"}
 		assertArgv(t, want, got)
 	})
@@ -21,7 +21,7 @@ func TestInjectFDOverride(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ParseComposeInvocation: %v", err)
 		}
-		got := injectFDOverride(inv, nil)
+		got := injectFDOverride(inv, nil, "")
 		want := []string{"compose", "--file=a.yaml", "-f", composeOverridePath, "up"}
 		assertArgv(t, want, got)
 	})
@@ -31,7 +31,7 @@ func TestInjectFDOverride(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ParseComposeInvocation: %v", err)
 		}
-		got := injectFDOverride(inv, nil)
+		got := injectFDOverride(inv, nil, "")
 		want := []string{"compose", "-f", "a.yaml", "-f", composeOverridePath, "run", "--", "-f", "trick"}
 		assertArgv(t, want, got)
 	})
@@ -42,13 +42,27 @@ func TestInjectFDOverride(t *testing.T) {
 			t.Fatalf("ParseComposeInvocation: %v", err)
 		}
 		defaults := []string{"docker-compose.yaml", "docker-compose.override.yaml"}
-		got := injectFDOverride(inv, defaults)
+		got := injectFDOverride(inv, defaults, "")
 		want := []string{
 			"compose",
 			"-f", "docker-compose.yaml",
 			"-f", "docker-compose.override.yaml",
 			"-f", composeOverridePath,
 			"up", "--build",
+		}
+		assertArgv(t, want, got)
+	})
+
+	t.Run("resolved dotenv remains a Compose global", func(t *testing.T) {
+		inv, err := ParseComposeInvocation([]string{"--profile", "tools", "up", "app"})
+		if err != nil {
+			t.Fatalf("ParseComposeInvocation: %v", err)
+		}
+		got := injectFDOverride(inv, []string{"compose.yaml"}, composeResolvedEnvFilePath)
+		want := []string{
+			"compose", "--env-file", composeResolvedEnvFilePath,
+			"-f", "compose.yaml", "-f", composeOverridePath,
+			"--profile", "tools", "up", "app",
 		}
 		assertArgv(t, want, got)
 	})

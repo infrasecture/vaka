@@ -130,6 +130,7 @@ func classifyComposeVerb(verb string) composeVerbClass {
 // extraEnv, when non-nil, is appended to the inherited environment.
 func execDockerCompose(inv *ComposeInvocation, overrideYAML string, extraEnv []string) error {
 	var dockerArgs []string
+	resolvedEnv := ""
 	if overrideYAML != "" {
 		defaults := []string{}
 		if len(inv.GlobalFiles) == 0 {
@@ -141,8 +142,15 @@ func execDockerCompose(inv *ComposeInvocation, overrideYAML string, extraEnv []s
 				return err
 			}
 			defaults = resolved.Files
+			if resolved.ImplicitFiles {
+				resolvedEnv = resolvedComposeDotEnv(resolved.Environment)
+			}
 		}
-		dockerArgs = injectFDOverride(inv, defaults)
+		resolvedEnvPath := ""
+		if resolvedEnv != "" {
+			resolvedEnvPath = composeResolvedEnvFilePath
+		}
+		dockerArgs = injectFDOverride(inv, defaults, resolvedEnvPath)
 	} else {
 		dockerArgs = inv.dockerComposeArgs()
 	}
@@ -161,14 +169,31 @@ func execDockerCompose(inv *ComposeInvocation, overrideYAML string, extraEnv []s
 	if err != nil {
 		return fmt.Errorf("create compose override pipe: %w", err)
 	}
-	c.ExtraFiles = []*os.File{r} // ExtraFiles[0] becomes child FD 3.
+	extraFiles := []*os.File{r} // ExtraFiles[0] becomes child FD 3.
+	var resolvedEnvFile *os.File
+	if resolvedEnv != "" {
+		resolvedEnvFile, err = createAnonymousComposeEnvironmentFile(resolvedEnv)
+		if err != nil {
+			_ = r.Close()
+			_ = w.Close()
+			return err
+		}
+		extraFiles = append(extraFiles, resolvedEnvFile) // ExtraFiles[1] becomes child FD 4.
+	}
+	c.ExtraFiles = extraFiles
 
 	if err := c.Start(); err != nil {
 		_ = r.Close()
 		_ = w.Close()
+		if resolvedEnvFile != nil {
+			_ = resolvedEnvFile.Close()
+		}
 		return err
 	}
 	_ = r.Close()
+	if resolvedEnvFile != nil {
+		_ = resolvedEnvFile.Close()
+	}
 
 	writeErrCh := make(chan error, 1)
 	go func() {
@@ -186,6 +211,34 @@ func execDockerCompose(inv *ComposeInvocation, overrideYAML string, extraEnv []s
 		return fmt.Errorf("stream compose override: %w", writeErr)
 	}
 	return nil
+}
+
+// createAnonymousComposeEnvironmentFile returns a seekable file because
+// Compose reads --env-file more than once during project resolution. The name
+// is removed before the child starts; only the inherited descriptor remains.
+func createAnonymousComposeEnvironmentFile(contents string) (*os.File, error) {
+	f, err := os.CreateTemp("", "vaka-compose-environment-*")
+	if err != nil {
+		return nil, fmt.Errorf("create anonymous Compose environment: %w", err)
+	}
+	name := f.Name()
+	cleanup := func() {
+		_ = f.Close()
+		_ = os.Remove(name)
+	}
+	if err := os.Remove(name); err != nil {
+		cleanup()
+		return nil, fmt.Errorf("unlink anonymous Compose environment: %w", err)
+	}
+	if _, err := io.WriteString(f, contents); err != nil {
+		cleanup()
+		return nil, fmt.Errorf("write anonymous Compose environment: %w", err)
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		cleanup()
+		return nil, fmt.Errorf("rewind anonymous Compose environment: %w", err)
+	}
+	return f, nil
 }
 
 // runFull handles every full-render Compose command. It loads and validates

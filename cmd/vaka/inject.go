@@ -1,8 +1,10 @@
 package main
 
 const (
-	composeOverrideFD   = 3
-	composeOverridePath = "/dev/fd/3"
+	composeOverrideFD          = 3
+	composeOverridePath        = "/dev/fd/3"
+	composeResolvedEnvFD       = 4
+	composeResolvedEnvFilePath = "/dev/fd/4"
 )
 
 // injectFDOverride takes parsed invocation data and inserts a compose file
@@ -12,8 +14,9 @@ const (
 //
 // defaults is the list of compose files to inject when the user supplied no
 // explicit -f flags (output of resolveComposeInput). Pass nil only when
-// inv.GlobalFiles is non-empty.
-func injectFDOverride(inv *ComposeInvocation, defaults []string) []string {
+// inv.GlobalFiles is non-empty. resolvedEnvFile, when non-empty, is a seekable
+// inherited file containing the exact dotenv state from implicit discovery.
+func injectFDOverride(inv *ComposeInvocation, defaults []string, resolvedEnvFile string) []string {
 	dockerArgs := inv.dockerComposeArgs()
 
 	// We insert after the last explicit compose file token before subcommand.
@@ -25,7 +28,7 @@ func injectFDOverride(inv *ComposeInvocation, defaults []string) []string {
 		out = append(out, dockerArgs[:insertAfter+1]...)
 		out = append(out, "-f", composeOverridePath)
 		out = append(out, dockerArgs[insertAfter+1:]...)
-		return out
+		return injectResolvedComposeEnvironment(out, resolvedEnvFile)
 	}
 
 	// No explicit -f: insert discovered defaults then "-f /dev/fd/3" right after
@@ -37,5 +40,14 @@ func injectFDOverride(inv *ComposeInvocation, defaults []string) []string {
 	}
 	out = append(out, "-f", composeOverridePath)
 	out = append(out, dockerArgs[1:]...)
-	return out
+	return injectResolvedComposeEnvironment(out, resolvedEnvFile)
+}
+
+func injectResolvedComposeEnvironment(args []string, envFile string) []string {
+	if envFile == "" {
+		return args
+	}
+	out := make([]string, 0, len(args)+2)
+	out = append(out, args[0], "--env-file", envFile)
+	return append(out, args[1:]...)
 }
