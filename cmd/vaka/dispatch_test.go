@@ -751,6 +751,45 @@ services:
 	}
 }
 
+func TestAllResourcesResourceOnlyProjectReachesComposeWithoutRuntimePreparation(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	writeFixtureFiles(t, dir, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services: {}
+`, `
+services: {}
+volumes:
+  data: {}
+`)
+
+	for _, verb := range []string{"up", "create"} {
+		t.Run(verb, func(t *testing.T) {
+			ds := &fakeBuilderDockerServices{}
+			calls, err := runRootCapturingExecWithDockerServices(t, []string{"compose", "--all-resources", verb}, ds)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(calls) != 1 {
+				t.Fatalf("Compose calls = %+v", calls)
+			}
+			if len(ds.ensureRefs) != 0 {
+				t.Fatalf("resource-only project resolved runtime images: %v", ds.ensureRefs)
+			}
+		})
+	}
+
+	ds := &fakeBuilderDockerServices{}
+	calls, err := runRootCapturingExecWithDockerServices(t, []string{"compose", "up"}, ds)
+	if err == nil || !strings.Contains(err.Error(), "no service selected") {
+		t.Fatalf("ordinary empty up error = %v", err)
+	}
+	if len(calls) != 0 || len(ds.ensureRefs) != 0 {
+		t.Fatalf("ordinary empty up reached Docker: calls=%+v runtime=%v", calls, ds.ensureRefs)
+	}
+}
+
 func TestComposeGlobalValidationPrecedesDockerAction(t *testing.T) {
 	tests := [][]string{
 		{"compose", "--ansi=rainbow", "up", "--build"},

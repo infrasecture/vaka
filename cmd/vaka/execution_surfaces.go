@@ -483,7 +483,7 @@ func validateReferenceExecutionSurfaces(vakaFile string, inv *ComposeInvocation)
 	}
 	inspection := projectContainerSelection{Services: selected}
 	if inv.Subcommand == "down" {
-		removeOrphans, err := effectiveDownRemoveOrphans(project, inv)
+		removeOrphans, err := effectiveDownRemoveOrphans(inv)
 		if err != nil {
 			return err
 		}
@@ -502,7 +502,8 @@ func validateReferenceExecutionSurfaces(vakaFile string, inv *ComposeInvocation)
 		liveManaged := targetsContainVakaRuntime(targets)
 		if (policyManaged || liveManaged) && (execution.preStop || execution.postStart) {
 			if svc, ok := project.Services[name]; ok {
-				if err := validateLifecycleHooks(name, svc, execution.preStop, execution.postStart); err != nil {
+				preStop := execution.preStop && targetsMayExecutePreStop(targets)
+				if err := validateLifecycleHooks(name, svc, preStop, execution.postStart); err != nil {
 					return err
 				}
 			}
@@ -517,7 +518,7 @@ func validateReferenceExecutionSurfaces(vakaFile string, inv *ComposeInvocation)
 	return nil
 }
 
-func effectiveDownRemoveOrphans(project *composetypes.Project, inv *ComposeInvocation) (bool, error) {
+func effectiveDownRemoveOrphans(inv *ComposeInvocation) (bool, error) {
 	state, err := scanComposeBoolOption(inv.PostSubcommand, "--remove-orphans", "")
 	if err != nil {
 		return false, err
@@ -525,7 +526,22 @@ func effectiveDownRemoveOrphans(project *composetypes.Project, inv *ComposeInvoc
 	if state.present {
 		return state.enabled, nil
 	}
-	return composeEnvironmentBool(project.Environment["COMPOSE_REMOVE_ORPHANS"]), nil
+	// Compose initializes down's flag default from the real process environment
+	// before it loads --env-file or .env. Do not promote project interpolation
+	// state into a lifecycle decision here.
+	return composeEnvironmentBool(os.Getenv("COMPOSE_REMOVE_ORPHANS")), nil
+}
+
+func targetsMayExecutePreStop(targets []execTarget) bool {
+	for _, target := range targets {
+		// Regular service containers retain the conservative historical guard.
+		// One-offs are included only for down --remove-orphans; Compose cannot
+		// successfully exec a hook in an exited, paused, or restarting one-off.
+		if !target.Oneoff || target.CanExec {
+			return true
+		}
+	}
+	return false
 }
 
 func targetsContainVakaRuntime(targets []execTarget) bool {

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -542,10 +544,10 @@ func TestDownRemoveOrphansValidatesCurrentHooksForOneoffs(t *testing.T) {
     network:
       egress:
         defaultAction: reject`,
-			target: execTarget{Oneoff: true},
+			target: execTarget{Oneoff: true, CanExec: true},
 		},
-		{name: "live labelled after policy removal", policyBody: " {}", target: execTarget{Oneoff: true, Managed: true}},
-		{name: "legacy oneoff", policyBody: " {}", target: execTarget{Oneoff: true, LegacyManaged: true}},
+		{name: "live labelled after policy removal", policyBody: " {}", target: execTarget{Oneoff: true, CanExec: true, Managed: true}},
+		{name: "legacy oneoff", policyBody: " {}", target: execTarget{Oneoff: true, CanExec: true, LegacyManaged: true}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -584,6 +586,96 @@ services:
 				t.Fatalf("COMPOSE_REMOVE_ORPHANS did not include one-off hook: %v", err)
 			}
 		})
+	}
+}
+
+func TestDownRemoveOrphansAllowsExitedOneoffHook(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	writeFixtureFiles(t, dir, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+`, `
+services:
+  app:
+    image: alpine:3.20
+    pre_stop:
+      - command: ["id"]
+`)
+	ds := &fakeBuilderDockerServices{projectTargets: map[string][]execTarget{
+		"app": {{Oneoff: true, Managed: true, CanExec: false}},
+	}}
+	setDockerServicesFactoryForTest(t, ds)
+	inv, _ := ParseComposeInvocation([]string{"down", "--remove-orphans", "app"})
+	if err := validateReferenceExecutionSurfaces("vaka.yaml", inv); err != nil {
+		t.Fatalf("exited one-off hook blocked containment: %v", err)
+	}
+
+	ds.projectTargets["app"] = []execTarget{{Oneoff: true, Managed: true, CanExec: true}}
+	if err := validateReferenceExecutionSurfaces("vaka.yaml", inv); err == nil || !strings.Contains(err.Error(), "pre_stop") {
+		t.Fatalf("running one-off hook error = %v", err)
+	}
+}
+
+func TestDownRemoveOrphansDefaultUsesProcessEnvironmentOnly(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	writeFixtureFiles(t, dir, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+`, `
+services:
+  app:
+    image: alpine:3.20
+    pre_stop:
+      - command: ["id"]
+`)
+	unsetEnvironmentForTest(t, "COMPOSE_REMOVE_ORPHANS")
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("COMPOSE_REMOVE_ORPHANS=true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	explicitEnv := filepath.Join(dir, "explicit.env")
+	if err := os.WriteFile(explicitEnv, []byte("COMPOSE_REMOVE_ORPHANS=true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, args := range [][]string{
+		{"down", "app"},
+		{"--env-file", explicitEnv, "down", "app"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			ds := &fakeBuilderDockerServices{projectTargets: map[string][]execTarget{
+				"app": {{Oneoff: true, Managed: true, CanExec: true}},
+			}}
+			setDockerServicesFactoryForTest(t, ds)
+			inv, _ := ParseComposeInvocation(args)
+			if err := validateReferenceExecutionSurfaces("vaka.yaml", inv); err != nil {
+				t.Fatalf("dotenv enabled down --remove-orphans: %v", err)
+			}
+			if len(ds.inspections) != 1 || ds.inspections[0].IncludeOneoffs {
+				t.Fatalf("dotenv caused one-off inspection: %+v", ds.inspections)
+			}
+		})
+	}
+
+	t.Setenv("COMPOSE_REMOVE_ORPHANS", "true")
+	ds := &fakeBuilderDockerServices{projectTargets: map[string][]execTarget{
+		"app": {{Oneoff: true, Managed: true, CanExec: true}},
+	}}
+	setDockerServicesFactoryForTest(t, ds)
+	inv, _ := ParseComposeInvocation([]string{"down", "app"})
+	if err := validateReferenceExecutionSurfaces("vaka.yaml", inv); err == nil || !strings.Contains(err.Error(), "pre_stop") {
+		t.Fatalf("process COMPOSE_REMOVE_ORPHANS hook error = %v", err)
 	}
 }
 

@@ -796,7 +796,8 @@ func selectRenderInvocationServices(project *composetypes.Project, inv *ComposeI
 }
 
 func validateSelectedRenderOptions(selected *composetypes.Project, inv *ComposeInvocation) error {
-	if len(selected.Services) == 0 {
+	resourceOnly := inv.AllResources && (inv.Subcommand == "up" || inv.Subcommand == "create")
+	if len(selected.Services) == 0 && !resourceOnly {
 		return fmt.Errorf("compose %s: no service selected", inv.Subcommand)
 	}
 	if err := validateSelectedContainerNames(selected, inv); err != nil {

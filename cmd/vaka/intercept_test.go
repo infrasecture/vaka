@@ -700,6 +700,36 @@ func TestEffectiveCLIScalePreflightUsesLastValue(t *testing.T) {
 	}
 }
 
+func TestAllResourcesAllowsEmptyCreateGraph(t *testing.T) {
+	project := &composetypes.Project{Services: composetypes.Services{}}
+	for _, args := range [][]string{
+		{"--all-resources", "up"},
+		{"--all-resources", "create"},
+		{"--all-resources=false", "--all-resources", "up"},
+	} {
+		inv, err := ParseComposeInvocation(args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := validateSelectedRenderOptions(project, inv); err != nil {
+			t.Errorf("%v rejected resource-only project: %v", args, err)
+		}
+	}
+	for _, args := range [][]string{
+		{"up"},
+		{"--all-resources", "--all-resources=false", "up"},
+		{"--all-resources", "watch"},
+	} {
+		inv, err := ParseComposeInvocation(args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := validateSelectedRenderOptions(project, inv); err == nil || !strings.Contains(err.Error(), "no service selected") {
+			t.Errorf("%v error = %v, want no service selected", args, err)
+		}
+	}
+}
+
 func TestPullBuildFreezesSelectedUnmanagedImageOnlyService(t *testing.T) {
 	project := &composetypes.Project{Services: composetypes.Services{
 		"app": {Name: "app", Image: "app:latest", DependsOn: map[string]composetypes.ServiceDependency{

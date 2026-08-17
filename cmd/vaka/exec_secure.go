@@ -28,6 +28,7 @@ const (
 type execTarget struct {
 	ContainerID     string
 	Oneoff          bool
+	CanExec         bool
 	Managed         bool
 	LegacyManaged   bool
 	RuntimeVersion  string
@@ -111,6 +112,7 @@ func (d *dockerServices) inspectExecContainer(ctx context.Context, summary conta
 	}
 	target := execTarget{
 		ContainerID:    inspect.ID,
+		CanExec:        containerAcceptsExec(inspect),
 		Managed:        labels[compose.ManagedLabel] == "true",
 		RuntimeVersion: strings.TrimSpace(labels[compose.RuntimeVersionLabel]),
 		RuntimeImage:   strings.TrimSpace(labels[compose.RuntimeImageLabel]),
@@ -126,6 +128,10 @@ func (d *dockerServices) inspectExecContainer(ctx context.Context, summary conta
 	}
 	target.RuntimeMounted = true
 	return target, nil
+}
+
+func containerAcceptsExec(inspect containertypes.InspectResponse) bool {
+	return inspect.State != nil && inspect.State.Running && !inspect.State.Paused && !inspect.State.Restarting
 }
 
 func legacyManagedSignature(inspect containertypes.InspectResponse) bool {
