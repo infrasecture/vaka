@@ -6,7 +6,28 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
+	"vaka.dev/vaka/internal/runtimebundle"
 )
+
+func decodePolicyPayloadFromOverride(t *testing.T, override, service string) string {
+	t.Helper()
+	var document struct {
+		Services map[string]struct {
+			Environment map[string]string `yaml:"environment"`
+		} `yaml:"services"`
+	}
+	if err := yaml.Unmarshal([]byte(override), &document); err != nil {
+		t.Fatal(err)
+	}
+	encoded := document.Services[service].Environment[runtimebundle.PolicyEnvironment]
+	raw, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		t.Fatalf("decode policy for %s: %v", service, err)
+	}
+	return string(raw)
+}
 
 func TestBuildInjectionOverrideResolvesAndMountsRuntimeImage(t *testing.T) {
 	tests := []struct {
@@ -132,15 +153,10 @@ services:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(extraEnv) != 1 {
-		t.Fatalf("extraEnv = %v, want one policy payload", extraEnv)
+	if len(extraEnv) != 0 {
+		t.Fatalf("policy payload leaked into host environment: %v", extraEnv)
 	}
-	encoded := strings.TrimPrefix(extraEnv[0], policyPayloadEnvironmentName("app")+"=")
-	raw, err := base64.StdEncoding.DecodeString(encoded)
-	if err != nil {
-		t.Fatalf("decode policy: %v", err)
-	}
-	policyYAML := string(raw)
+	policyYAML := decodePolicyPayloadFromOverride(t, override, "app")
 	if !strings.Contains(policyYAML, "generatedBy: vaka/"+version) {
 		t.Errorf("generated policy missing CLI diagnostic:\n%s", policyYAML)
 	}
@@ -188,12 +204,11 @@ services:
 			if strings.Contains(override, "cap_add:") {
 				t.Fatalf("Vaka added temporary capabilities to intentionally broad service:\n%s", override)
 			}
-			encoded := strings.TrimPrefix(extraEnv[0], policyPayloadEnvironmentName("app")+"=")
-			raw, err := base64.StdEncoding.DecodeString(encoded)
-			if err != nil {
-				t.Fatal(err)
+			if len(extraEnv) != 0 {
+				t.Fatalf("policy payload leaked into host environment: %v", extraEnv)
 			}
-			if strings.Contains(string(raw), "dropCaps") || strings.Contains(string(raw), "NET_ADMIN") {
+			raw := decodePolicyPayloadFromOverride(t, override, "app")
+			if strings.Contains(raw, "dropCaps") || strings.Contains(raw, "NET_ADMIN") {
 				t.Fatalf("generated policy removed an intentional capability:\n%s", raw)
 			}
 		})
@@ -225,14 +240,48 @@ services:
 	}
 }
 
-func TestPolicyPayloadEnvironmentNamesDoNotCollide(t *testing.T) {
-	left := policyPayloadEnvironmentName("foo-bar")
-	right := policyPayloadEnvironmentName("foo_bar")
-	if left == right {
-		t.Fatalf("policy environment names collide: %q", left)
+func TestOversizedPolicyRejectedBeforeImagePreparation(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	policyYAML := `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+        accept:
+` + strings.Repeat("          - to: [10.0.0.1/32]\n", 5000)
+	writeFixtureFiles(t, dir, policyYAML, `
+services:
+  app:
+    image: oversized-policy:test
+    build: .
+`)
+
+	ds := &fakeBuilderDockerServices{}
+	var composeCalls int
+	setExecDockerComposeForTest(t, func(_ *ComposeInvocation, _ string, _ []string) error {
+		composeCalls++
+		return nil
+	})
+	inv, _ := ParseComposeInvocation([]string{"show-compose", "--build"})
+	_, _, err := buildInjectionOverride(context.Background(), ds, "vaka.yaml", inv, false)
+	if err == nil || !strings.Contains(err.Error(), "maximum supported size") {
+		t.Fatalf("oversized policy error = %v", err)
 	}
-	if left != "VAKA_SERVICE_666F6F2D626172_CONF" || right != "VAKA_SERVICE_666F6F5F626172_CONF" {
-		t.Fatalf("unexpected policy environment names: %q, %q", left, right)
+	if composeCalls != 0 || len(ds.ensureRefs) != 0 {
+		t.Fatalf("oversized policy reached image preparation: composeCalls=%d runtime=%v", composeCalls, ds.ensureRefs)
+	}
+}
+
+func TestPolicyPayloadSizeBoundary(t *testing.T) {
+	if err := validatePolicyPayloadSize("app", strings.Repeat("a", maxEncodedPolicyPayloadBytes)); err != nil {
+		t.Fatalf("boundary payload rejected: %v", err)
+	}
+	if err := validatePolicyPayloadSize("app", strings.Repeat("a", maxEncodedPolicyPayloadBytes+1)); err == nil {
+		t.Fatal("oversized payload accepted")
 	}
 }
 
@@ -577,8 +626,11 @@ services:
 	if !strings.Contains(override, "app:") || strings.Contains(override, "tool:") {
 		t.Fatalf("selected override contains wrong services:\n%s", override)
 	}
-	if len(extraEnv) != 1 || !strings.HasPrefix(extraEnv[0], policyPayloadEnvironmentName("app")+"=") {
-		t.Fatalf("selected policy payloads = %v", extraEnv)
+	if len(extraEnv) != 0 {
+		t.Fatalf("selected policy payload leaked into host environment: %v", extraEnv)
+	}
+	if decodePolicyPayloadFromOverride(t, override, "app") == "" {
+		t.Fatal("selected service has no embedded policy payload")
 	}
 }
 

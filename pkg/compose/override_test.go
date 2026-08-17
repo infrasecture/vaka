@@ -54,7 +54,7 @@ func singleEntry(name string) []compose.ServiceEntry {
 		Entrypoint:     []string{"claude"},
 		Command:        []string{"--dangerously-skip-permissions"},
 		CapDelta:       []string{"NET_ADMIN"},
-		EnvVarName:     "VAKA_CODEX_CONF",
+		PolicyPayload:  "cG9saWN5",
 		PolicyRevision: "sha256:policy",
 	}}
 }
@@ -82,7 +82,7 @@ func TestBuildOverrideInjectsPolicyRuntime(t *testing.T) {
 	if len(svc.CapAdd) != 1 || svc.CapAdd[0] != "NET_ADMIN" {
 		t.Errorf("cap_add = %v, want [NET_ADMIN]", svc.CapAdd)
 	}
-	if svc.Environment["AGENT_VAKA_POLICY"] != "${VAKA_CODEX_CONF}" || svc.Environment["AGENT_VAKA_POLICY_REVISION"] != "sha256:policy" {
+	if svc.Environment["AGENT_VAKA_POLICY"] != "cG9saWN5" || svc.Environment["AGENT_VAKA_POLICY_REVISION"] != "sha256:policy" {
 		t.Errorf("policy environment = %+v", svc.Environment)
 	}
 }

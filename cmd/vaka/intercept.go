@@ -4,7 +4,6 @@ package main
 import (
 	"context"
 	"encoding/base64"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -25,6 +24,17 @@ import (
 // ships the vaka-init binaries at /opt/vaka/sbin/. When present, the service
 // does not depend on the __vaka-init volume helper container.
 const vakaInitLabel = "agent.vaka.init"
+
+const (
+	// Linux limits each exec argument/environment string to 32 pages (128 KiB
+	// on the minimum supported 4 KiB-page systems). Leave room for the variable
+	// name, terminator, and future policy metadata.
+	maxEncodedPolicyPayloadBytes = 120 * 1024
+	// Image Config.User is not available until a missing build-only image has
+	// been prepared. Reserve far more than a practical Docker user expression
+	// so policy-controlled oversize inputs still fail before preparation.
+	policyImageUserReserveBytes = 4 * 1024
+)
 
 // vakaInitBaseImage is the image repository for the container runtime bundle.
 const vakaInitBaseImage = "emsi/vaka-init"
@@ -320,6 +330,18 @@ func buildInjectionOverride(
 			return "", nil, fmt.Errorf("service %s: %w", svcName, err)
 		}
 		capPlans[svcName] = capPlan
+
+		preflightUser := strings.TrimSpace(composeSvc.User)
+		if preflightUser == "" {
+			preflightUser = strings.Repeat("x", policyImageUserReserveBytes)
+		}
+		payload, _, err := buildServicePolicyPayload(p, svcName, preflightUser, composeSvc.GroupAdd, capPlan.Drop)
+		if err != nil {
+			return "", nil, err
+		}
+		if err := validatePolicyPayloadSize(svcName, payload); err != nil {
+			return "", nil, err
+		}
 	}
 	inv.ResolvedProjectName = project.Name
 	if err := validateRenderContainerReuse(ctx, ds, selected, managedServices, inv); err != nil {
@@ -453,7 +475,7 @@ func buildInjectionOverride(
 	var entries []compose.ServiceEntry
 	extraEnv = nil
 
-	for svcName, svc := range managedServices {
+	for svcName := range managedServices {
 		composeSvc, ok := selected.Services[svcName]
 		if !ok {
 			return "", nil, fmt.Errorf("service %q: not found in compose files %v", svcName, composeInput.Files)
@@ -465,37 +487,20 @@ func buildInjectionOverride(
 			return "", nil, err
 		}
 
-		if svc.Runtime == nil {
-			svc.Runtime = &policy.RuntimeConfig{}
-		}
 		restoreUser := strings.TrimSpace(composeSvc.User)
 		if restoreUser == "" {
 			restoreUser = strings.TrimSpace(rt.ImageUser)
 		}
 		capPlan := capPlans[svcName]
-		svc.Runtime.DropCaps = capPlan.Drop
-		fmt.Fprintf(os.Stderr, "vaka: service %s: dropCaps: %v\n", svcName, svc.Runtime.DropCaps)
+		fmt.Fprintf(os.Stderr, "vaka: service %s: dropCaps: %v\n", svcName, capPlan.Drop)
 
-		sliced, err := policy.SliceService(p, svcName)
+		payload, policyRevision, err := buildServicePolicyPayload(p, svcName, restoreUser, composeSvc.GroupAdd, capPlan.Drop)
 		if err != nil {
 			return "", nil, err
 		}
-		sliced.GeneratedBy = "vaka/" + version
-		sliced.RequiredRuntimeVersion = runtimeBundleVersion
-		sliced.Services[svcName].User = restoreUser
-		sliced.Services[svcName].GroupAdd = append([]string(nil), composeSvc.GroupAdd...)
-		policyRevision, err := policy.Revision(sliced)
-		if err != nil {
-			return "", nil, fmt.Errorf("compute policy revision for %s: %w", svcName, err)
+		if err := validatePolicyPayloadSize(svcName, payload); err != nil {
+			return "", nil, err
 		}
-
-		raw, err := yaml.Marshal(sliced)
-		if err != nil {
-			return "", nil, fmt.Errorf("marshal policy for %s: %w", svcName, err)
-		}
-
-		envKey := policyPayloadEnvironmentName(svcName)
-		extraEnv = append(extraEnv, envKey+"="+base64.StdEncoding.EncodeToString(raw))
 
 		entries = append(entries, compose.ServiceEntry{
 			Name:             svcName,
@@ -503,7 +508,7 @@ func buildInjectionOverride(
 			Entrypoint:       rt.Entrypoint,
 			Command:          rt.Command,
 			CapDelta:         capPlan.Add,
-			EnvVarName:       envKey,
+			PolicyPayload:    payload,
 			PolicyRevision:   policyRevision,
 			Healthcheck:      rt.Healthcheck,
 			HealthcheckShell: rt.HealthcheckShell,
@@ -540,11 +545,50 @@ func buildInjectionOverride(
 	return overrideYAML, extraEnv, nil
 }
 
-// policyPayloadEnvironmentName encodes the exact service name instead of
-// normalizing it. Compose permits names such as foo-bar and foo_bar in the
-// same project, so normalization would make their policy payloads collide.
-func policyPayloadEnvironmentName(service string) string {
-	return "VAKA_SERVICE_" + strings.ToUpper(hex.EncodeToString([]byte(service))) + "_CONF"
+func buildServicePolicyPayload(
+	p *policy.ServicePolicy,
+	serviceName string,
+	user string,
+	groupAdd []string,
+	dropCaps []string,
+) (string, string, error) {
+	source, ok := p.Services[serviceName]
+	if !ok || source == nil {
+		return "", "", fmt.Errorf("build policy payload: service %q is missing", serviceName)
+	}
+	service := *source
+	if source.Runtime != nil {
+		runtime := *source.Runtime
+		runtime.DropCaps = append([]string(nil), dropCaps...)
+		service.Runtime = &runtime
+	} else {
+		service.Runtime = &policy.RuntimeConfig{DropCaps: append([]string(nil), dropCaps...)}
+	}
+	service.User = user
+	service.GroupAdd = append([]string(nil), groupAdd...)
+	sliced := &policy.ServicePolicy{
+		APIVersion:             p.APIVersion,
+		Kind:                   p.Kind,
+		GeneratedBy:            "vaka/" + version,
+		RequiredRuntimeVersion: runtimeBundleVersion,
+		Services:               map[string]*policy.ServiceConfig{serviceName: &service},
+	}
+	policyRevision, err := policy.Revision(sliced)
+	if err != nil {
+		return "", "", fmt.Errorf("compute policy revision for %s: %w", serviceName, err)
+	}
+	raw, err := yaml.Marshal(sliced)
+	if err != nil {
+		return "", "", fmt.Errorf("marshal policy for %s: %w", serviceName, err)
+	}
+	return base64.StdEncoding.EncodeToString(raw), policyRevision, nil
+}
+
+func validatePolicyPayloadSize(serviceName, payload string) error {
+	if len(payload) > maxEncodedPolicyPayloadBytes {
+		return fmt.Errorf("service %s: encoded Vaka policy is %d bytes; maximum supported size is %d bytes—reduce the service's policy rules", serviceName, len(payload), maxEncodedPolicyPayloadBytes)
+	}
+	return nil
 }
 
 // referenceOverrideYAML returns the metadata-only override used by Compose

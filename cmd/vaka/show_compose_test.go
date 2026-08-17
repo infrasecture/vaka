@@ -130,6 +130,10 @@ services:
 	if err != nil {
 		t.Fatalf("buildInjectionOverride: %v", err)
 	}
+	wantYAML, err = redactPolicyPayloads(wantYAML)
+	if err != nil {
+		t.Fatalf("redactPolicyPayloads: %v", err)
+	}
 
 	gotStdout, err := captureStdout(t, func() error {
 		inv, parseErr := ParseComposeInvocation([]string{"show-compose"})
@@ -145,18 +149,11 @@ services:
 	if gotStdout != wantYAML {
 		t.Fatalf("stdout mismatch\n--- got ---\n%s\n--- want ---\n%s", gotStdout, wantYAML)
 	}
-	if strings.Contains(gotStdout, "VAKA_APP_CONF=") {
-		t.Fatalf("stdout must not contain VAKA_APP_CONF assignment, got:\n%s", gotStdout)
+	if !strings.Contains(gotStdout, "AGENT_VAKA_POLICY: <redacted>") {
+		t.Fatalf("stdout does not redact policy payload:\n%s", gotStdout)
 	}
-	if len(extraEnv) != 1 {
-		t.Fatalf("unexpected extraEnv size: got %d, want 1", len(extraEnv))
-	}
-	kv := strings.SplitN(extraEnv[0], "=", 2)
-	if len(kv) != 2 {
-		t.Fatalf("malformed extraEnv entry: %q", extraEnv[0])
-	}
-	if strings.Contains(gotStdout, kv[1]) {
-		t.Fatalf("stdout must not contain encoded policy payload")
+	if len(extraEnv) != 0 {
+		t.Fatalf("policy payload leaked into host environment: %v", extraEnv)
 	}
 	if len(gotFactoryArgs) != 1 {
 		t.Fatalf("newDockerServices called %d times, want 1", len(gotFactoryArgs))
@@ -201,6 +198,10 @@ services:
 	wantYAML, _, err := buildInjectionOverride(context.Background(), ds, "vaka.yaml", baseInv, false)
 	if err != nil {
 		t.Fatalf("buildInjectionOverride: %v", err)
+	}
+	wantYAML, err = redactPolicyPayloads(wantYAML)
+	if err != nil {
+		t.Fatalf("redactPolicyPayloads: %v", err)
 	}
 
 	outPath := filepath.Join(dir, "override.yaml")

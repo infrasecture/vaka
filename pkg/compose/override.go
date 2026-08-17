@@ -45,7 +45,7 @@ type ServiceEntry struct {
 	Entrypoint       []string
 	Command          []string
 	CapDelta         []string
-	EnvVarName       string
+	PolicyPayload    string
 	PolicyRevision   string
 	Healthcheck      []string
 	HealthcheckShell []string
@@ -117,6 +117,9 @@ func BuildOverride(entries []ServiceEntry, runtime RuntimeMount, preparedUnmanag
 		if strings.TrimSpace(e.PolicyRevision) == "" {
 			return "", fmt.Errorf("build compose override: service %s has no policy revision", e.Name)
 		}
+		if strings.TrimSpace(e.PolicyPayload) == "" {
+			return "", fmt.Errorf("build compose override: service %s has no policy payload", e.Name)
+		}
 		if _, err := runtimeImageMountSource(e.ImageID, ""); err != nil {
 			return "", fmt.Errorf("build compose override: service %s has invalid inspected image identity: %w", e.Name, err)
 		}
@@ -138,7 +141,7 @@ func BuildOverride(entries []ServiceEntry, runtime RuntimeMount, preparedUnmanag
 				RuntimeVersionLabel: runtime.Version,
 			},
 			Environment: map[string]string{
-				runtimebundle.PolicyEnvironment:         "${" + e.EnvVarName + "}",
+				runtimebundle.PolicyEnvironment:         e.PolicyPayload,
 				runtimebundle.PolicyRevisionEnvironment: e.PolicyRevision,
 			},
 		}

@@ -3,9 +3,12 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
+	"vaka.dev/vaka/internal/runtimebundle"
 )
 
 // newShowComposeCmd prints the generated compose override YAML that vaka would
@@ -87,10 +90,48 @@ func runShowCompose(vakaFile string, inv *ComposeInvocation, vakaInitPresent boo
 	if err != nil {
 		return err
 	}
+	overrideYAML, err = redactPolicyPayloads(overrideYAML)
+	if err != nil {
+		return err
+	}
 
 	if output == "" {
 		_, err := os.Stdout.WriteString(overrideYAML)
 		return err
 	}
 	return os.WriteFile(output, []byte(overrideYAML), 0o644)
+}
+
+func redactPolicyPayloads(overrideYAML string) (string, error) {
+	var document yaml.Node
+	if err := yaml.Unmarshal([]byte(overrideYAML), &document); err != nil {
+		return "", fmt.Errorf("redact generated policy payloads: %w", err)
+	}
+	redactYAMLMappingValue(&document, runtimebundle.PolicyEnvironment)
+	rendered, err := yaml.Marshal(&document)
+	if err != nil {
+		return "", fmt.Errorf("render redacted compose override: %w", err)
+	}
+	return string(rendered), nil
+}
+
+func redactYAMLMappingValue(node *yaml.Node, key string) {
+	if node.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			value := node.Content[i+1]
+			if node.Content[i].Value == key {
+				value.Kind = yaml.ScalarNode
+				value.Tag = "!!str"
+				value.Value = "<redacted>"
+				value.Style = 0
+				value.Content = nil
+				continue
+			}
+			redactYAMLMappingValue(value, key)
+		}
+		return
+	}
+	for _, child := range node.Content {
+		redactYAMLMappingValue(child, key)
+	}
 }

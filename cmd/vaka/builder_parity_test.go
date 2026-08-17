@@ -80,6 +80,10 @@ services:
 			if runFullYAML == "" {
 				t.Fatal("runFull did not produce override YAML")
 			}
+			redactedRunFullYAML, err := redactPolicyPayloads(runFullYAML)
+			if err != nil {
+				t.Fatalf("redact runFull override: %v", err)
+			}
 
 			showComposeYAML, err := captureStdout(t, func() error {
 				showInv, parseErr := ParseComposeInvocation(tc.showArg)
@@ -92,8 +96,8 @@ services:
 				t.Fatalf("runShowCompose: %v", err)
 			}
 
-			if showComposeYAML != runFullYAML {
-				t.Fatalf("override mismatch\n--- runFull ---\n%s\n--- show-compose ---\n%s", runFullYAML, showComposeYAML)
+			if showComposeYAML != redactedRunFullYAML {
+				t.Fatalf("override mismatch\n--- runFull (redacted) ---\n%s\n--- show-compose ---\n%s", redactedRunFullYAML, showComposeYAML)
 			}
 			if len(gotFactoryArgs) != 2 {
 				t.Fatalf("newDockerServices called %d times, want 2", len(gotFactoryArgs))
