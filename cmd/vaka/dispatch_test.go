@@ -388,6 +388,109 @@ services:
 	}
 }
 
+func TestContainerReuseGuardsFollowComposeServiceSelection(t *testing.T) {
+	policyYAML := `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  policy:
+    network:
+      egress:
+        defaultAction: reject
+`
+	composeYAML := `
+services:
+  policy:
+    image: alpine:3.20
+  app:
+    image: alpine:3.20
+    depends_on:
+      policy:
+        condition: service_started
+`
+
+	for _, verb := range []string{"up", "create"} {
+		t.Run(verb+" unmanaged target", func(t *testing.T) {
+			dir := t.TempDir()
+			chdirForTest(t, dir)
+			writeFixtureFiles(t, dir, policyYAML, `
+services:
+  policy:
+    image: alpine:3.20
+  app:
+    image: alpine:3.20
+`)
+
+			calls, err := runRootCapturingExec(t, []string{"compose", verb, "--no-recreate", "app"})
+			if err != nil {
+				t.Fatalf("%s unmanaged selection: %v", verb, err)
+			}
+			if len(calls) != 1 {
+				t.Fatalf("%s calls = %+v, want one", verb, calls)
+			}
+		})
+		t.Run(verb+" managed dependency", func(t *testing.T) {
+			dir := t.TempDir()
+			chdirForTest(t, dir)
+			writeFixtureFiles(t, dir, policyYAML, composeYAML)
+
+			calls, err := runRootCapturingExec(t, []string{"compose", verb, "--no-recreate", "app"})
+			if err == nil || !strings.Contains(err.Error(), "older unsafe runtime") {
+				t.Fatalf("%s managed dependency error = %v", verb, err)
+			}
+			if len(calls) != 0 {
+				t.Fatalf("%s must not execute Compose, got %+v", verb, calls)
+			}
+		})
+	}
+	t.Run("up unmanaged target without dependencies", func(t *testing.T) {
+		dir := t.TempDir()
+		chdirForTest(t, dir)
+		writeFixtureFiles(t, dir, policyYAML, composeYAML)
+
+		calls, err := runRootCapturingExec(t, []string{"compose", "up", "--no-recreate", "--no-deps", "app"})
+		if err != nil {
+			t.Fatalf("up unmanaged selection: %v", err)
+		}
+		if len(calls) != 1 {
+			t.Fatalf("up calls = %+v, want one", calls)
+		}
+	})
+
+	t.Run("watch unmanaged target without managed dependency", func(t *testing.T) {
+		dir := t.TempDir()
+		chdirForTest(t, dir)
+		writeFixtureFiles(t, dir, policyYAML, `
+services:
+  policy:
+    image: alpine:3.20
+  app:
+    image: alpine:3.20
+`)
+
+		calls, err := runRootCapturingExec(t, []string{"compose", "watch", "--no-up", "app"})
+		if err != nil {
+			t.Fatalf("watch unmanaged selection: %v", err)
+		}
+		if len(calls) != 1 {
+			t.Fatalf("watch calls = %+v, want one", calls)
+		}
+	})
+	t.Run("watch managed dependency", func(t *testing.T) {
+		dir := t.TempDir()
+		chdirForTest(t, dir)
+		writeFixtureFiles(t, dir, policyYAML, composeYAML)
+
+		calls, err := runRootCapturingExec(t, []string{"compose", "watch", "--no-up", "app"})
+		if err == nil || !strings.Contains(err.Error(), "older unsafe runtime") {
+			t.Fatalf("watch managed dependency error = %v", err)
+		}
+		if len(calls) != 0 {
+			t.Fatalf("watch must not execute Compose, got %+v", calls)
+		}
+	})
+}
+
 func TestUnknownComposeCommandFailsClosed(t *testing.T) {
 	calls, err := runRootCapturingExec(t, []string{"compose", "future-container-command"})
 	if err == nil || !strings.Contains(err.Error(), "has not been reviewed") {

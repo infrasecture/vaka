@@ -252,8 +252,14 @@ func buildInjectionOverride(
 		if err != nil {
 			return "", nil, err
 		}
-		if noRecreate && len(p.Services) > 0 {
-			return "", nil, fmt.Errorf("compose %s --no-recreate can reuse containers with an older unsafe runtime; remove --no-recreate so managed services are recreated", inv.Subcommand)
+		if noRecreate {
+			selected, err := selectCreateInvocationServices(project, inv)
+			if err != nil {
+				return "", nil, err
+			}
+			if selectionContainsManagedService(selected, p.Services) {
+				return "", nil, fmt.Errorf("compose %s --no-recreate can reuse containers with an older unsafe runtime; remove --no-recreate so managed services are recreated", inv.Subcommand)
+			}
 		}
 	}
 	if inv.Subcommand == "watch" {
@@ -261,8 +267,14 @@ func buildInjectionOverride(
 		if err != nil {
 			return "", nil, err
 		}
-		if noUp && len(p.Services) > 0 {
-			return "", nil, fmt.Errorf("compose watch --no-up can reuse containers with an older unsafe runtime; remove --no-up so managed services are recreated")
+		if noUp {
+			selected, err := selectWatchInvocationServices(project, inv)
+			if err != nil {
+				return "", nil, err
+			}
+			if selectionContainsManagedService(selected, p.Services) {
+				return "", nil, fmt.Errorf("compose watch --no-up can reuse containers with an older unsafe runtime; remove --no-up so managed services are recreated")
+			}
 		}
 	}
 	inv.ResolvedProjectName = project.Name
@@ -700,6 +712,27 @@ func selectComposeServices(project *composetypes.Project, targets, args []string
 	return enabled.WithSelectedServices(targets)
 }
 
+func selectCreateInvocationServices(project *composetypes.Project, inv *ComposeInvocation) (*composetypes.Project, error) {
+	targets, err := scanCreateServiceTargets(inv)
+	if err != nil {
+		return nil, err
+	}
+	selected, err := selectComposeServices(project, targets, inv.PostSubcommand)
+	if err != nil {
+		return nil, fmt.Errorf("select Compose services for %s: %w", inv.Subcommand, err)
+	}
+	return selected, nil
+}
+
+func selectionContainsManagedService(project *composetypes.Project, policySvcs map[string]*policy.ServiceConfig) bool {
+	for name := range project.Services {
+		if _, managed := policySvcs[name]; managed {
+			return true
+		}
+	}
+	return false
+}
+
 var upOptionsWithValue = map[string]bool{
 	"--attach": true, "--exit-code-from": true, "--no-attach": true,
 	"--pull": true, "--scale": true, "--timeout": true, "-t": true,
@@ -796,6 +829,45 @@ func scanCreateServiceTargets(inv *ComposeInvocation) ([]string, error) {
 		return nil, fmt.Errorf("compose %s: unknown option %q before image preparation; upgrade Vaka if this is a new Docker Compose option", inv.Subcommand, tok)
 	}
 	return targets, nil
+}
+
+var watchBooleanOptions = map[string]bool{
+	"--dry-run": true, "--no-up": true, "--prune": true, "--quiet": true,
+}
+
+// selectWatchInvocationServices mirrors the small Watch CLI surface needed by
+// the reuse guard. Unknown options fail before image or container operations so
+// a future Compose option cannot silently broaden Vaka's selected service set.
+func selectWatchInvocationServices(project *composetypes.Project, inv *ComposeInvocation) (*composetypes.Project, error) {
+	var targets []string
+	for i, tok := range inv.PostSubcommand {
+		if tok == "--" {
+			targets = append(targets, inv.PostSubcommand[i+1:]...)
+			break
+		}
+		if !strings.HasPrefix(tok, "-") || tok == "-" {
+			targets = append(targets, tok)
+			continue
+		}
+		name, value, hasValue := strings.Cut(tok, "=")
+		if !watchBooleanOptions[name] {
+			return nil, fmt.Errorf("compose watch: unknown option %q before service selection; upgrade Vaka if this is a new Docker Compose option", tok)
+		}
+		if hasValue {
+			if _, err := composeBoolValue(name, value); err != nil {
+				return nil, err
+			}
+		}
+	}
+	enabled, err := project.WithServicesEnabled(targets...)
+	if err != nil {
+		return nil, fmt.Errorf("select Compose services for watch: %w", err)
+	}
+	selected, err := enabled.WithSelectedServices(targets)
+	if err != nil {
+		return nil, fmt.Errorf("select Compose services for watch: %w", err)
+	}
+	return selected, nil
 }
 
 // planManagedImagePreparation applies explicit Compose pull policies only to
