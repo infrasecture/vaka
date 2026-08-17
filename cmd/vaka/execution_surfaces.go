@@ -302,6 +302,11 @@ func validateServiceExecutionSurfaces(name string, svc composetypes.ServiceConfi
 			switch trigger.Action {
 			case composetypes.WatchActionSync, composetypes.WatchActionSyncRestart, composetypes.WatchActionSyncExec, composetypes.WatchActionRebuild:
 				return fmt.Errorf("service %s: develop.watch action %s is not supported on Vaka-managed services because Compose can execute file-deletion or hook commands outside vaka-init", name, trigger.Action)
+			case composetypes.WatchActionRestart:
+				// Restart preserves the verified container configuration and does
+				// not synchronize files or create an unwrapped exec process.
+			default:
+				return fmt.Errorf("service %s: develop.watch action %q has not been reviewed for Vaka's process security boundary", name, trigger.Action)
 			}
 			if trigger.Target != "" && protectedPathOverlap(trigger.Target) {
 				return fmt.Errorf("service %s: develop.watch target %q overlaps Vaka's protected runtime or policy mounts", name, trigger.Target)
@@ -599,6 +604,11 @@ func referenceValidationServices(project *composetypes.Project, inv *ComposeInvo
 		}
 	} else if inv.Subcommand == "start" {
 		selected, err = enabled.WithSelectedServices(targets)
+	} else if inv.Subcommand == "down" {
+		// Compose down SERVICE removes that service and every transitive
+		// dependent, stopping dependents before their dependencies. Those
+		// dependents can run pre_stop hooks and must be validated too.
+		selected, err = enabled.WithSelectedServices(targets, composetypes.IncludeDependents)
 	} else {
 		selected, err = enabled.WithSelectedServices(targets, composetypes.IgnoreDependencies)
 	}

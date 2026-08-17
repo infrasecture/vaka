@@ -243,7 +243,9 @@ policy-managed-but-unlabeled containers to be recreated before Vaka-controlled
 resume or exec operations.
 For `restart`, the resume guard follows Compose's selected transitive
 `restart: true` dependents unless `--no-deps` is enabled, and validates every
-selected replica. Fully unmanaged services retain native Compose behavior.
+selected replica. Targeted `down` validates its transitive dependents before
+allowing their hooks to execute. Fully unmanaged services retain native
+Compose behavior.
 `stop`, `down`, and `rm --stop` remain available for containment; executable
 `pre_stop` hooks still receive the same validation. Watch actions without
 those process or filesystem mutation surfaces remain available.

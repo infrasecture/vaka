@@ -146,6 +146,7 @@ func TestValidateManagedExecutionSurfaces(t *testing.T) {
 		{name: "sync restart", svc: composetypes.ServiceConfig{Develop: &composetypes.DevelopConfig{Watch: []composetypes.Trigger{{Action: composetypes.WatchActionSyncRestart}}}}, want: "action sync+restart"},
 		{name: "sync exec", svc: composetypes.ServiceConfig{Develop: &composetypes.DevelopConfig{Watch: []composetypes.Trigger{{Action: composetypes.WatchActionSyncExec}}}}, want: "action sync+exec"},
 		{name: "rebuild", svc: composetypes.ServiceConfig{Develop: &composetypes.DevelopConfig{Watch: []composetypes.Trigger{{Action: composetypes.WatchActionRebuild}}}}, want: "action rebuild"},
+		{name: "future watch action", svc: composetypes.ServiceConfig{Develop: &composetypes.DevelopConfig{Watch: []composetypes.Trigger{{Action: composetypes.WatchAction("future")}}}}, want: "has not been reviewed"},
 		{name: "nested volume", svc: composetypes.ServiceConfig{Volumes: []composetypes.ServiceVolumeConfig{{Target: "/opt/vaka/sbin"}}}, want: "volume target"},
 		{name: "ancestor volume", svc: composetypes.ServiceConfig{Volumes: []composetypes.ServiceVolumeConfig{{Target: "/opt"}}}, want: "volume target"},
 		{name: "config", svc: composetypes.ServiceConfig{Configs: []composetypes.ServiceConfigObjConfig{{Source: "cfg", Target: "/opt/vaka/config"}}}, want: "config target"},
@@ -167,10 +168,38 @@ func TestValidateManagedExecutionSurfaces(t *testing.T) {
 
 func TestValidateManagedExecutionSurfacesAllowsUnrelatedSecrets(t *testing.T) {
 	project := &composetypes.Project{Services: map[string]composetypes.ServiceConfig{
-		"app": {Secrets: []composetypes.ServiceSecretConfig{{Source: "api-key"}}},
+		"app": {
+			Secrets: []composetypes.ServiceSecretConfig{{Source: "api-key"}},
+			Develop: &composetypes.DevelopConfig{Watch: []composetypes.Trigger{{Action: composetypes.WatchActionRestart}}},
+		},
 	}}
 	if err := validateManagedExecutionSurfaces(managedTestPolicy(), project); err != nil {
 		t.Fatalf("unrelated secret rejected: %v", err)
+	}
+}
+
+func TestPreStartFailsClosedUntilExecutionSurfaceIsReviewed(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	writeFixtureFiles(t, dir, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+`, `
+services:
+  app:
+    image: alpine:3.20
+    pre_start:
+      - command: ["true"]
+`)
+	inv, _ := ParseComposeInvocation([]string{"up", "app"})
+	_, _, err := buildInjectionOverride(t.Context(), &fakeBuilderDockerServices{}, "vaka.yaml", inv, false)
+	if err == nil || !strings.Contains(err.Error(), "pre_start") {
+		t.Fatalf("pre_start must fail before Compose execution until Vaka reviews this surface; error = %v", err)
 	}
 }
 
@@ -290,7 +319,8 @@ func TestReferenceValidationServiceTargets(t *testing.T) {
 		{args: []string{"restart", "-t0", "app"}, want: map[string]bool{"app": true, "worker": true}},
 		{args: []string{"restart", "--no-deps", "app"}, want: map[string]bool{"app": true}},
 		{args: []string{"start", "app"}, want: map[string]bool{"app": true, "dep": true}},
-		{args: []string{"down", "--remove-orphans", "dep"}, want: map[string]bool{"dep": true}},
+		{args: []string{"down", "--remove-orphans", "dep"}, want: map[string]bool{"dep": true, "app": true, "worker": true, "inert": true}},
+		{args: []string{"down", "app"}, want: map[string]bool{"app": true, "worker": true}},
 		{args: []string{"rm", "-fsv", "app"}, want: map[string]bool{"app": true}},
 		{args: []string{"stop", "--timeout=5", "app"}, want: map[string]bool{"app": true}},
 		{args: []string{"stop", "-t0", "app"}, want: map[string]bool{"app": true}},
@@ -377,6 +407,44 @@ services:
 	inv, _ = ParseComposeInvocation([]string{"restart", "--no-deps", "dep"})
 	if err := validateReferenceExecutionSurfaces("vaka.yaml", inv); err != nil {
 		t.Fatalf("restart --no-deps validated an excluded dependent: %v", err)
+	}
+}
+
+func TestLifecycleDownValidatesTransitiveDependents(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	writeFixtureFiles(t, dir, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services: {}
+`, `
+services:
+  dep:
+    image: alpine:3.20
+  app:
+    image: alpine:3.20
+    depends_on:
+      dep:
+        condition: service_started
+        restart: false
+  worker:
+    image: alpine:3.20
+    depends_on:
+      app:
+        condition: service_started
+    pre_stop:
+      - command: ["true"]
+`)
+	setDockerServicesFactoryForTest(t, &fakeBuilderDockerServices{projectTargets: map[string][]execTarget{
+		"dep":    {currentManagedLifecycleTarget()},
+		"app":    {currentManagedLifecycleTarget()},
+		"worker": {currentManagedLifecycleTarget()},
+	}})
+
+	inv, _ := ParseComposeInvocation([]string{"down", "dep"})
+	err := validateReferenceExecutionSurfaces("vaka.yaml", inv)
+	if err == nil || !strings.Contains(err.Error(), "service worker") || !strings.Contains(err.Error(), "pre_stop") {
+		t.Fatalf("down dependent validation error = %v", err)
 	}
 }
 
