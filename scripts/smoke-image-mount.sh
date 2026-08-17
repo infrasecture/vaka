@@ -78,6 +78,7 @@ project="vaka-image-mount-smoke-$$"
 compose_file="${tmp_dir}/compose.yaml"
 policy_file="${tmp_dir}/vaka.yaml"
 container_id=""
+retained_container_id=""
 
 cleanup() {
     local exit_code=$?
@@ -105,6 +106,11 @@ services:
       interval: 1s
       timeout: 5s
       retries: 10
+  retained:
+    image: "${VAKA_SMOKE_SERVICE_IMAGE}"
+    entrypoint: ["/bin/sleep"]
+    command: ["3600"]
+    user: "0:1000"
 YAML
 
 cat > "${policy_file}" <<'YAML'
@@ -113,6 +119,10 @@ kind: ServicePolicy
 
 services:
   app:
+    network:
+      egress:
+        defaultAction: reject
+  retained:
     network:
       egress:
         defaultAction: reject
@@ -129,6 +139,8 @@ printf '==> Starting smoke service through Vaka\n'
 
 container_id="$(docker compose --project-name "${project}" --file "${compose_file}" ps --quiet app)"
 [[ -n "${container_id}" ]] || die "Compose did not return a container ID for the smoke service"
+retained_container_id="$(docker compose --project-name "${project}" --file "${compose_file}" ps --quiet retained)"
+[[ -n "${retained_container_id}" ]] || die "Compose did not return a container ID for the retained-capability service"
 
 container_state="$(docker container inspect "${container_id}" --format '{{.State.Status}}')"
 if [[ "${container_state}" != "running" ]]; then
@@ -191,6 +203,20 @@ assert_no_net_admin() {
     assert_cap_absent "$1" "$2" NET_ADMIN 12
 }
 
+assert_cap_present() {
+    local source=$1
+    local caps=$2
+    local cap_name=$3
+    local cap_bit=$4
+    local name hex value
+    for name in CapPrm CapEff CapBnd; do
+        hex="$(awk -v key="${name}:" '$1 == key {print $2}' <<<"${caps}")"
+        [[ -n "${hex}" ]] || die "${source} did not report ${name}: ${caps}"
+        value=$((16#${hex}))
+        (( (value & (1 << cap_bit)) != 0 )) || die "${source} lost intentional ${cap_name} from ${name}: ${hex}"
+    done
+}
+
 printf '==> Verifying startup identity transition\n'
 startup_state="$(docker container exec "${container_id}" sed -n '/^Uid:/p; /^Gid:/p; /^Cap/p' /proc/1/status)"
 startup_uid="$(awk '$1 == "Uid:" {print $2}' <<<"${startup_state}")"
@@ -201,6 +227,16 @@ startup_caps="$(sed -n '/^Cap/p' <<<"${startup_state}")"
 assert_no_net_admin "startup process" "${startup_caps}"
 assert_cap_absent "startup process" "${startup_caps}" SETGID 6
 assert_cap_absent "startup process" "${startup_caps}" SETUID 7
+
+printf '==> Verifying intentional transition capability preservation\n'
+retained_state="$(docker container exec "${retained_container_id}" sed -n '/^Uid:/p; /^Gid:/p; /^Cap/p' /proc/1/status)"
+retained_uid="$(awk '$1 == "Uid:" {print $2}' <<<"${retained_state}")"
+retained_gid="$(awk '$1 == "Gid:" {print $2}' <<<"${retained_state}")"
+[[ "${retained_uid}:${retained_gid}" == 0:1000 ]] || \
+    die "retained-capability process ran as ${retained_uid:-unknown}:${retained_gid:-unknown}; expected 0:1000"
+retained_caps="$(sed -n '/^Cap/p' <<<"${retained_state}")"
+assert_no_net_admin "retained-capability process" "${retained_caps}"
+assert_cap_present "retained-capability process" "${retained_caps}" SETGID 6
 
 printf '==> Verifying Vaka exec trampoline capabilities\n'
 exec_output="$("${VAKA_BIN}" \
