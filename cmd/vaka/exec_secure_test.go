@@ -147,6 +147,88 @@ func TestInspectExecTargetExcludesOneoffs(t *testing.T) {
 	}
 }
 
+func TestInspectExecTargetReportsLiveReverseNamespacePeers(t *testing.T) {
+	managedID := strings.Repeat("a", 64)
+	peerID := strings.Repeat("b", 64)
+	managed := execContainer(managedID, "1", false)
+	peer := execContainer(peerID, "1", false)
+	peer.Labels[composeServiceLabel] = "peer"
+	peer.Labels[compose.ManagedLabel] = "false"
+	peer.Names = []string{"/demo-peer-1"}
+	serviceImageID := "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	managed.Labels[compose.ServiceImageLabel] = serviceImageID
+
+	inspectFn := func(id string) (containertypes.InspectResponse, error) {
+		if id == peerID {
+			return containertypes.InspectResponse{
+				ContainerJSONBase: &containertypes.ContainerJSONBase{
+					ID: id,
+					HostConfig: &containertypes.HostConfig{
+						NetworkMode: containertypes.NetworkMode("container:" + managedID),
+						PidMode:     containertypes.PidMode("container:" + managedID[:16]),
+					},
+				},
+				Config: &containertypes.Config{Labels: peer.Labels},
+			}, nil
+		}
+		inspect := liveWarningInspect(t, &containertypes.HostConfig{Mounts: []mount.Mount{{
+			Type: mount.TypeImage, Source: testRuntimeImageID, Target: protectedRuntimePath, ReadOnly: true,
+			ImageOptions: &mount.ImageOptions{Subpath: "opt/vaka"},
+		}}}, nil, "reject")
+		inspect.ID = id
+		inspect.Image = serviceImageID
+		for key, value := range managed.Labels {
+			inspect.Config.Labels[key] = value
+		}
+		inspect.Mounts = []containertypes.MountPoint{{
+			Type: mount.TypeImage, Destination: protectedRuntimePath, RW: false,
+		}}
+		return inspect, nil
+	}
+
+	ds := &dockerServices{
+		c: &fakeDockerClient{inspectResults: map[string]dockerimage.InspectResponse{
+			testRuntimeImageID: {ID: testRuntimeImageID},
+		}},
+		legacy: &fakeLegacyRuntimeClient{
+			listFn: func(containertypes.ListOptions) ([]containertypes.Summary, error) {
+				return []containertypes.Summary{managed, peer}, nil
+			},
+			inspectFn: inspectFn,
+		},
+		targetDesc: "test-context",
+	}
+
+	target, err := ds.InspectExecTarget(context.Background(), "demo", "app", 0)
+	if err != nil {
+		t.Fatalf("InspectExecTarget: %v", err)
+	}
+	reasons := strings.Join(target.LiveWarnings.reasons, "\n")
+	for _, want := range []string{
+		"shares its network namespace with unmanaged live container bbbbbbbbbbbb for service peer",
+		"shares its PID namespace with unmanaged live container bbbbbbbbbbbb for service peer",
+	} {
+		if !strings.Contains(reasons, want) {
+			t.Errorf("live exec warnings %q omit %q", reasons, want)
+		}
+	}
+
+	projectTargets, err := ds.InspectProjectContainers(context.Background(), "demo", projectContainerSelection{
+		Services: map[string]bool{"app": true},
+	})
+	if err != nil {
+		t.Fatalf("InspectProjectContainers: %v", err)
+	}
+	if len(projectTargets["app"]) != 1 {
+		t.Fatalf("project targets = %+v", projectTargets)
+	}
+	projectReasons := strings.Join(projectTargets["app"][0].LiveWarnings.reasons, "\n")
+	if !strings.Contains(projectReasons, "shares its network namespace with unmanaged live container") ||
+		!strings.Contains(projectReasons, "shares its PID namespace with unmanaged live container") {
+		t.Fatalf("live lifecycle warnings = %q", projectReasons)
+	}
+}
+
 func execContainer(id, number string, oneoff bool) containertypes.Summary {
 	return containertypes.Summary{
 		ID: id,

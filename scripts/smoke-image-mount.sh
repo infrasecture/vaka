@@ -311,6 +311,10 @@ services:
     image: "${VAKA_SMOKE_SERVICE_IMAGE}"
     command: ["sleep", "3600"]
     privileged: true
+  peer:
+    image: "${VAKA_SMOKE_SERVICE_IMAGE}"
+    command: ["sleep", "3600"]
+    network_mode: service:app
 YAML
 
 printf '==> Verifying existing-container warnings use live Docker state\n'
@@ -328,6 +332,9 @@ services:
   app:
     image: "${VAKA_SMOKE_SERVICE_IMAGE}"
     command: ["sleep", "3600"]
+  peer:
+    image: "${VAKA_SMOKE_SERVICE_IMAGE}"
+    command: ["sleep", "3600"]
 YAML
 
 set +e
@@ -343,6 +350,8 @@ set -e
     die "live-state warning exec failed with status ${warning_exec_status}: ${warning_exec_output}"
 [[ "${warning_exec_output}" == *"Vaka warning: live container"* && "${warning_exec_output}" == *"is privileged"* ]] || \
     die "exec did not report the live privileged state after Compose drift: ${warning_exec_output}"
+[[ "${warning_exec_output}" == *"shares its network namespace with unmanaged live container"* && "${warning_exec_output}" == *"for service peer"* ]] || \
+    die "exec did not report the live unmanaged namespace peer after Compose drift: ${warning_exec_output}"
 
 "${VAKA_BIN}" \
     "--vaka-file=${warning_policy_file}" \
@@ -363,6 +372,8 @@ set -e
     die "live-state warning start failed with status ${warning_start_status}: ${warning_start_output}"
 [[ "${warning_start_output}" == *"Vaka warning: live container"* && "${warning_start_output}" == *"is privileged"* ]] || \
     die "start did not report the live privileged state after Compose drift: ${warning_start_output}"
+[[ "${warning_start_output}" == *"shares its network namespace with unmanaged live container"* && "${warning_start_output}" == *"for service peer"* ]] || \
+    die "start did not report the live unmanaged namespace peer after Compose drift: ${warning_start_output}"
 
 cat > "${compose_file}" <<'YAML'
 services:

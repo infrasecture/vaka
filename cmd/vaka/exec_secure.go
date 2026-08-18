@@ -13,6 +13,7 @@ import (
 	containertypes "github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/mount"
+	"github.com/docker/docker/errdefs"
 	"github.com/moby/term"
 	"vaka.dev/vaka/internal/runtimebundle"
 	"vaka.dev/vaka/pkg/compose"
@@ -55,11 +56,7 @@ func (d *dockerServices) InspectExecTarget(ctx context.Context, project, service
 	}
 	filterArgs := []filters.KeyValuePair{
 		filters.Arg("label", composeProjectLabel+"="+project),
-		filters.Arg("label", composeServiceLabel+"="+service),
 		filters.Arg("label", composeConfigHashLabel),
-	}
-	if index > 0 {
-		filterArgs = append(filterArgs, filters.Arg("label", composeContainerNumberLabel+"="+strconv.Itoa(index)))
 	}
 	containers, err := d.legacy.ContainerList(ctx, containertypes.ListOptions{Filters: filters.NewArgs(filterArgs...)})
 	if err != nil {
@@ -76,38 +73,78 @@ func (d *dockerServices) InspectExecTarget(ctx context.Context, project, service
 		}
 		return false
 	})
-	for _, ctr := range containers {
-		if isComposeOneoff(ctr) {
+	var selected *containertypes.Summary
+	for i := range containers {
+		ctr := &containers[i]
+		if isComposeOneoff(*ctr) {
 			continue
 		}
 		if ctr.Labels[composeProjectLabel] != project || ctr.Labels[composeServiceLabel] != service {
 			continue
 		}
-		if index > 0 && containerNumber(ctr) != index {
+		if index > 0 && containerNumber(*ctr) != index {
 			continue
 		}
-		return d.inspectExecContainer(ctx, ctr)
+		selected = ctr
+		break
 	}
-	if index > 0 {
-		return execTarget{}, fmt.Errorf("service %s has no running container at index %d in Compose project %s", service, index, project)
+	if selected == nil {
+		if index > 0 {
+			return execTarget{}, fmt.Errorf("service %s has no running container at index %d in Compose project %s", service, index, project)
+		}
+		return execTarget{}, fmt.Errorf("service %s has no running container in Compose project %s", service, project)
 	}
-	return execTarget{}, fmt.Errorf("service %s has no running container in Compose project %s", service, project)
-}
-
-func (d *dockerServices) inspectExecContainer(ctx context.Context, summary containertypes.Summary) (execTarget, error) {
 	inspector, ok := d.legacy.(containerInspectClient)
 	if !ok {
-		return execTarget{}, fmt.Errorf("inspect container %s: Docker client does not provide full container metadata", summary.ID)
+		return execTarget{}, fmt.Errorf("inspect container %s: Docker client does not provide full container metadata", selected.ID)
 	}
+	selectedInspect, err := inspectProjectContainer(ctx, inspector, *selected)
+	if err != nil {
+		return execTarget{}, fmt.Errorf("inspect selected container %s on %s: %w", selected.ID, d.targetDesc, err)
+	}
+	target, err := d.execTargetFromInspect(ctx, *selected, selectedInspect)
+	if err != nil {
+		return execTarget{}, err
+	}
+
+	records := []liveNamespaceContainer{liveNamespaceContainerFromInspect(*selected, selectedInspect)}
+	incomplete := false
+	for _, ctr := range containers {
+		if ctr.ID == selected.ID {
+			continue
+		}
+		inspect, err := inspectProjectContainer(ctx, inspector, ctr)
+		if errdefs.IsNotFound(err) {
+			continue
+		}
+		if err != nil {
+			incomplete = true
+			continue
+		}
+		records = append(records, liveNamespaceContainerFromInspect(ctr, inspect))
+	}
+	reverse := reverseNamespaceWarningReasons(records, map[string]bool{selected.ID: true})
+	appendLiveWarningReasons(&target.LiveWarnings, reverse[selected.ID]...)
+	if incomplete && target.Managed {
+		appendLiveWarningReasons(&target.LiveWarnings, "has incomplete reverse-namespace visibility because Vaka could not inspect every live project container")
+	}
+	return target, nil
+}
+
+func inspectProjectContainer(ctx context.Context, inspector containerInspectClient, summary containertypes.Summary) (containertypes.InspectResponse, error) {
 	inspect, err := inspector.ContainerInspect(ctx, summary.ID)
 	if err != nil {
-		return execTarget{}, fmt.Errorf("inspect selected container %s on %s: %w", summary.ID, d.targetDesc, err)
+		return containertypes.InspectResponse{}, err
 	}
 	if inspect.ID != summary.ID {
-		return execTarget{}, fmt.Errorf("inspect selected container %s returned different identity %s", summary.ID, inspect.ID)
+		return containertypes.InspectResponse{}, fmt.Errorf("inspect container %s returned different identity %s", summary.ID, inspect.ID)
 	}
+	return inspect, nil
+}
+
+func (d *dockerServices) execTargetFromInspect(ctx context.Context, summary containertypes.Summary, inspect containertypes.InspectResponse) (execTarget, error) {
 	labels := summary.Labels
-	if inspect.Config != nil {
+	if inspect.Config != nil && inspect.Config.Labels != nil {
 		labels = inspect.Config.Labels
 	}
 	target := execTarget{
@@ -255,7 +292,11 @@ func (d *dockerServices) InspectProjectContainers(ctx context.Context, project s
 	if err != nil {
 		return nil, fmt.Errorf("find containers for Compose project %s on %s: %w", project, d.targetDesc, err)
 	}
-	targets := make(map[string][]execTarget)
+	inspector, ok := d.legacy.(containerInspectClient)
+	if !ok {
+		return nil, fmt.Errorf("inspect Compose project: Docker client does not provide full container metadata")
+	}
+	selected := make(map[string]bool)
 	for _, ctr := range containers {
 		oneoff := isComposeOneoff(ctr)
 		if oneoff && !selection.IncludeOneoffs {
@@ -268,12 +309,52 @@ func (d *dockerServices) InspectProjectContainers(ctx context.Context, project s
 		if selection.Services != nil && !selection.Services[service] {
 			continue
 		}
-		target, err := d.inspectExecContainer(ctx, ctr)
+		selected[ctr.ID] = true
+	}
+	if len(selected) == 0 {
+		return map[string][]execTarget{}, nil
+	}
+
+	type selectedTarget struct {
+		service string
+		target  execTarget
+	}
+	var selectedTargets []selectedTarget
+	var records []liveNamespaceContainer
+	incomplete := false
+	for _, ctr := range containers {
+		inspect, err := inspectProjectContainer(ctx, inspector, ctr)
+		if errdefs.IsNotFound(err) && !selected[ctr.ID] {
+			continue
+		}
+		if err != nil {
+			if selected[ctr.ID] {
+				return nil, fmt.Errorf("inspect selected container %s on %s: %w", ctr.ID, d.targetDesc, err)
+			}
+			incomplete = true
+			continue
+		}
+		records = append(records, liveNamespaceContainerFromInspect(ctr, inspect))
+		if !selected[ctr.ID] {
+			continue
+		}
+		target, err := d.execTargetFromInspect(ctx, ctr, inspect)
 		if err != nil {
 			return nil, err
 		}
-		target.Oneoff = oneoff
-		targets[service] = append(targets[service], target)
+		service := ctr.Labels[composeServiceLabel]
+		target.Oneoff = isComposeOneoff(ctr)
+		selectedTargets = append(selectedTargets, selectedTarget{service: service, target: target})
+	}
+
+	reverse := reverseNamespaceWarningReasons(records, selected)
+	targets := make(map[string][]execTarget)
+	for _, entry := range selectedTargets {
+		appendLiveWarningReasons(&entry.target.LiveWarnings, reverse[entry.target.ContainerID]...)
+		if incomplete && entry.target.Managed {
+			appendLiveWarningReasons(&entry.target.LiveWarnings, "has incomplete reverse-namespace visibility because Vaka could not inspect every live project container")
+		}
+		targets[entry.service] = append(targets[entry.service], entry.target)
 	}
 	return targets, nil
 }

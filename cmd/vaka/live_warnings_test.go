@@ -122,3 +122,40 @@ func TestContainerEnvironmentValueMatchesVakaInitFirstEntry(t *testing.T) {
 		t.Fatalf("value = %q, %t", value, ok)
 	}
 }
+
+func TestReverseNamespaceWarningReasonsResolveLiveIDsAndNames(t *testing.T) {
+	managedID := strings.Repeat("a", 64)
+	containers := []liveNamespaceContainer{
+		{id: managedID, service: "app", names: []string{"demo-app-1"}, managed: true},
+		{id: strings.Repeat("b", 64), service: "network-peer", networkMode: "container:" + managedID[:16]},
+		{id: strings.Repeat("c", 64), service: "pid-peer", pidMode: "container:demo-app-1"},
+		{id: strings.Repeat("d", 64), service: "managed-peer", managed: true, networkMode: "container:" + managedID},
+		{id: strings.Repeat("e", 64), service: "unrelated", networkMode: "container:outside-project"},
+	}
+
+	reasons := strings.Join(reverseNamespaceWarningReasons(containers, map[string]bool{managedID: true})[managedID], "\n")
+	for _, want := range []string{
+		"shares its network namespace with unmanaged live container bbbbbbbbbbbb for service network-peer",
+		"shares its PID namespace with unmanaged live container cccccccccccc for service pid-peer",
+	} {
+		if !strings.Contains(reasons, want) {
+			t.Errorf("reverse namespace reasons %q omit %q", reasons, want)
+		}
+	}
+	if strings.Contains(reasons, "managed-peer") || strings.Contains(reasons, "unrelated") {
+		t.Fatalf("reverse namespace reasons include an inapplicable peer: %q", reasons)
+	}
+}
+
+func TestResolveLiveContainerReferenceRejectsAmbiguousPrefix(t *testing.T) {
+	containers := []liveNamespaceContainer{
+		{id: "abcdef111111", managed: true},
+		{id: "abcdef222222", managed: true},
+	}
+	if _, ok := resolveLiveContainerReference("abcdef", containers); ok {
+		t.Fatal("ambiguous live container ID prefix resolved")
+	}
+	if got, ok := resolveLiveContainerReference("abcdef111111", containers); !ok || got.id != "abcdef111111" {
+		t.Fatalf("exact live container ID = %+v, %t", got, ok)
+	}
+}

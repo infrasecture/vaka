@@ -53,9 +53,12 @@ Container-creation warnings use the fully merged Compose model. For
 `vaka exec` and operations that resume an existing container (`start`, `restart`,
 and `unpause`), Vaka instead derives these warnings from the selected
 container's live `HostConfig`, realized mounts, applied AppArmor profile, and
-immutable injected policy. Editing the Compose file without recreating the
-container therefore cannot hide a retained live privilege or produce a warning
-for a setting that is not present on the container being operated on.
+immutable injected policy. Vaka also inspects the other live project
+containers and resolves their `container:<ID-or-name>` network and PID joins
+against the selected managed container identities. Editing the Compose file
+without recreating containers therefore cannot hide a retained live privilege
+or an unmanaged namespace peer, or produce a warning for a setting that is not
+present on the containers being operated on.
 
 The verified runtime image subpath is mounted read-only directly at `/vaka`.
 Making the mountpoint a direct child of `/` prevents a root workload from
