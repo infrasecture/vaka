@@ -105,6 +105,12 @@ func (f *pullFake) ContainerCreate(context.Context, *containertypes.Config, *con
 	return containertypes.CreateResponse{ID: "rootfs-probe"}, nil
 }
 
+func (f *pullFake) ContainerInspect(context.Context, string) (containertypes.InspectResponse, error) {
+	return containertypes.InspectResponse{ContainerJSONBase: &containertypes.ContainerJSONBase{
+		ID: "rootfs-probe", HostConfig: &containertypes.HostConfig{},
+	}}, nil
+}
+
 func (f *pullFake) ContainerStatPath(context.Context, string, string) (containertypes.PathStat, error) {
 	return containertypes.PathStat{}, errdefs.NotFound(errors.New("path not found"))
 }

@@ -29,26 +29,29 @@ import (
 
 // fakeDockerClient implements dockerClient for unit tests without a live daemon.
 type fakeDockerClient struct {
-	serverVersion  dockertypes.Version
-	clientVersion  string
-	serverErr      error
-	notFound       bool                        // ImageInspect returns NotFound when true
-	inspectResult  dockerimage.InspectResponse // returned when notFound == false
-	inspectResults map[string]dockerimage.InspectResponse
-	inspectErrs    map[string]error
-	inspectRefs    []string
-	inspectCalled  int   // number of ImageInspect invocations
-	pullErr        error // error to return from ImagePull; nil = success
-	pullCalled     bool
-	pullRefs       []string
-	createErr      error
-	createCalled   int
-	createConfig   *containertypes.Config
-	statResults    map[string]containertypes.PathStat
-	statErrs       map[string]error
-	statPaths      []string
-	removeErr      error
-	removed        []string
+	serverVersion          dockertypes.Version
+	clientVersion          string
+	serverErr              error
+	notFound               bool                        // ImageInspect returns NotFound when true
+	inspectResult          dockerimage.InspectResponse // returned when notFound == false
+	inspectResults         map[string]dockerimage.InspectResponse
+	inspectErrs            map[string]error
+	inspectRefs            []string
+	inspectCalled          int   // number of ImageInspect invocations
+	pullErr                error // error to return from ImagePull; nil = success
+	pullCalled             bool
+	pullRefs               []string
+	createErr              error
+	createCalled           int
+	createConfig           *containertypes.Config
+	containerInspectResult containertypes.InspectResponse
+	containerInspectErr    error
+	containerInspected     []string
+	statResults            map[string]containertypes.PathStat
+	statErrs               map[string]error
+	statPaths              []string
+	removeErr              error
+	removed                []string
 }
 
 func (f *fakeDockerClient) ClientVersion() string {
@@ -100,6 +103,19 @@ func (f *fakeDockerClient) ContainerCreate(_ context.Context, config *containert
 		return containertypes.CreateResponse{}, f.createErr
 	}
 	return containertypes.CreateResponse{ID: "rootfs-probe"}, nil
+}
+
+func (f *fakeDockerClient) ContainerInspect(_ context.Context, containerID string) (containertypes.InspectResponse, error) {
+	f.containerInspected = append(f.containerInspected, containerID)
+	if f.containerInspectErr != nil {
+		return containertypes.InspectResponse{}, f.containerInspectErr
+	}
+	if f.containerInspectResult.ContainerJSONBase != nil || f.containerInspectResult.Config != nil {
+		return f.containerInspectResult, nil
+	}
+	return containertypes.InspectResponse{ContainerJSONBase: &containertypes.ContainerJSONBase{
+		ID: containerID, HostConfig: &containertypes.HostConfig{},
+	}}, nil
 }
 
 func (f *fakeDockerClient) ContainerStatPath(_ context.Context, containerID, candidate string) (containertypes.PathStat, error) {

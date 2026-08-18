@@ -195,6 +195,12 @@ func TestVerifyManagedContainerMountsFailsClosed(t *testing.T) {
 		{name: "nested mount", mutate: func(i *containertypes.InspectResponse) {
 			i.Mounts = append(i.Mounts, containertypes.MountPoint{Type: mount.TypeVolume, Destination: protectedRuntimePath + "/sbin", RW: true})
 		}, images: map[string]dockerimage.InspectResponse{testRuntimeImageID: {ID: testRuntimeImageID}}, want: "overlaps protected runtime"},
+		{name: "mounted parent can redirect nested mount", mutate: func(i *containertypes.InspectResponse) {
+			i.Mounts = append(i.Mounts,
+				containertypes.MountPoint{Type: mount.TypeVolume, Destination: "/mnt", RW: true},
+				containertypes.MountPoint{Type: mount.TypeVolume, Destination: "/mnt/link", RW: true},
+			)
+		}, images: map[string]dockerimage.InspectResponse{testRuntimeImageID: {ID: testRuntimeImageID}}, want: "externally populated ancestor"},
 		{name: "wrong subpath", mutate: func(i *containertypes.InspectResponse) {
 			i.HostConfig.Mounts[0].ImageOptions.Subpath = "opt/other"
 		}, images: map[string]dockerimage.InspectResponse{testRuntimeImageID: {ID: testRuntimeImageID}}, want: "unexpected subpath"},

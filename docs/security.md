@@ -67,14 +67,23 @@ every service, image-volume, and Docker-supplied mount destination is resolved
 through the image's symlinks. Vaka rejects any effective destination that
 overlaps `/vaka` or another reserved path. This prevents runc from following an
 untrusted image symlink and installing an apparently unrelated writable mount
-over the runtime.
+over the runtime. Vaka also evaluates Docker's parent-before-child mount order.
+An externally populated mount may not be an ancestor of a later mount, device,
+masked path, or read-only path: content in that parent could introduce a
+symlink after image inspection and redirect the later operation into `/vaka`.
+Docker-owned nesting such as `/dev` with `/dev/pts`, and freshly created tmpfs
+parents, remain supported because they cannot supply attacker-controlled
+symlinks during mount setup. Path validation preserves whitespace exactly as
+part of the Linux pathname.
 
 On startup and in the exec/healthcheck trampoline, `vaka-init` independently
 requires `/vaka` to be a non-symlink directory, the single literal `/vaka`
 entry in `/proc/self/mountinfo`, and read-only with no nested mounts. Host-side
 validation also checks the lexical path in existing containers before exec or
-resume. These checks fail closed; operators who intentionally need conflicting
-mount topology must use raw Docker or Compose outside Vaka's managed path.
+resume, and reconstructs the live effective mount topology before any operation
+that could reapply it. These checks fail closed; operators who intentionally
+need conflicting mount topology must use raw Docker or Compose outside Vaka's
+managed path.
 In particular, Vaka emits a precise warning for the combination of
 `seccomp=unconfined` with `apparmor=unconfined` or disabled SELinux labeling;
 on susceptible hosts that combination can let a root workload create a mount

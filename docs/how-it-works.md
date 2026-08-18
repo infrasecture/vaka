@@ -78,10 +78,17 @@ Mount destinations are not trusted as lexical strings. Before creation, Vaka
 opens an unstarted temporary view of the exact pinned service image and rejects
 an image-level `/vaka` symlink or any Compose, image-volume, CLI `run` volume,
 or Docker-supplied mount target whose image-side symlink resolution reaches a
-reserved path. The probe is always removed together with any anonymous volumes
-it caused Docker to allocate. `vaka-init` then verifies from inside the final
-mount namespace that `/vaka` is a real directory and exactly one literal,
-read-only mountpoint with no nested mounts.
+reserved path. It also models Docker's effective mount set and installation
+order. Vaka rejects an externally populated parent mount followed by a nested
+target, because a symlink supplied by the parent would make Docker resolve the
+nested target somewhere other than the path inspected in the image. Docker's
+trusted `/dev` nesting and fresh tmpfs parents are handled explicitly. Linux
+pathname whitespace is preserved rather than normalized away. The probe is
+always removed together with any anonymous volumes it caused Docker to
+allocate. Existing containers receive the same topology validation before exec
+or resume. `vaka-init` then verifies from inside the final mount namespace that
+`/vaka` is a real directory and exactly one literal, read-only mountpoint with
+no nested mounts.
 
 Your application images are not modified. Managed services always use this
 verified read-only runtime mount. Baked helper modes are rejected because a

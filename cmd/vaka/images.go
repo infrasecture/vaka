@@ -85,6 +85,7 @@ type dockerClient interface {
 	ImageInspect(ctx context.Context, ref string, opts ...client.ImageInspectOption) (dockerimage.InspectResponse, error)
 	ImagePull(ctx context.Context, ref string, opts dockerimage.PullOptions) (io.ReadCloser, error)
 	ContainerCreate(ctx context.Context, config *containertypes.Config, hostConfig *containertypes.HostConfig, networkingConfig *networktypes.NetworkingConfig, platform *ocispec.Platform, containerName string) (containertypes.CreateResponse, error)
+	ContainerInspect(ctx context.Context, containerID string) (containertypes.InspectResponse, error)
 	ContainerStatPath(ctx context.Context, containerID, path string) (containertypes.PathStat, error)
 	ContainerRemove(ctx context.Context, containerID string, options containertypes.RemoveOptions) error
 }

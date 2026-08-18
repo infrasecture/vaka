@@ -218,6 +218,10 @@ func (d *dockerServices) verifyManagedContainerMounts(ctx context.Context, inspe
 	if !runtimePath.Mode.IsDir() {
 		return fmt.Errorf("literal runtime path %s is not a directory", protectedRuntimePath)
 	}
+	targets := liveContainerImageMountTargets(inspect)
+	if err := d.validateImageMountPaths(ctx, "container "+inspect.ID, serviceImage, inspect.HostConfig.Privileged, false, targets); err != nil {
+		return fmt.Errorf("validate live mount resolution: %w", err)
+	}
 	return nil
 }
 

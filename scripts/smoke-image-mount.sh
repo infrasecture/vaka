@@ -85,6 +85,11 @@ symlink_image="vaka-runtime-symlink-smoke-${$}:latest"
 symlink_project="${project}-symlink"
 redirect_image="vaka-runtime-redirect-smoke-${$}:latest"
 redirect_project="${project}-redirect"
+trailing_image="vaka-runtime-trailing-smoke-${$}:latest"
+trailing_project="${project}-trailing"
+chained_project="${project}-chained"
+chained_parent_volume="${project}-chained-parent"
+chained_payload_volume="${project}-chained-payload"
 warning_project="${project}-live-warning"
 container_id=""
 retained_container_id=""
@@ -95,9 +100,13 @@ cleanup() {
     docker compose --project-name "${project}" --file "${compose_file}" down --volumes --remove-orphans >/dev/null 2>&1
     docker compose --project-name "${symlink_project}" --file "${symlink_compose_file}" down --volumes --remove-orphans >/dev/null 2>&1
     docker compose --project-name "${redirect_project}" --file "${symlink_compose_file}" down --volumes --remove-orphans >/dev/null 2>&1
+    docker compose --project-name "${trailing_project}" --file "${symlink_compose_file}" down --volumes --remove-orphans >/dev/null 2>&1
+    docker compose --project-name "${chained_project}" --file "${symlink_compose_file}" down --volumes --remove-orphans >/dev/null 2>&1
     docker compose --project-name "${warning_project}" --file "${warning_compose_file}" down --volumes --remove-orphans >/dev/null 2>&1
     docker image rm "${symlink_image}" >/dev/null 2>&1
     docker image rm "${redirect_image}" >/dev/null 2>&1
+    docker image rm "${trailing_image}" >/dev/null 2>&1
+    docker volume rm "${chained_parent_volume}" "${chained_payload_volume}" >/dev/null 2>&1
     if [[ "${remove_service_image}" == "true" ]]; then
         docker image rm "${SERVICE_IMAGE}" >/dev/null 2>&1
     fi
@@ -122,6 +131,10 @@ RUN rm -rf /vaka /tmp/vaka-redirect \
 FROM base AS redirected
 RUN rm -rf /runtime-alias \
     && ln -s /vaka/sbin /runtime-alias
+
+FROM base AS trailing
+RUN mkdir -p /a/b \
+    && ln -s /vaka/sbin "/a/b/runtime-alias "
 DOCKERFILE
 docker image build \
     --build-arg "BASE_IMAGE=${SERVICE_IMAGE}" \
@@ -132,6 +145,11 @@ docker image build \
     --build-arg "BASE_IMAGE=${SERVICE_IMAGE}" \
     --target redirected \
     --tag "${redirect_image}" \
+    "${tmp_dir}/symlink-image" >/dev/null
+docker image build \
+    --build-arg "BASE_IMAGE=${SERVICE_IMAGE}" \
+    --target trailing \
+    --tag "${trailing_image}" \
     "${tmp_dir}/symlink-image" >/dev/null
 
 cat > "${symlink_compose_file}" <<YAML
@@ -200,6 +218,81 @@ set -e
     die "image-level mount-target redirect created a service container before rejection"
 [[ -z "$(docker container ls --all --quiet --filter "ancestor=${redirect_image}" --filter "label=agent.vaka.rootfs-probe=true")" ]] || \
     die "image-level mount-target redirect left a temporary rootfs probe behind"
+
+cat > "${symlink_compose_file}" <<YAML
+services:
+  app:
+    image: "${trailing_image}"
+    command: ["sleep", "3600"]
+    volumes:
+      - type: volume
+        source: runtime-data
+        target: "/a/b/runtime-alias "
+volumes:
+  runtime-data:
+YAML
+
+printf '==> Verifying trailing whitespace remains part of mount path identity\n'
+set +e
+trailing_output="$("${VAKA_BIN}" \
+    "--vaka-file=${symlink_policy_file}" \
+    --vaka-pull=never \
+    compose \
+    --project-name "${trailing_project}" \
+    --file "${symlink_compose_file}" \
+    up --detach 2>&1)"
+trailing_status=$?
+set -e
+[[ ${trailing_status} -ne 0 ]] || die "trailing-space mount-target redirect into /vaka was accepted"
+[[ "${trailing_output}" == *"resolves through the service image to protected path"* ]] || \
+    die "trailing-space mount-target redirect returned an unexpected diagnostic: ${trailing_output}"
+[[ -z "$(docker compose --project-name "${trailing_project}" --file "${symlink_compose_file}" ps --all --quiet)" ]] || \
+    die "trailing-space mount-target redirect created a service container before rejection"
+
+docker volume create "${chained_parent_volume}" >/dev/null
+docker volume create "${chained_payload_volume}" >/dev/null
+docker run --rm --volume "${chained_parent_volume}:/seed" "${SERVICE_IMAGE}" \
+    sh -c 'ln -s /vaka/sbin /seed/link'
+docker run --rm --volume "${chained_payload_volume}:/seed" "${SERVICE_IMAGE}" \
+    sh -c 'printf "#!/bin/sh\necho CHAINED_EXEC_BYPASS\nexec sleep 3600\n" > /seed/vaka-init && chmod 0755 /seed/vaka-init'
+
+cat > "${symlink_compose_file}" <<YAML
+services:
+  app:
+    image: "${SERVICE_IMAGE}"
+    command: ["sleep", "3600"]
+    volumes:
+      - type: volume
+        source: chained-parent
+        target: /mnt
+      - type: volume
+        source: chained-payload
+        target: /mnt/link
+volumes:
+  chained-parent:
+    external: true
+    name: "${chained_parent_volume}"
+  chained-payload:
+    external: true
+    name: "${chained_payload_volume}"
+YAML
+
+printf '==> Verifying mounted-parent symlinks cannot redirect nested mounts\n'
+set +e
+chained_output="$("${VAKA_BIN}" \
+    "--vaka-file=${symlink_policy_file}" \
+    --vaka-pull=never \
+    compose \
+    --project-name "${chained_project}" \
+    --file "${symlink_compose_file}" \
+    up --detach 2>&1)"
+chained_status=$?
+set -e
+[[ ${chained_status} -ne 0 ]] || die "mounted-parent symlink redirect into /vaka was accepted"
+[[ "${chained_output}" == *"externally populated ancestor"* ]] || \
+    die "mounted-parent symlink redirect returned an unexpected diagnostic: ${chained_output}"
+[[ -z "$(docker compose --project-name "${chained_project}" --file "${symlink_compose_file}" ps --all --quiet)" ]] || \
+    die "mounted-parent symlink redirect created a service container before rejection"
 
 cat > "${warning_policy_file}" <<'YAML'
 apiVersion: agent.vaka/v1alpha1
