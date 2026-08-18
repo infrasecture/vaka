@@ -464,7 +464,7 @@ func validateReferenceExecutionSurfaces(vakaFile string, inv *ComposeInvocation)
 	if err != nil {
 		return err
 	}
-	p, project, err := loadAndValidateResolved(vakaFile, input)
+	p, project, err := loadAndValidateResolvedForExisting(vakaFile, input)
 	if err != nil {
 		return err
 	}
@@ -499,6 +499,9 @@ func validateReferenceExecutionSurfaces(vakaFile string, inv *ComposeInvocation)
 	for name, targets := range live {
 		if selected != nil && !selected[name] {
 			continue
+		}
+		if execution.resumes {
+			warnLiveDegradedEnforcement(name, targets)
 		}
 		_, policyManaged := p.Services[name]
 		liveManaged := targetsContainVakaRuntime(targets)

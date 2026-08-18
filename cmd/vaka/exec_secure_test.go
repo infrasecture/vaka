@@ -447,3 +447,60 @@ services:
 		t.Fatalf("raw Compose calls = %d, want zero", composeCalls)
 	}
 }
+
+func TestSecureExecWarningsUseLiveContainerState(t *testing.T) {
+	policyYAML := `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+`
+	for _, tc := range []struct {
+		name        string
+		composeRisk string
+		liveRisk    string
+		wantWarning bool
+	}{
+		{
+			name:        "removed from compose but retained live",
+			liveRisk:    "is privileged and can bypass Vaka's runtime and egress policy",
+			wantWarning: true,
+		},
+		{
+			name:        "added to compose without recreation",
+			composeRisk: "    privileged: true\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			chdirForTest(t, dir)
+			writeFixtureFiles(t, dir, policyYAML, `
+services:
+  app:
+    image: alpine:3.20
+`+tc.composeRisk)
+
+			target := currentManagedLifecycleTarget()
+			target.ContainerID = "1234567890abcdef"
+			if tc.liveRisk != "" {
+				target.LiveWarnings.reasons = []string{tc.liveRisk}
+			}
+			stderr, err := captureStderr(t, func() error {
+				_, runErr := runRootCapturingExecWithDockerServices(t, []string{"exec", "app", "true"}, &fakeBuilderDockerServices{
+					execTargets: map[string]execTarget{"app:0": target},
+				})
+				return runErr
+			})
+			if err != nil {
+				t.Fatalf("secure exec: %v", err)
+			}
+			warned := strings.Contains(stderr, "live container 1234567890ab for service app is privileged")
+			if warned != tc.wantWarning {
+				t.Fatalf("privileged warning = %t, want %t; stderr = %q", warned, tc.wantWarning, stderr)
+			}
+		})
+	}
+}

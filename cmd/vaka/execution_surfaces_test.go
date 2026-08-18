@@ -335,6 +335,67 @@ services:
 	}
 }
 
+func TestLifecycleResumeWarningsUseLiveContainerState(t *testing.T) {
+	policyYAML := `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+`
+	for _, tc := range []struct {
+		name        string
+		composeRisk string
+		liveRisk    string
+		wantWarning bool
+	}{
+		{
+			name:        "removed from compose but retained live",
+			liveRisk:    "is privileged and can bypass Vaka's runtime and egress policy",
+			wantWarning: true,
+		},
+		{
+			name:        "added to compose without recreation",
+			composeRisk: "    privileged: true\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			chdirForTest(t, dir)
+			writeFixtureFiles(t, dir, policyYAML, `
+services:
+  app:
+    image: alpine:3.20
+`+tc.composeRisk)
+
+			target := currentManagedLifecycleTarget()
+			target.ContainerID = "1234567890abcdef"
+			if tc.liveRisk != "" {
+				target.LiveWarnings.reasons = []string{tc.liveRisk}
+			}
+			setDockerServicesFactoryForTest(t, &fakeBuilderDockerServices{projectTargets: map[string][]execTarget{
+				"app": {target},
+			}})
+			inv, err := ParseComposeInvocation([]string{"start", "app"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			stderr, err := captureStderr(t, func() error {
+				return validateReferenceExecutionSurfaces("vaka.yaml", inv)
+			})
+			if err != nil {
+				t.Fatalf("validate start: %v", err)
+			}
+			warned := strings.Contains(stderr, "live container 1234567890ab for service app is privileged")
+			if warned != tc.wantWarning {
+				t.Fatalf("privileged warning = %t, want %t; stderr = %q", warned, tc.wantWarning, stderr)
+			}
+		})
+	}
+}
+
 func TestLifecycleValidationIgnoresUnrelatedContainers(t *testing.T) {
 	dir := t.TempDir()
 	chdirForTest(t, dir)

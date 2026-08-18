@@ -79,10 +79,13 @@ compose_file="${tmp_dir}/compose.yaml"
 policy_file="${tmp_dir}/vaka.yaml"
 symlink_compose_file="${tmp_dir}/compose-symlink.yaml"
 symlink_policy_file="${tmp_dir}/vaka-symlink.yaml"
+warning_compose_file="${tmp_dir}/compose-live-warning.yaml"
+warning_policy_file="${tmp_dir}/vaka-live-warning.yaml"
 symlink_image="vaka-runtime-symlink-smoke-${$}:latest"
 symlink_project="${project}-symlink"
 redirect_image="vaka-runtime-redirect-smoke-${$}:latest"
 redirect_project="${project}-redirect"
+warning_project="${project}-live-warning"
 container_id=""
 retained_container_id=""
 
@@ -92,6 +95,7 @@ cleanup() {
     docker compose --project-name "${project}" --file "${compose_file}" down --volumes --remove-orphans >/dev/null 2>&1
     docker compose --project-name "${symlink_project}" --file "${symlink_compose_file}" down --volumes --remove-orphans >/dev/null 2>&1
     docker compose --project-name "${redirect_project}" --file "${symlink_compose_file}" down --volumes --remove-orphans >/dev/null 2>&1
+    docker compose --project-name "${warning_project}" --file "${warning_compose_file}" down --volumes --remove-orphans >/dev/null 2>&1
     docker image rm "${symlink_image}" >/dev/null 2>&1
     docker image rm "${redirect_image}" >/dev/null 2>&1
     if [[ "${remove_service_image}" == "true" ]]; then
@@ -196,6 +200,76 @@ set -e
     die "image-level mount-target redirect created a service container before rejection"
 [[ -z "$(docker container ls --all --quiet --filter "ancestor=${redirect_image}" --filter "label=agent.vaka.rootfs-probe=true")" ]] || \
     die "image-level mount-target redirect left a temporary rootfs probe behind"
+
+cat > "${warning_policy_file}" <<'YAML'
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+YAML
+
+cat > "${warning_compose_file}" <<'YAML'
+services:
+  app:
+    image: "${VAKA_SMOKE_SERVICE_IMAGE}"
+    command: ["sleep", "3600"]
+    privileged: true
+YAML
+
+printf '==> Verifying existing-container warnings use live Docker state\n'
+"${VAKA_BIN}" \
+    "--vaka-file=${warning_policy_file}" \
+    --vaka-pull=never \
+    compose \
+    --project-name "${warning_project}" \
+    --file "${warning_compose_file}" \
+    up --detach
+
+# Remove the risky setting from Compose without recreating the live container.
+cat > "${warning_compose_file}" <<'YAML'
+services:
+  app:
+    image: "${VAKA_SMOKE_SERVICE_IMAGE}"
+    command: ["sleep", "3600"]
+YAML
+
+set +e
+warning_exec_output="$("${VAKA_BIN}" \
+    "--vaka-file=${warning_policy_file}" \
+    compose \
+    --project-name "${warning_project}" \
+    --file "${warning_compose_file}" \
+    exec -T app true 2>&1)"
+warning_exec_status=$?
+set -e
+[[ ${warning_exec_status} -eq 0 ]] || \
+    die "live-state warning exec failed with status ${warning_exec_status}: ${warning_exec_output}"
+[[ "${warning_exec_output}" == *"Vaka warning: live container"* && "${warning_exec_output}" == *"is privileged"* ]] || \
+    die "exec did not report the live privileged state after Compose drift: ${warning_exec_output}"
+
+"${VAKA_BIN}" \
+    "--vaka-file=${warning_policy_file}" \
+    compose \
+    --project-name "${warning_project}" \
+    --file "${warning_compose_file}" \
+    stop app >/dev/null
+set +e
+warning_start_output="$("${VAKA_BIN}" \
+    "--vaka-file=${warning_policy_file}" \
+    compose \
+    --project-name "${warning_project}" \
+    --file "${warning_compose_file}" \
+    start app 2>&1)"
+warning_start_status=$?
+set -e
+[[ ${warning_start_status} -eq 0 ]] || \
+    die "live-state warning start failed with status ${warning_start_status}: ${warning_start_output}"
+[[ "${warning_start_output}" == *"Vaka warning: live container"* && "${warning_start_output}" == *"is privileged"* ]] || \
+    die "start did not report the live privileged state after Compose drift: ${warning_start_output}"
 
 cat > "${compose_file}" <<'YAML'
 services:

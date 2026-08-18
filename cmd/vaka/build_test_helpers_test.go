@@ -149,3 +149,25 @@ func captureStdout(t *testing.T, fn func() error) (string, error) {
 	}
 	return string(out), runErr
 }
+
+func captureStderr(t *testing.T, fn func() error) (string, error) {
+	t.Helper()
+	old := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stderr = w
+
+	runErr := fn()
+
+	_ = w.Close()
+	os.Stderr = old
+
+	out, readErr := io.ReadAll(r)
+	_ = r.Close()
+	if readErr != nil {
+		t.Fatalf("read captured stderr: %v", readErr)
+	}
+	return string(out), runErr
+}

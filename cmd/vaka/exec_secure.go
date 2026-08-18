@@ -34,6 +34,7 @@ type execTarget struct {
 	RuntimeImage    string
 	RuntimeMounted  bool
 	ValidationError string
+	LiveWarnings    liveEnforcementWarnings
 }
 
 type containerInspectClient interface {
@@ -120,6 +121,7 @@ func (d *dockerServices) inspectExecContainer(ctx context.Context, summary conta
 		target.LegacyManaged = legacyManagedSignature(inspect)
 		return target, nil
 	}
+	target.LiveWarnings = deriveLiveEnforcementWarnings(inspect)
 	serviceImage := strings.TrimSpace(labels[compose.ServiceImageLabel])
 	if err := d.verifyManagedContainerMounts(ctx, inspect, target.RuntimeImage, serviceImage); err != nil {
 		target.ValidationError = err.Error()
@@ -582,7 +584,7 @@ func runSecureExec(vakaFile string, inv *ComposeInvocation) error {
 	if err != nil {
 		return err
 	}
-	p, project, err := loadAndValidateResolved(vakaFile, composeInput)
+	p, project, err := loadAndValidateResolvedForExisting(vakaFile, composeInput)
 	if err != nil {
 		return err
 	}
@@ -601,6 +603,7 @@ func runSecureExec(vakaFile string, inv *ComposeInvocation) error {
 	if err != nil {
 		return err
 	}
+	warnLiveDegradedEnforcement(parsed.service, []execTarget{target})
 	if target.LegacyManaged {
 		return fmt.Errorf("service %s uses a legacy Vaka-managed container without current security metadata; recreate it with `vaka up --force-recreate` before exec", parsed.service)
 	}

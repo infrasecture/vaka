@@ -65,6 +65,17 @@ func loadAndValidate(vakaFile string, composeFiles []string, workingDir string) 
 }
 
 func loadAndValidateResolved(vakaFile string, input *composeResolution) (*policy.ServicePolicy, *composetypes.Project, error) {
+	return loadAndValidateResolvedWithComposeWarnings(vakaFile, input, true)
+}
+
+// Existing-container operations must report the container state they will
+// actually operate on, rather than a possibly edited Compose model. Their
+// callers emit warnings derived from ContainerInspect after selection.
+func loadAndValidateResolvedForExisting(vakaFile string, input *composeResolution) (*policy.ServicePolicy, *composetypes.Project, error) {
+	return loadAndValidateResolvedWithComposeWarnings(vakaFile, input, false)
+}
+
+func loadAndValidateResolvedWithComposeWarnings(vakaFile string, input *composeResolution, warnComposeState bool) (*policy.ServicePolicy, *composetypes.Project, error) {
 	f, err := os.Open(vakaFile)
 	if err != nil {
 		return nil, nil, err
@@ -98,13 +109,15 @@ func loadAndValidateResolved(vakaFile string, input *composeResolution) (*policy
 
 	errs := policy.ValidateHost(p, networkModes)
 
-	warnDegradedEnforcement(p, project)
+	if warnComposeState {
+		warnDegradedEnforcement(p, project)
 
-	// Warn on defaultAction: accept.
-	for name, svc := range p.Services {
-		if svc.Network != nil && svc.Network.Egress != nil &&
-			svc.Network.Egress.DefaultAction == "accept" {
-			fmt.Fprintf(os.Stderr, "WARNING: service %s uses defaultAction: accept — all unmatched egress traffic is allowed.\n", name)
+		// Warn on defaultAction: accept.
+		for name, svc := range p.Services {
+			if svc.Network != nil && svc.Network.Egress != nil &&
+				svc.Network.Egress.DefaultAction == "accept" {
+				fmt.Fprintf(os.Stderr, "WARNING: service %s uses defaultAction: accept — all unmatched egress traffic is allowed.\n", name)
+			}
 		}
 	}
 

@@ -133,6 +133,12 @@ explicit `exec --user` identity, and
 then starts the command. Managed exec addresses the inspected container ID
 directly; concurrent replacement cannot redirect it to another replica.
 
+Before a managed exec, or before `start`, `restart`, or `unpause`, the host CLI
+also derives degraded-enforcement warnings from each selected live container.
+It combines immutable Docker `HostConfig` and mount data with the injected
+capability-drop contract, rather than trusting a Compose file that may have
+changed since the container was created.
+
 This readiness check closes the startup race but is not a complete ruleset
 audit. Exec mode does not reload policy or repeat `runtime.chown`. Direct Docker
 exec/API access remains outside Vaka's enforcement boundary.

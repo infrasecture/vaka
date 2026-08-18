@@ -248,6 +248,11 @@ label overrides; `post_start` and `pre_stop` hooks; and Watch actions `sync`,
 `up/create --no-recreate` and `watch --no-up`, and requires old, mutable, or
 policy-managed-but-unlabeled containers to be recreated before Vaka-controlled
 resume or exec operations.
+Warnings on `exec`, `start`, `restart`, and `unpause` describe the selected
+live containers—their stored privileges, capabilities, namespaces, security
+options, mounts, init setting, and injected policy—not merely the current
+Compose model. This keeps warnings accurate when Compose has changed without a
+container recreation.
 For `restart`, the resume guard follows Compose's selected transitive
 `restart: true` dependents unless `--no-deps` is enabled, and validates every
 selected replica. Targeted `down` validates exactly the explicitly selected

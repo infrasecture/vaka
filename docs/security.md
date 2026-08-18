@@ -49,6 +49,14 @@ service joins a managed service's network or PID namespace, including
 `container:` joins to an explicit managed `container_name`. Enforcement is
 best-effort across these deliberately weakened boundaries.
 
+Container-creation warnings use the fully merged Compose model. For
+`vaka exec` and operations that resume an existing container (`start`, `restart`,
+and `unpause`), Vaka instead derives these warnings from the selected
+container's live `HostConfig`, realized mounts, applied AppArmor profile, and
+immutable injected policy. Editing the Compose file without recreating the
+container therefore cannot hide a retained live privilege or produce a warning
+for a setting that is not present on the container being operated on.
+
 The verified runtime image subpath is mounted read-only directly at `/vaka`.
 Making the mountpoint a direct child of `/` prevents a root workload from
 replacing it by renaming a writable parent directory. It does not make the
