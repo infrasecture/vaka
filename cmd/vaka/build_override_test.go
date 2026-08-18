@@ -155,6 +155,37 @@ services:
 	}
 }
 
+func TestBuildInjectionOverrideIncludesRunVolumeInImagePathPreflight(t *testing.T) {
+	dir := t.TempDir()
+	chdirForTest(t, dir)
+	writeFixtureFiles(t, dir, `
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+`, `
+services:
+  app:
+    image: alpine:3.20
+`)
+
+	ds := &fakeBuilderDockerServices{}
+	inv, err := ParseComposeInvocation([]string{"run", "--volume", "scratch:/runtime-alias", "app", "true"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := buildInjectionOverride(context.Background(), ds, "vaka.yaml", inv, false); err != nil {
+		t.Fatal(err)
+	}
+	resolved := ds.resolveInputs["app"]
+	if len(resolved.Volumes) != 1 || resolved.Volumes[0].Target != "/runtime-alias" {
+		t.Fatalf("ResolveRuntime volumes = %+v, want run target /runtime-alias", resolved.Volumes)
+	}
+}
+
 func TestBuildInjectionOverrideSeparatesGeneratorAndRuntimeIdentity(t *testing.T) {
 	dir := t.TempDir()
 	chdirForTest(t, dir)

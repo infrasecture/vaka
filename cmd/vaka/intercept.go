@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	composeformat "github.com/compose-spec/compose-go/v2/format"
 	composetypes "github.com/compose-spec/compose-go/v2/types"
 	"github.com/distribution/reference"
 	"gopkg.in/yaml.v3"
@@ -474,6 +475,22 @@ func buildInjectionOverride(
 
 	var entries []compose.ServiceEntry
 	extraEnv = nil
+	runService := ""
+	var runVolumes []composetypes.ServiceVolumeConfig
+	if inv.Subcommand == "run" {
+		parsed, err := parseRun(inv.PostSubcommand)
+		if err != nil {
+			return "", nil, err
+		}
+		runService = parsed.service
+		for _, raw := range parsed.volumes {
+			volume, err := composeformat.ParseVolume(raw)
+			if err != nil {
+				return "", nil, fmt.Errorf("compose run: parse volume %q: %w", raw, err)
+			}
+			runVolumes = append(runVolumes, volume)
+		}
+	}
 
 	for svcName := range managedServices {
 		composeSvc, ok := selected.Services[svcName]
@@ -482,7 +499,11 @@ func buildInjectionOverride(
 		}
 		composeSvc.PullPolicy = preparation.effectivePullPolicy[svcName]
 
-		rt, err := ds.ResolveRuntime(ctx, svcName, composeSvc)
+		runtimeSvc := composeSvc
+		if svcName == runService && len(runVolumes) > 0 {
+			runtimeSvc.Volumes = append(append([]composetypes.ServiceVolumeConfig{}, composeSvc.Volumes...), runVolumes...)
+		}
+		rt, err := ds.ResolveRuntime(ctx, svcName, runtimeSvc)
 		if err != nil {
 			return "", nil, err
 		}

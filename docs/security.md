@@ -53,6 +53,20 @@ The verified runtime image subpath is mounted read-only directly at `/vaka`.
 Making the mountpoint a direct child of `/` prevents a root workload from
 replacing it by renaming a writable parent directory. It does not make the
 mount immutable to a process that has acquired mount-namespace control.
+Before creating a managed container, Vaka inspects the exact pinned service
+image without executing it. `/vaka` must be absent or a real directory, and
+every service, image-volume, and Docker-supplied mount destination is resolved
+through the image's symlinks. Vaka rejects any effective destination that
+overlaps `/vaka` or another reserved path. This prevents runc from following an
+untrusted image symlink and installing an apparently unrelated writable mount
+over the runtime.
+
+On startup and in the exec/healthcheck trampoline, `vaka-init` independently
+requires `/vaka` to be a non-symlink directory, the single literal `/vaka`
+entry in `/proc/self/mountinfo`, and read-only with no nested mounts. Host-side
+validation also checks the lexical path in existing containers before exec or
+resume. These checks fail closed; operators who intentionally need conflicting
+mount topology must use raw Docker or Compose outside Vaka's managed path.
 In particular, Vaka emits a precise warning for the combination of
 `seccomp=unconfined` with `apparmor=unconfined` or disabled SELinux labeling;
 on susceptible hosts that combination can let a root workload create a mount

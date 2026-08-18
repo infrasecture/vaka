@@ -53,6 +53,9 @@ func main() {
 	// transition and the final execve on one OS thread so the Go scheduler
 	// cannot move verification to a thread with the container's stored sets.
 	runtime.LockOSThread()
+	if err := verifyRuntimeMount(); err != nil {
+		fatal("verify trusted runtime mount: %v", err)
+	}
 
 	// Step 1: Read the injected policy from the immutable container
 	// configuration inherited by startup, healthchecks, and exec processes.

@@ -74,6 +74,15 @@ mode `0555`. A read-only image mount preserves their execute bits; it does not
 make non-executable files executable. There is no helper container or helper
 volume in the normal path.
 
+Mount destinations are not trusted as lexical strings. Before creation, Vaka
+opens an unstarted temporary view of the exact pinned service image and rejects
+an image-level `/vaka` symlink or any Compose, image-volume, CLI `run` volume,
+or Docker-supplied mount target whose image-side symlink resolution reaches a
+reserved path. The probe is always removed together with any anonymous volumes
+it caused Docker to allocate. `vaka-init` then verifies from inside the final
+mount namespace that `/vaka` is a real directory and exactly one literal,
+read-only mountpoint with no nested mounts.
+
 Your application images are not modified. Managed services always use this
 verified read-only runtime mount. Baked helper modes are rejected because a
 root workload could replace a helper in its writable container layer before a

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -14,7 +15,9 @@ import (
 	dockerconfig "github.com/docker/cli/cli/config"
 	"github.com/docker/cli/cli/config/configfile"
 	dockertypes "github.com/docker/docker/api/types"
+	containertypes "github.com/docker/docker/api/types/container"
 	dockerimage "github.com/docker/docker/api/types/image"
+	networktypes "github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/errdefs"
 	dockerspec "github.com/moby/docker-image-spec/specs-go/v1"
@@ -38,6 +41,14 @@ type fakeDockerClient struct {
 	pullErr        error // error to return from ImagePull; nil = success
 	pullCalled     bool
 	pullRefs       []string
+	createErr      error
+	createCalled   int
+	createConfig   *containertypes.Config
+	statResults    map[string]containertypes.PathStat
+	statErrs       map[string]error
+	statPaths      []string
+	removeErr      error
+	removed        []string
 }
 
 func (f *fakeDockerClient) ClientVersion() string {
@@ -80,6 +91,34 @@ func (f *fakeDockerClient) ImagePull(_ context.Context, ref string, _ dockerimag
 	}
 	f.notFound = false
 	return io.NopCloser(strings.NewReader("{\"status\":\"Pulling from emsi/vaka-init\"}\n")), nil
+}
+
+func (f *fakeDockerClient) ContainerCreate(_ context.Context, config *containertypes.Config, _ *containertypes.HostConfig, _ *networktypes.NetworkingConfig, _ *ocispec.Platform, _ string) (containertypes.CreateResponse, error) {
+	f.createCalled++
+	f.createConfig = config
+	if f.createErr != nil {
+		return containertypes.CreateResponse{}, f.createErr
+	}
+	return containertypes.CreateResponse{ID: "rootfs-probe"}, nil
+}
+
+func (f *fakeDockerClient) ContainerStatPath(_ context.Context, containerID, candidate string) (containertypes.PathStat, error) {
+	f.statPaths = append(f.statPaths, containerID+":"+candidate)
+	if err, ok := f.statErrs[candidate]; ok {
+		return containertypes.PathStat{}, err
+	}
+	if stat, ok := f.statResults[candidate]; ok {
+		return stat, nil
+	}
+	if containerID != "rootfs-probe" && candidate == protectedRuntimePath {
+		return containertypes.PathStat{Name: "vaka", Mode: os.ModeDir | 0o555}, nil
+	}
+	return containertypes.PathStat{}, errdefs.NotFound(errors.New("path not found"))
+}
+
+func (f *fakeDockerClient) ContainerRemove(_ context.Context, containerID string, _ containertypes.RemoveOptions) error {
+	f.removed = append(f.removed, containerID)
+	return f.removeErr
 }
 
 // imageConfig builds a fake inspect result with ENTRYPOINT/CMD/USER defaults.

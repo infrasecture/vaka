@@ -206,6 +206,16 @@ func (d *dockerServices) verifyManagedContainerMounts(ctx context.Context, inspe
 	if hostRuntimeMounts != 1 {
 		return fmt.Errorf("expected exactly one configured runtime image mount, found %d", hostRuntimeMounts)
 	}
+	runtimePath, err := d.c.ContainerStatPath(ctx, inspect.ID, protectedRuntimePath)
+	if err != nil {
+		return fmt.Errorf("inspect literal runtime path %s in container %s: %w", protectedRuntimePath, inspect.ID, err)
+	}
+	if runtimePath.Mode&os.ModeSymlink != 0 {
+		return fmt.Errorf("literal runtime path %s is a symbolic link", protectedRuntimePath)
+	}
+	if !runtimePath.Mode.IsDir() {
+		return fmt.Errorf("literal runtime path %s is not a directory", protectedRuntimePath)
+	}
 	return nil
 }
 

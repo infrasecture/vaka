@@ -17,13 +17,16 @@ import (
 	"github.com/docker/cli/cli/config/configfile"
 	dockerflags "github.com/docker/cli/cli/flags"
 	dockertypes "github.com/docker/docker/api/types"
+	containertypes "github.com/docker/docker/api/types/container"
 	dockerimage "github.com/docker/docker/api/types/image"
+	networktypes "github.com/docker/docker/api/types/network"
 	registrytypes "github.com/docker/docker/api/types/registry"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/errdefs"
 	"github.com/docker/docker/pkg/jsonmessage"
 	"github.com/docker/docker/registry"
 	"github.com/moby/term"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/spf13/pflag"
 	"vaka.dev/vaka/internal/runtimebundle"
 )
@@ -81,6 +84,9 @@ type dockerClient interface {
 	ClientVersion() string
 	ImageInspect(ctx context.Context, ref string, opts ...client.ImageInspectOption) (dockerimage.InspectResponse, error)
 	ImagePull(ctx context.Context, ref string, opts dockerimage.PullOptions) (io.ReadCloser, error)
+	ContainerCreate(ctx context.Context, config *containertypes.Config, hostConfig *containertypes.HostConfig, networkingConfig *networktypes.NetworkingConfig, platform *ocispec.Platform, containerName string) (containertypes.CreateResponse, error)
+	ContainerStatPath(ctx context.Context, containerID, path string) (containertypes.PathStat, error)
+	ContainerRemove(ctx context.Context, containerID string, options containertypes.RemoveOptions) error
 }
 
 // dockerServices is the production DockerServices backed by the Docker API.
@@ -457,6 +463,9 @@ func (d *dockerServices) ResolveRuntime(ctx context.Context, svcName string, svc
 		if protectedPathOverlap(volumePath) {
 			return ResolvedRuntime{}, fmt.Errorf("service %s: image %q declares VOLUME %q overlapping Vaka's protected runtime or policy mount", svcName, svc.Image, volumePath)
 		}
+	}
+	if err := d.validateServiceImageMountPaths(ctx, svcName, inspect.ID, svc, inspect.Config.Volumes); err != nil {
+		return ResolvedRuntime{}, err
 	}
 	resolved.ImageID = inspect.ID
 

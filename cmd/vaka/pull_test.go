@@ -11,9 +11,12 @@ import (
 	"github.com/docker/cli/cli/config/configfile"
 	clitypes "github.com/docker/cli/cli/config/types"
 	dockertypes "github.com/docker/docker/api/types"
+	containertypes "github.com/docker/docker/api/types/container"
 	dockerimage "github.com/docker/docker/api/types/image"
+	networktypes "github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/errdefs"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 func TestParsePullPolicy(t *testing.T) {
@@ -96,6 +99,18 @@ func (f *pullFake) ImagePull(context.Context, string, dockerimage.PullOptions) (
 		f.present = true
 	}
 	return io.NopCloser(strings.NewReader("{}\n")), nil
+}
+
+func (f *pullFake) ContainerCreate(context.Context, *containertypes.Config, *containertypes.HostConfig, *networktypes.NetworkingConfig, *ocispec.Platform, string) (containertypes.CreateResponse, error) {
+	return containertypes.CreateResponse{ID: "rootfs-probe"}, nil
+}
+
+func (f *pullFake) ContainerStatPath(context.Context, string, string) (containertypes.PathStat, error) {
+	return containertypes.PathStat{}, errdefs.NotFound(errors.New("path not found"))
+}
+
+func (f *pullFake) ContainerRemove(context.Context, string, containertypes.RemoveOptions) error {
+	return nil
 }
 
 func TestResolveRuntimePullPolicy(t *testing.T) {

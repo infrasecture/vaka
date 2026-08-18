@@ -16,6 +16,7 @@ type fakeBuilderDockerServices struct {
 	imageExists    map[string]bool
 	runtimes       map[string]ResolvedRuntime
 	ensureRefs     []string
+	resolveInputs  map[string]composetypes.ServiceConfig
 	execTargets    map[string]execTarget
 	projectTargets map[string][]execTarget
 	inspections    []projectContainerSelection
@@ -63,6 +64,10 @@ func (f *fakeBuilderDockerServices) ImageExists(_ context.Context, ref string) (
 }
 
 func (f *fakeBuilderDockerServices) ResolveRuntime(_ context.Context, svcName string, svc composetypes.ServiceConfig) (ResolvedRuntime, error) {
+	if f.resolveInputs == nil {
+		f.resolveInputs = make(map[string]composetypes.ServiceConfig)
+	}
+	f.resolveInputs[svcName] = svc
 	if rt, ok := f.runtimes[svcName]; ok {
 		if rt.ImageID == "" {
 			rt.ImageID = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"

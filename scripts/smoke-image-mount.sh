@@ -77,6 +77,12 @@ tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/vaka-image-mount-smoke.XXXXXX")"
 project="vaka-image-mount-smoke-$$"
 compose_file="${tmp_dir}/compose.yaml"
 policy_file="${tmp_dir}/vaka.yaml"
+symlink_compose_file="${tmp_dir}/compose-symlink.yaml"
+symlink_policy_file="${tmp_dir}/vaka-symlink.yaml"
+symlink_image="vaka-runtime-symlink-smoke-${$}:latest"
+symlink_project="${project}-symlink"
+redirect_image="vaka-runtime-redirect-smoke-${$}:latest"
+redirect_project="${project}-redirect"
 container_id=""
 retained_container_id=""
 
@@ -84,6 +90,10 @@ cleanup() {
     local exit_code=$?
     set +e
     docker compose --project-name "${project}" --file "${compose_file}" down --volumes --remove-orphans >/dev/null 2>&1
+    docker compose --project-name "${symlink_project}" --file "${symlink_compose_file}" down --volumes --remove-orphans >/dev/null 2>&1
+    docker compose --project-name "${redirect_project}" --file "${symlink_compose_file}" down --volumes --remove-orphans >/dev/null 2>&1
+    docker image rm "${symlink_image}" >/dev/null 2>&1
+    docker image rm "${redirect_image}" >/dev/null 2>&1
     if [[ "${remove_service_image}" == "true" ]]; then
         docker image rm "${SERVICE_IMAGE}" >/dev/null 2>&1
     fi
@@ -93,6 +103,99 @@ cleanup() {
 trap cleanup EXIT
 
 export VAKA_SMOKE_SERVICE_IMAGE="${SERVICE_IMAGE}"
+
+mkdir -p "${tmp_dir}/symlink-image"
+cat > "${tmp_dir}/symlink-image/Dockerfile" <<'DOCKERFILE'
+ARG BASE_IMAGE=alpine:3.21
+FROM ${BASE_IMAGE} AS base
+USER 0
+
+FROM base AS direct
+RUN rm -rf /vaka /tmp/vaka-redirect \
+    && mkdir -p /tmp/vaka-redirect \
+    && ln -s /tmp/vaka-redirect /vaka
+
+FROM base AS redirected
+RUN rm -rf /runtime-alias \
+    && ln -s /vaka/sbin /runtime-alias
+DOCKERFILE
+docker image build \
+    --build-arg "BASE_IMAGE=${SERVICE_IMAGE}" \
+    --target direct \
+    --tag "${symlink_image}" \
+    "${tmp_dir}/symlink-image" >/dev/null
+docker image build \
+    --build-arg "BASE_IMAGE=${SERVICE_IMAGE}" \
+    --target redirected \
+    --tag "${redirect_image}" \
+    "${tmp_dir}/symlink-image" >/dev/null
+
+cat > "${symlink_compose_file}" <<YAML
+services:
+  app:
+    image: "${symlink_image}"
+    command: ["sleep", "3600"]
+YAML
+
+cat > "${symlink_policy_file}" <<'YAML'
+apiVersion: agent.vaka/v1alpha1
+kind: ServicePolicy
+
+services:
+  app:
+    network:
+      egress:
+        defaultAction: reject
+YAML
+
+printf '==> Verifying image-level /vaka symlink is rejected before startup\n'
+set +e
+symlink_output="$("${VAKA_BIN}" \
+    "--vaka-file=${symlink_policy_file}" \
+    --vaka-pull=never \
+    compose \
+    --project-name "${symlink_project}" \
+    --file "${symlink_compose_file}" \
+    up --detach 2>&1)"
+symlink_status=$?
+set -e
+[[ ${symlink_status} -ne 0 ]] || die "image-level /vaka symlink was accepted"
+[[ "${symlink_output}" == *"image path /vaka is a symbolic link"* ]] || \
+    die "image-level /vaka symlink returned an unexpected diagnostic: ${symlink_output}"
+[[ -z "$(docker compose --project-name "${symlink_project}" --file "${symlink_compose_file}" ps --all --quiet)" ]] || \
+    die "image-level /vaka symlink created a service container before rejection"
+[[ -z "$(docker container ls --all --quiet --filter "ancestor=${symlink_image}" --filter "label=agent.vaka.rootfs-probe=true")" ]] || \
+    die "image-level /vaka symlink left a temporary rootfs probe behind"
+
+cat > "${symlink_compose_file}" <<YAML
+services:
+  app:
+    image: "${redirect_image}"
+    command: ["sleep", "3600"]
+    volumes:
+      - runtime-data:/runtime-alias
+volumes:
+  runtime-data:
+YAML
+
+printf '==> Verifying image symlink cannot redirect another mount into /vaka\n'
+set +e
+redirect_output="$("${VAKA_BIN}" \
+    "--vaka-file=${symlink_policy_file}" \
+    --vaka-pull=never \
+    compose \
+    --project-name "${redirect_project}" \
+    --file "${symlink_compose_file}" \
+    up --detach 2>&1)"
+redirect_status=$?
+set -e
+[[ ${redirect_status} -ne 0 ]] || die "image-level mount-target redirect into /vaka was accepted"
+[[ "${redirect_output}" == *"resolves through the service image to protected path"* ]] || \
+    die "image-level mount-target redirect returned an unexpected diagnostic: ${redirect_output}"
+[[ -z "$(docker compose --project-name "${redirect_project}" --file "${symlink_compose_file}" ps --all --quiet)" ]] || \
+    die "image-level mount-target redirect created a service container before rejection"
+[[ -z "$(docker container ls --all --quiet --filter "ancestor=${redirect_image}" --filter "label=agent.vaka.rootfs-probe=true")" ]] || \
+    die "image-level mount-target redirect left a temporary rootfs probe behind"
 
 cat > "${compose_file}" <<'YAML'
 services:

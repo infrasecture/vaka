@@ -320,11 +320,12 @@ Run the real image-mount smoke after a native build:
 ./scripts/smoke-image-mount.sh
 ```
 
-The smoke starts a service through Vaka and verifies that `/vaka` is an
+The smoke first verifies that a service image containing an image-level
+`/vaka` symlink is rejected without leaving a service container or rootfs
+probe. It then starts a service through Vaka and verifies that `/vaka` is an
 image mount whose source resolves to the exact local runtime image ID, is
-read-only, exposes
-both executables with execute permission, and reports the selected stable or
-nightly runtime identity.
+read-only, exposes both executables with execute permission, and reports the
+selected stable or nightly runtime identity.
 
 Before a runtime-affecting release, also run against the lower supported
 matrix: Engine 28 and Compose 2.35.0. Select that Docker target and assert the

@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"os"
 	"reflect"
 	"slices"
 	"strconv"
@@ -182,10 +184,12 @@ func TestVerifyManagedContainerMountsFailsClosed(t *testing.T) {
 	serviceImageID := "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	otherRuntimeID := "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 	tests := []struct {
-		name   string
-		mutate func(*containertypes.InspectResponse)
-		images map[string]dockerimage.InspectResponse
-		want   string
+		name    string
+		mutate  func(*containertypes.InspectResponse)
+		images  map[string]dockerimage.InspectResponse
+		stats   map[string]containertypes.PathStat
+		statErr map[string]error
+		want    string
 	}{
 		{name: "valid", images: map[string]dockerimage.InspectResponse{testRuntimeImageID: {ID: testRuntimeImageID}}},
 		{name: "nested mount", mutate: func(i *containertypes.InspectResponse) {
@@ -201,6 +205,15 @@ func TestVerifyManagedContainerMountsFailsClosed(t *testing.T) {
 		{name: "wrong service image", mutate: func(i *containertypes.InspectResponse) {
 			i.Image = testRuntimeImageID
 		}, images: map[string]dockerimage.InspectResponse{testRuntimeImageID: {ID: testRuntimeImageID}}, want: "service image"},
+		{name: "literal runtime symlink", images: map[string]dockerimage.InspectResponse{testRuntimeImageID: {ID: testRuntimeImageID}}, stats: map[string]containertypes.PathStat{
+			protectedRuntimePath: {Name: "vaka", Mode: os.ModeSymlink | 0o777, LinkTarget: "/tmp/vaka-redirect"},
+		}, want: "symbolic link"},
+		{name: "literal runtime regular file", images: map[string]dockerimage.InspectResponse{testRuntimeImageID: {ID: testRuntimeImageID}}, stats: map[string]containertypes.PathStat{
+			protectedRuntimePath: {Name: "vaka", Mode: 0o555},
+		}, want: "not a directory"},
+		{name: "literal runtime stat failure", images: map[string]dockerimage.InspectResponse{testRuntimeImageID: {ID: testRuntimeImageID}}, statErr: map[string]error{
+			protectedRuntimePath: errors.New("stat denied"),
+		}, want: "inspect literal runtime path"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -208,7 +221,7 @@ func TestVerifyManagedContainerMountsFailsClosed(t *testing.T) {
 			if tc.mutate != nil {
 				tc.mutate(&inspect)
 			}
-			ds := &dockerServices{c: &fakeDockerClient{inspectResults: tc.images}, targetDesc: "test"}
+			ds := &dockerServices{c: &fakeDockerClient{inspectResults: tc.images, statResults: tc.stats, statErrs: tc.statErr}, targetDesc: "test"}
 			err := ds.verifyManagedContainerMounts(context.Background(), inspect, testRuntimeImageID, serviceImageID)
 			if tc.want == "" && err != nil {
 				t.Fatalf("unexpected error: %v", err)
